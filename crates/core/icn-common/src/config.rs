@@ -35,6 +35,13 @@ pub trait Configuration: Serialize + for<'de> Deserialize<'de> + Default {
         
         Ok(())
     }
+
+    /// Load configuration from environment variables with the given prefix
+    fn from_env(prefix: &str) -> Result<Self> {
+        let mut config = Self::default();
+        config.validate()?;
+        Ok(config)
+    }
 }
 
 /// Environment configuration, used to provide runtime settings
@@ -106,17 +113,6 @@ pub fn ensure_directory(path: impl AsRef<Path>) -> Result<()> {
     }
     
     Ok(())
-}
-
-/// Load environment variables into a configuration
-pub fn load_from_env<T: Configuration>(prefix: &str) -> T {
-    use std::env;
-    let mut config = T::default();
-    
-    // Implementation would look for environment variables with the given prefix
-    // and update the config accordingly. This is a placeholder for now.
-    
-    config
 }
 
 #[cfg(test)]

@@ -37,62 +37,15 @@ pub trait ICNComponent: Send + Sync {
     fn metrics(&self) -> Vec<ComponentMetric>;
 
     /// Shut down the component
-    fn shutdown(&self) -> Result<(), ShutdownError>;
+    fn shutdown(&self) -> Result<()>;
 
     /// Cast to Any for dynamic dispatch
     fn as_any(&self) -> &dyn Any;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ComponentType {
-    Identity,
-    Governance,
-    Economic,
-    Resource,
-    Consensus,
-    Storage, 
-    Network,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ComponentHealth {
-    pub status: HealthStatus,
-    pub message: Option<String>,
-    pub last_checked: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum HealthStatus {
-    Healthy,
-    Degraded,
-    Unhealthy,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ComponentMetric {
-    pub name: String,
-    pub value: f64,
-    pub labels: std::collections::HashMap<String, String>,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ComponentError {
-    #[error("Initialization failed: {0}")]
-    InitializationFailed(String),
-    
-    #[error("Operation failed: {0}")]
-    OperationFailed(String),
-    
-    #[error("Invalid state: {0}")]
-    InvalidState(String),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use chrono::Utc;
 
     #[test]
@@ -128,7 +81,6 @@ mod tests {
                 status: HealthStatus::Healthy,
                 message: None,
                 last_checked: Utc::now(),
-                metrics: HashMap::new(),
             }
         }
 
@@ -136,7 +88,7 @@ mod tests {
             vec![]
         }
 
-        fn shutdown(&self) -> Result<(), ShutdownError> {
+        fn shutdown(&self) -> Result<()> {
             Ok(())
         }
 

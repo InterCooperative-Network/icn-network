@@ -39,71 +39,70 @@ impl From<&str> for Identifier {
     }
 }
 
+/// Type of component in the ICN system
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ComponentType {
+    /// Identity management component
+    Identity,
+    /// Governance component
+    Governance,
+    /// Economic component
+    Economic,
+    /// Resource management component
+    Resource,
+    /// Consensus component
+    Consensus,
+    /// Storage component
+    Storage,
+    /// Network component
+    Network,
+}
+
+/// Health status of a component
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HealthStatus {
+    /// Component is healthy and functioning normally
+    Healthy,
+    /// Component is functioning but with reduced capabilities
+    Degraded,
+    /// Component is not functioning
+    Unhealthy,
+    /// Component health status cannot be determined
+    Unknown,
+}
+
 /// Health information for a component
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComponentHealth {
     /// Current health status
     pub status: HealthStatus,
-    
-    /// Optional message describing the health status
+    /// Optional message providing more details about the health status
     pub message: Option<String>,
-    
-    /// When the health check was performed
+    /// Timestamp of when the health check was performed
     pub last_checked: DateTime<Utc>,
-    
-    /// Current metric values
-    pub metrics: HashMap<String, f64>,
 }
 
-/// A metric reported by a component
+/// Metric information for a component
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComponentMetric {
     /// Name of the metric
     pub name: String,
-    
-    /// Current value
+    /// Numeric value of the metric
     pub value: f64,
-    
-    /// Labels/dimensions for the metric
+    /// Additional labels/tags for the metric
     pub labels: HashMap<String, String>,
-    
-    /// When the metric was recorded
+    /// Timestamp when the metric was recorded
     pub timestamp: DateTime<Utc>,
 }
 
-/// Types of components in the system
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ComponentType {
-    /// Identity management component
-    Identity,
-    
-    /// Governance component
-    Governance,
-    
-    /// Economic/transaction component
-    Economic,
-    
-    /// Resource management component
-    Resource,
-    
-    /// Consensus component
-    Consensus,
-    
-    /// Storage component
-    Storage,
-    
-    /// Network/communication component
-    Network,
-}
-
-/// Application version information
+/// Version information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Version {
-    /// Major version component
+    /// Major version number
     pub major: u32,
-    /// Minor version component
+    /// Minor version number
     pub minor: u32,
-    /// Patch version component
+    /// Patch version number
     pub patch: u32,
 }
 

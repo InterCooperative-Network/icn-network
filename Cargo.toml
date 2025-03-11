@@ -7,35 +7,17 @@ edition = "2021"
 
 [workspace]
 members = [
-    "src",
     "crates/core/icn-common",
-    "crates/core/icn-crypto",
-    "crates/core/icn-data-structures",
-    "crates/core/icn-serialization",
-    "crates/identity/icn-did",
-    "crates/identity/icn-credentials",
-    "crates/identity/icn-zkp",
-    "crates/identity/icn-identity-system",
-    "crates/governance/icn-governance-dsl",
-    "crates/governance/icn-governance-vm",
-    "crates/governance/icn-voting",
-    "crates/governance/icn-governance-system",
-    "crates/economic/icn-mutual-credit",
-    "crates/economic/icn-transactions",
-    "crates/economic/icn-confidential-tx",
-    "crates/economic/icn-economic-system",
-    "crates/node/icn-node-core",
-    "crates/node/icn-node-cli",
-    "crates/node/icn-node", "crates/networking/icn-networking",
+    "crates/networking/icn-networking"
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-authors = ["ICN Developers <dev@icn.coop>"]
+authors = ["ICN Contributors"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/icn/intercooperative-network"
+repository = "https://github.com/intercoin/icn"
 
 [workspace.dependencies]
 # Core dependencies
@@ -44,6 +26,12 @@ thiserror = "1.0"
 tracing = "0.1"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
+tokio-rustls = "0.25"
+rustls = { version = "0.22", features = ["tls12"] }
+webpki-roots = "0.26"
+futures = "0.3"
+serde_json = "1.0"
+rcgen = "0.12"
 
 # Crypto
 rand = "0.8"
@@ -56,3 +44,4 @@ sqlx = { version = "0.6", features = ["runtime-tokio-native-tls", "sqlite"] }
 
 # Testing
 proptest = "1.0"
+tokio-test = "0.4"

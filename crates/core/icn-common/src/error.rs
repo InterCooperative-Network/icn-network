@@ -10,12 +10,12 @@ pub type Result<T> = result::Result<T, Error>;
 #[derive(Error, Debug)]
 pub enum Error {
     /// Input/output error
-    #[error("I/O error: {0}")]
+    #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     
     /// Serialization error
     #[error("Serialization error: {0}")]
-    Serialization(String),
+    Serialization(#[from] serde_json::Error),
     
     /// Validation error
     #[error("Validation error: {0}")]
@@ -34,24 +34,31 @@ pub enum Error {
     Authorization(String),
     
     /// Not found error
-    #[error("Resource not found: {0}")]
+    #[error("Not found: {0}")]
     NotFound(String),
     
     /// Already exists error
     #[error("Resource already exists: {0}")]
     AlreadyExists(String),
     
-    /// Other error
-    #[error("{0}")]
-    Other(String),
+    /// Not implemented error
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
+    
+    /// Network error
+    #[error("Network error: {0}")]
+    Network(String),
+    
+    /// Security error
+    #[error("Security error: {0}")]
+    Security(String),
+    
+    /// Internal error
+    #[error("Internal error: {0}")]
+    Internal(String),
 }
 
 impl Error {
-    /// Create a new serialization error
-    pub fn serialization<S: Into<String>>(msg: S) -> Self {
-        Error::Serialization(msg.into())
-    }
-    
     /// Create a new validation error
     pub fn validation<S: Into<String>>(msg: S) -> Self {
         Error::Validation(msg.into())
@@ -61,10 +68,30 @@ impl Error {
     pub fn configuration<S: Into<String>>(msg: S) -> Self {
         Error::Configuration(msg.into())
     }
-    
-    /// Create a new other error
-    pub fn other<S: Into<String>>(msg: S) -> Self {
-        Error::Other(msg.into())
+
+    /// Create a new not found error
+    pub fn not_found<S: Into<String>>(msg: S) -> Self {
+        Error::NotFound(msg.into())
+    }
+
+    /// Create a new not implemented error
+    pub fn not_implemented<S: Into<String>>(msg: S) -> Self {
+        Error::NotImplemented(msg.into())
+    }
+
+    /// Create a new network error
+    pub fn network<S: Into<String>>(msg: S) -> Self {
+        Error::Network(msg.into())
+    }
+
+    /// Create a new security error
+    pub fn security<S: Into<String>>(msg: S) -> Self {
+        Error::Security(msg.into())
+    }
+
+    /// Create a new internal error
+    pub fn internal<S: Into<String>>(msg: S) -> Self {
+        Error::Internal(msg.into())
     }
 }
 
@@ -76,12 +103,4 @@ pub enum ShutdownError {
     
     #[error("Shutdown failed: {0}")]
     Failed(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum HealthStatus {
-    Healthy,
-    Degraded,
-    Unhealthy,
-    Unknown,
 }
