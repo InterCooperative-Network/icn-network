@@ -1,15 +1,14 @@
 use crate::error::{NetworkError, Result};
 use rustls::{
     ClientConfig, RootCertStore, ServerConfig,
-    server::danger::ClientCertVerifier,
+    server::danger::{ClientCertVerifier, ClientCertVerified},
     client::danger::HandshakeSignatureValid,
     DigitallySignedStruct, SignatureScheme, DistinguishedName,
     Error as RustlsError,
-    pki_types::{CertificateDer, PrivateKeyDer},
+    pki_types::{CertificateDer, PrivateKeyDer, UnixTime},
 };
 use std::sync::Arc;
 use tokio_rustls::TlsAcceptor;
-use std::time::SystemTime;
 
 #[cfg(test)]
 use crate::test_utils::generate_test_certificate;
@@ -33,12 +32,12 @@ impl ClientCertVerifier for AcceptAnyClientCert {
 
     fn verify_client_cert(
         &self,
-        end_entity: &CertificateDer<'_>,
-        intermediates: &[CertificateDer<'_>],
-        now: SystemTime,
-    ) -> std::result::Result<HandshakeSignatureValid, RustlsError> {
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: UnixTime,
+    ) -> std::result::Result<ClientCertVerified, RustlsError> {
         // For simplicity, we accept any certificate
-        Ok(HandshakeSignatureValid::assertion())
+        Ok(ClientCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
@@ -71,6 +70,7 @@ impl ClientCertVerifier for AcceptAnyClientCert {
 }
 
 /// TLS configuration for secure networking
+#[derive(Clone)]
 pub struct TlsConfig {
     server_config: Arc<ServerConfig>,
     client_config: Arc<ClientConfig>,

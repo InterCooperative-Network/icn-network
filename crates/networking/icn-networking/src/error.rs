@@ -23,6 +23,9 @@ pub enum NetworkError {
 
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    #[error("Other error: {0}")]
+    Other(String),
 }
 
 pub type Result<T> = std::result::Result<T, NetworkError>;

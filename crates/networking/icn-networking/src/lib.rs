@@ -1,8 +1,8 @@
 pub mod error;
 pub mod tls;
 
-#[cfg(test)]
-mod test_utils;
+#[cfg(any(test, feature = "testing"))]
+pub mod test_utils;
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right

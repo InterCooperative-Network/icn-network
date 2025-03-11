@@ -1,68 +1,78 @@
 use icn_networking::{
-    error::Result,
+    error::{NetworkError, Result},
     tls::TlsConfig,
+    test_utils::generate_test_certificate,
 };
 use tokio::{
-    net::{TcpListener, TcpStream},
     io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
 };
-use std::sync::Arc;
+use std::error::Error;
 
 #[tokio::test]
 async fn test_tls_connection() -> Result<()> {
     // Generate test certificates
-    let (cert_chain, private_key) = icn_networking::test_utils::generate_test_certificate();
+    let (cert_chain, private_key) = generate_test_certificate();
     
     // Create TLS config
-    let tls_config = Arc::new(TlsConfig::new(
+    let server_config = TlsConfig::new(
         cert_chain.clone(),
-        private_key.clone(),
+        private_key.clone_key(),
         Some(cert_chain.clone()),
-    )?);
+    )?;
     
+    let client_config = TlsConfig::new(
+        cert_chain.clone(),
+        private_key,
+        Some(cert_chain),
+    )?;
+
     // Start server
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
     // Server task
-    let server_config = tls_config.clone();
-    let server = tokio::spawn(async move {
-        let (tcp_stream, _) = listener.accept().await?;
-        let acceptor = server_config.acceptor();
-        let mut tls_stream = acceptor.accept(tcp_stream).await?;
+    let server_config = server_config.clone();
+    let server_handle = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut tls_stream = server_config.acceptor().accept(stream).await.unwrap();
         
-        // Read client message
         let mut buf = [0u8; 13];
-        tls_stream.read_exact(&mut buf).await?;
-        assert_eq!(&buf, b"Hello, server!");
+        tls_stream.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"Hello, server");
         
-        // Send response
-        tls_stream.write_all(b"Hello, client!").await?;
+        tls_stream.write_all(b"Hello, client").await.unwrap();
+        tls_stream.flush().await.unwrap();
         
-        Result::<_>::Ok(())
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
     });
-    
+
     // Client task
-    let client = tokio::spawn(async move {
-        let tcp_stream = TcpStream::connect(addr).await?;
-        let connector = tokio_rustls::TlsConnector::from(tls_config.client_config());
-        let mut tls_stream = connector.connect("localhost".try_into().unwrap(), tcp_stream).await?;
+    let client_handle = tokio::spawn(async move {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let connector = tokio_rustls::TlsConnector::from(client_config.client_config());
+        let mut tls_stream = connector
+            .connect(rustls::pki_types::ServerName::try_from("localhost").unwrap(), stream)
+            .await
+            .unwrap();
+
+        tls_stream.write_all(b"Hello, server").await.unwrap();
+        tls_stream.flush().await.unwrap();
         
-        // Send message
-        tls_stream.write_all(b"Hello, server!").await?;
-        
-        // Read response
         let mut buf = [0u8; 13];
-        tls_stream.read_exact(&mut buf).await?;
-        assert_eq!(&buf, b"Hello, client!");
+        tls_stream.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"Hello, client");
         
-        Result::<_>::Ok(())
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
     });
-    
+
     // Wait for both tasks to complete
-    let (server_result, client_result) = tokio::join!(server, client);
-    server_result??;
-    client_result??;
+    let server_result = server_handle.await.map_err(|e| NetworkError::Other(e.to_string()))?;
+    let client_result = client_handle.await.map_err(|e| NetworkError::Other(e.to_string()))?;
+    
+    // Check results
+    server_result.map_err(|e| NetworkError::Other(e.to_string()))?;
+    client_result.map_err(|e| NetworkError::Other(e.to_string()))?;
     
     Ok(())
 } 
