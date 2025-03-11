@@ -14,6 +14,7 @@ use crate::{
 };
 use crate::federation::FederationClient;
 use rand::Rng;
+use chrono;
 
 /// DID manager configuration
 #[derive(Debug, Clone)]
@@ -277,34 +278,49 @@ impl DidManager {
         Ok(None)
     }
 
-    /// Resolve a DID, including federated resolution
+    /// Resolve a DID
     pub async fn resolve(&self, did: &str) -> Result<ResolutionResult> {
-        // Check if this is a valid ICN DID
-        if !did.starts_with(&format!("did:{}:", DID_METHOD)) {
-            return Ok(ResolutionResult {
-                did_document: None,
-                resolution_metadata: ResolutionMetadata {
-                    error: Some("invalidDid".to_string()),
-                    content_type: None,
-                    source_federation: Some(self.config.federation_id.clone()),
-                },
-                document_metadata: DocumentMetadata::default(),
-            });
-        }
-        
-        // Try to extract federation ID
-        if let Some(federation_id) = self.extract_federation_id(did) {
-            // If federation matches local, resolve locally
-            if federation_id == self.config.federation_id {
-                return self.resolver.resolve(did).await;
+        // First try to resolve locally
+        match self.resolve_local(did).await? {
+            Some(doc) => {
+                // Create a successful resolution result
+                let metadata = DocumentMetadata {
+                    created: Some(chrono::Utc::now()),
+                    updated: Some(chrono::Utc::now()),
+                    deactivated: None,
+                    version_id: None,
+                    next_version_id: None,
+                    equivalent_id: None,
+                    canonical_id: None,
+                };
+                
+                Ok(ResolutionResult {
+                    did_document: Some(doc),
+                    metadata: Some(metadata),
+                    did_resolution_metadata: None,
+                })
+            },
+            None => {
+                // If not found locally, check if it's from another federation
+                if let Some(federation_id) = self.extract_federation_id(did) {
+                    if federation_id != self.config.federation_id {
+                        // Try to resolve from federation
+                        return self.federation_client.resolve_did(did, &federation_id).await;
+                    }
+                }
+                
+                // DID not found
+                Ok(ResolutionResult {
+                    did_document: None,
+                    metadata: None,
+                    did_resolution_metadata: Some(ResolutionMetadata {
+                        error: Some("notFound".to_string()),
+                        error_message: Some(format!("DID {} not found", did)),
+                        content_type: None,
+                    }),
+                })
             }
-            
-            // Otherwise, use federation resolution
-            return self.federation_client.resolve_did(did, &federation_id).await;
         }
-        
-        // Default to local resolution if federation can't be determined
-        self.resolver.resolve(did).await
     }
 
     /// Handle a resolution request from another federation
@@ -322,10 +338,11 @@ impl DidManager {
         self.federation_client.resolve_did(did, federation_id).await
     }
 
+    /// Extract the federation ID from a DID
     fn extract_federation_id(&self, did: &str) -> Option<String> {
-        // Format: did:icn:<federation>:<identifier>
+        // Format: did:icn:federation:identifier
         let parts: Vec<&str> = did.split(':').collect();
-        if parts.len() == 4 && parts[0] == "did" && parts[1] == "icn" {
+        if parts.len() >= 4 && parts[0] == "did" && parts[1] == "icn" {
             Some(parts[2].to_string())
         } else {
             None
@@ -376,25 +393,28 @@ impl DidManager {
 
     /// Resolve a DID locally
     async fn resolve_local(&self, did: &str) -> Result<Option<DidDocument>> {
-        // First try to resolve using the local resolver
-        let result = self.resolver.resolve(did).await?;
-        
-        if let Some(doc) = result.did_document {
-            return Ok(Some(doc));
+        // Check if this is a valid ICN DID
+        if !did.starts_with(&format!("{}:", DID_METHOD)) {
+            return Ok(None);
         }
-        
-        // If not found locally, check if it's from another federation
-        if let Some(federation_id) = extract_federation_id(did) {
-            if federation_id != self.config.federation_id {
-                // Try to resolve from federation
-                let result = self.federation_client.resolve_did(did, &federation_id).await?;
-                if let Some(doc) = result.did_document {
-                    return Ok(Some(doc));
-                }
-            }
+
+        // Extract federation ID from DID
+        let federation_id = match self.extract_federation_id(did) {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+
+        // Check if this DID belongs to our federation
+        if federation_id != self.config.federation_id {
+            return Ok(None);
         }
-        
-        Ok(None)
+
+        // Try to get the document from storage
+        let key = format!("did:{}", did);
+        match self.resolver.get::<DidDocument>(&key).await? {
+            Some(doc) => Ok(Some(doc)),
+            None => Ok(None),
+        }
     }
 }
 
@@ -428,17 +448,6 @@ impl VerificationMethodReferenceExt for VerificationMethodReference {
             Self::Reference(id) => id,
             Self::Embedded(method) => &method.id,
         }
-    }
-}
-
-/// Extract the federation ID from a DID
-fn extract_federation_id(did: &str) -> Option<String> {
-    // Format: did:icn:federation:identifier
-    let parts: Vec<&str> = did.split(':').collect();
-    if parts.len() >= 4 && parts[0] == "did" && parts[1] == "icn" {
-        Some(parts[2].to_string())
-    } else {
-        None
     }
 }
 
