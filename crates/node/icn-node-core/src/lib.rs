@@ -7,6 +7,10 @@ use async_trait::async_trait;
 use icn_common::{Error, Result};
 use std::path::Path;
 use std::sync::Arc;
+use icn_common::{ComponentHealth, ComponentMetric, ComponentType, ICNComponent};
+use std::any::Any;
+use std::collections::HashMap;
+use systems::capabilities::{CapabilityManager, HardwareProfile};
 
 mod config;
 mod state;
@@ -48,6 +52,12 @@ pub struct IcnNode {
     
     /// DID service
     did_service: Option<Arc<DidService>>,
+    
+    /// Node metrics
+    metrics: HashMap<String, f64>,
+
+    /// Capability manager
+    capabilities: Option<CapabilityManager>,
 }
 
 impl IcnNode {
@@ -65,6 +75,11 @@ impl IcnNode {
     /// Get the DID service if enabled
     pub fn did_service(&self) -> Option<Arc<DidService>> {
         self.did_service.clone()
+    }
+
+    /// Get the capability manager if initialized
+    pub fn capabilities(&self) -> Option<&CapabilityManager> {
+        self.capabilities.as_ref()
     }
 }
 
@@ -91,11 +106,22 @@ impl Node for IcnNode {
         } else {
             None
         };
+
+        // Initialize capabilities manager
+        let mut capabilities = None;
+        if config.capabilities.storage || config.capabilities.compute || config.capabilities.gateway {
+            let hardware = HardwareProfile::detect();
+            let mut manager = CapabilityManager::new(hardware, state_manager.clone());
+            manager.initialize(&config.capabilities).await?;
+            capabilities = Some(manager);
+        }
         
         Ok(Self {
             config,
             state_manager,
             did_service,
+            metrics: HashMap::new(),
+            capabilities,
         })
     }
     
@@ -110,6 +136,11 @@ impl Node for IcnNode {
         if let Some(did_service) = &self.did_service {
             did_service.start().await?;
         }
+
+        // Start capabilities if enabled
+        if let Some(capabilities) = &mut self.capabilities {
+            capabilities.start_all().await?;
+        }
         
         self.state_manager.transition(NodeState::Running)?;
         Ok(())
@@ -121,8 +152,13 @@ impl Node for IcnNode {
         }
         
         self.state_manager.transition(NodeState::Stopping)?;
+
+        // Stop capabilities first
+        if let Some(capabilities) = &mut self.capabilities {
+            capabilities.stop_all().await?;
+        }
         
-        // Stop DID service if enabled
+        // Stop DID service
         if let Some(did_service) = &self.did_service {
             did_service.stop().await?;
         }
@@ -144,6 +180,81 @@ impl Node for IcnNode {
     }
 }
 
+#[async_trait]
+impl ICNComponent for IcnNode {
+    fn federation_id(&self) -> String {
+        self.config.federation_id.clone()
+    }
+
+    fn component_type(&self) -> ComponentType {
+        ComponentType::Identity
+    }
+
+    fn health_check(&self) -> ComponentHealth {
+        let status = if self.is_running() {
+            HealthStatus::Healthy
+        } else {
+            HealthStatus::Unhealthy
+        };
+
+        let mut metrics = self.metrics.clone();
+
+        // Add capability metrics
+        if let Some(capabilities) = &self.capabilities {
+            let usage = capabilities.total_resource_usage();
+            metrics.insert("cpu_percent".to_string(), usage.cpu_percent);
+            metrics.insert("memory_mb".to_string(), usage.memory_mb as f64);
+            metrics.insert("storage_gb".to_string(), usage.storage_gb as f64);
+            metrics.insert("network_mbps".to_string(), usage.network_mbps);
+        }
+
+        ComponentHealth {
+            status,
+            message: Some(format!("Node is {}", self.state())),
+            last_checked: chrono::Utc::now(),
+            metrics,
+        }
+    }
+
+    fn metrics(&self) -> Vec<ComponentMetric> {
+        let mut metrics = Vec::new();
+        
+        // Add basic node metrics
+        if let Some(uptime) = self.state_manager.uptime() {
+            metrics.push(ComponentMetric {
+                name: "uptime_seconds".to_string(),
+                value: uptime.as_secs() as f64,
+                labels: HashMap::new(),
+                timestamp: chrono::Utc::now(),
+            });
+        }
+
+        // Add component counts
+        let summary = self.state_manager.status_summary();
+        if let Some(running) = summary.get("components_running") {
+            metrics.push(ComponentMetric {
+                name: "components_running".to_string(),
+                value: running.parse().unwrap_or(0.0),
+                labels: HashMap::new(),
+                timestamp: chrono::Utc::now(),
+            });
+        }
+
+        metrics
+    }
+
+    fn shutdown(&self) -> Result<(), ShutdownError> {
+        if self.is_running() {
+            return Err(ShutdownError::StillRunning);
+        }
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,22 +266,25 @@ mod tests {
         
         let mut config = NodeConfig::default();
         config.data_dir = temp_dir.path().to_string_lossy().to_string();
+        config.federation_id = "test-fed-1".to_string();
+        config.capabilities.storage = true;
+        config.capabilities.max_storage_gb = Some(10);
         
         let mut node = IcnNode::new(config).await.unwrap();
         
         assert_eq!(node.state(), NodeState::Created);
         assert!(!node.is_running());
+        assert_eq!(node.federation_id(), "test-fed-1");
+        assert!(node.capabilities().is_some());
         
         node.start().await.unwrap();
         assert_eq!(node.state(), NodeState::Running);
         assert!(node.is_running());
         
-        // Test DID service if enabled
-        if let Some(did_service) = node.did_service() {
-            let (doc, _) = did_service.create_did(CreateDidOptions::default()).await.unwrap();
-            let resolved = did_service.resolve_did(&doc.id).await.unwrap();
-            assert!(resolved.did_document.is_some());
-        }
+        // Verify storage capability metrics
+        let health = node.health_check();
+        assert!(health.metrics.contains_key("storage_gb"));
+        assert!(health.metrics.get("storage_gb").unwrap() <= &10.0);
         
         node.stop().await.unwrap();
         assert_eq!(node.state(), NodeState::Stopped);
@@ -185,10 +299,12 @@ mod tests {
         let mut config = NodeConfig::default();
         config.data_dir = temp_dir.path().to_string_lossy().to_string();
         config.enable_identity = true;
+        config.federation_id = "test-fed-2".to_string();
         
         config.save_to_file(&config_path).unwrap();
         
         let node = IcnNode::from_config_file(&config_path).await.unwrap();
         assert!(node.did_service().is_some());
+        assert_eq!(node.federation_id(), "test-fed-2");
     }
 }

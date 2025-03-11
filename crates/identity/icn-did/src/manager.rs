@@ -1,16 +1,18 @@
 //! DID manager implementation
 use async_trait::async_trait;
 use icn_common::{Error, Result};
-use icn_crypto::{KeyPair, KeyType, PublicKey};
+use icn_crypto::{KeyPair, KeyType, PublicKey, Signature};
 use icn_storage_system::StorageOptions;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::{
     DidDocument, VerificationMethod, VerificationMethodReference, PublicKeyMaterial,
-    resolver::{DidResolver, IcnDidResolver},
+    resolver::{DidResolver, IcnDidResolver, ResolutionResult},
     verification::{AuthenticationChallenge, AuthenticationResponse, VerificationResult},
     DID_METHOD,
 };
+use crate::federation::FederationClient;
+use rand::{thread_rng, Rng};
 
 /// DID manager configuration
 #[derive(Debug, Clone)]
@@ -23,6 +25,12 @@ pub struct DidManagerConfig {
     
     /// Default challenge TTL in seconds
     pub challenge_ttl_seconds: u64,
+
+    /// Federation ID
+    pub federation_id: String,
+
+    /// Federation endpoints
+    pub federation_endpoints: Vec<String>,
 }
 
 impl Default for DidManagerConfig {
@@ -31,6 +39,8 @@ impl Default for DidManagerConfig {
             storage_options: StorageOptions::default(),
             default_key_type: KeyType::Ed25519,
             challenge_ttl_seconds: 300, // 5 minutes
+            federation_id: "local".to_string(),
+            federation_endpoints: Vec::new(),
         }
     }
 }
@@ -65,16 +75,24 @@ pub struct DidManager {
     
     /// Configuration options
     config: DidManagerConfig,
+
+    /// Federation client
+    federation_client: Arc<FederationClient>,
 }
 
 impl DidManager {
     /// Create a new DID manager
     pub async fn new(config: DidManagerConfig) -> Result<Self> {
         let resolver = IcnDidResolver::new(config.storage_options.clone()).await?;
+        let federation_client = FederationClient::new(
+            &config.federation_id,
+            config.federation_endpoints.clone()
+        ).await?;
         
         Ok(Self {
             resolver: Arc::new(resolver),
             config,
+            federation_client: Arc::new(federation_client),
         })
     }
     
@@ -82,7 +100,7 @@ impl DidManager {
     pub async fn create_did(&self, options: CreateDidOptions) -> Result<(DidDocument, Box<dyn KeyPair>)> {
         // Generate key pair
         let key_type = options.key_type.unwrap_or(self.config.default_key_type);
-        let key_pair = icn_crypto::generate_keypair()?;
+        let key_pair = icn_crypto::generate_keypair(key_type)?;
         
         // Generate a unique identifier
         let id = generate_did_identifier();
@@ -117,7 +135,32 @@ impl DidManager {
         
         Ok((document, key_pair))
     }
-    
+
+    /// Create a new federated DID with the given options
+    pub async fn create_federated_did(
+        &self,
+        options: CreateDidOptions,
+        federation_id: Option<String>
+    ) -> Result<(DidDocument, Box<dyn KeyPair>)> {
+        let federation = federation_id.unwrap_or_else(|| self.config.federation_id.clone());
+        
+        // Create local DID first
+        let (mut document, key_pair) = self.create_did(options).await?;
+        
+        // Add federation context
+        document.add_context("https://w3id.org/did-federation/v1");
+        document.add_service(crate::Service {
+            id: format!("{}#federation", document.id),
+            type_: "FederationEndpoint".to_string(),
+            service_endpoint: format!("federation://{}", federation),
+        });
+        
+        // Update the document
+        self.update_did(&document.id, document.clone()).await?;
+        
+        Ok((document, key_pair))
+    }
+
     /// Update a DID document
     pub async fn update_did(&self, did: &str, document: DidDocument) -> Result<()> {
         // Validate the document
@@ -256,6 +299,31 @@ impl DidManager {
 
         // Verify using the method's public key
         method.verify_signature(message, &sig)
+    }
+
+    /// Resolve a federated DID
+    pub async fn resolve_federated_did(&self, did: &str) -> Result<Option<DidDocument>> {
+        // Try local resolution first
+        if let Ok(doc) = self.resolver.resolve(did).await {
+            return Ok(Some(doc));
+        }
+        
+        // If not found locally, try federation resolution
+        if let Some(federation_id) = self.extract_federation_id(did) {
+            return self.federation_client.resolve_did(did, &federation_id).await;
+        }
+        
+        Ok(None)
+    }
+
+    fn extract_federation_id(&self, did: &str) -> Option<String> {
+        // Format: did:icn:<federation>:<identifier>
+        let parts: Vec<&str> = did.split(':').collect();
+        if parts.len() == 4 && parts[0] == "did" && parts[1] == "icn" {
+            Some(parts[2].to_string())
+        } else {
+            None
+        }
     }
 }
 
@@ -473,7 +541,8 @@ mod tests {
         ).await.unwrap();
         
         // Sign challenge
-        let signature = key_pair.sign(&challenge.get_message()).unwrap();
+        let message = challenge.get_message();
+        let signature = key_pair.sign(&message).unwrap();
         
         // Create response
         let response = AuthenticationResponse {

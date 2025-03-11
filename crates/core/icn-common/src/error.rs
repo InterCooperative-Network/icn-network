@@ -1,9 +1,10 @@
 //! Error types for the ICN project
 
 use thiserror::Error;
+use std::result;
 
 /// Common result type used throughout ICN
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = result::Result<T, Error>;
 
 /// Common error type for ICN components
 #[derive(Error, Debug)]
@@ -65,4 +66,22 @@ impl Error {
     pub fn other<S: Into<String>>(msg: S) -> Self {
         Error::Other(msg.into())
     }
+}
+
+/// Error type for component shutdown operations
+#[derive(Debug, Error)]
+pub enum ShutdownError {
+    #[error("Component is still running")]
+    StillRunning,
+    
+    #[error("Shutdown failed: {0}")]
+    Failed(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HealthStatus {
+    Healthy,
+    Degraded,
+    Unhealthy,
+    Unknown,
 }

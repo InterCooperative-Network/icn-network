@@ -19,24 +19,32 @@ use icn_crypto::Signature;
 /// DID service configuration
 #[derive(Debug, Clone)]
 pub struct DidServiceConfig {
-    /// Storage options for DID documents
+    /// Storage options for the DID system
     pub storage_options: StorageOptions,
+    
+    /// Federation ID for this node
+    pub federation_id: String,
+    
+    /// Federation endpoints
+    pub federation_endpoints: Vec<String>,
 }
 
 impl Default for DidServiceConfig {
     fn default() -> Self {
         Self {
             storage_options: StorageOptions::default(),
+            federation_id: "local".to_string(),
+            federation_endpoints: Vec::new(),
         }
     }
 }
 
 /// DID service component
 pub struct DidService {
-    /// The DID manager instance
+    /// The DID manager
     manager: Arc<DidManager>,
     
-    /// State manager reference
+    /// State manager
     state_manager: Arc<StateManager>,
     
     /// Active authentication challenges
@@ -49,17 +57,19 @@ impl DidService {
         config: DidServiceConfig,
         state_manager: Arc<StateManager>,
     ) -> Result<Self> {
-        // Register with state manager
-        state_manager.register_component("did_service")?;
-        
         // Create DID manager config
         let manager_config = DidManagerConfig {
             storage_options: config.storage_options,
-            ..DidManagerConfig::default()
+            federation_id: config.federation_id,
+            federation_endpoints: config.federation_endpoints,
+            ..Default::default()
         };
         
         // Initialize DID manager
         let manager = DidManager::new(manager_config).await?;
+        
+        // Register with state manager
+        state_manager.register_component("did_service", ComponentState::default())?;
         
         Ok(Self {
             manager: Arc::new(manager),
@@ -72,7 +82,15 @@ impl DidService {
     pub async fn start(&self) -> Result<()> {
         self.state_manager.update_component("did_service", "starting")?;
         
-        // Perform any startup tasks here
+        // Start cleanup task for expired challenges
+        let challenges = self.challenges.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                let mut challenges = challenges.write().await;
+                challenges.retain(|c| !c.is_expired().unwrap_or(true));
+            }
+        });
         
         self.state_manager.update_component("did_service", "running")?;
         Ok(())
@@ -81,9 +99,6 @@ impl DidService {
     /// Stop the DID service
     pub async fn stop(&self) -> Result<()> {
         self.state_manager.update_component("did_service", "stopping")?;
-        
-        // Perform any cleanup tasks here
-        
         self.state_manager.update_component("did_service", "stopped")?;
         Ok(())
     }
@@ -92,10 +107,23 @@ impl DidService {
     pub async fn create_did(&self, options: CreateDidOptions) -> Result<(DidDocument, String)> {
         let (document, key_pair) = self.manager.create_did(options).await?;
         
-        // Extract key material for return
-        // In a real implementation, this would be securely stored in a key store
+        // Extract public key for return
         let public_key = key_pair.public_key().to_base58();
         
+        Ok((document, public_key))
+    }
+    
+    /// Create a new federated DID
+    pub async fn create_federated_did(
+        &self,
+        options: CreateDidOptions,
+        federation_id: Option<String>,
+    ) -> Result<(DidDocument, String)> {
+        let (document, key_pair) = self.manager
+            .create_federated_did(options, federation_id)
+            .await?;
+            
+        let public_key = key_pair.public_key().to_base58();
         Ok((document, public_key))
     }
     
@@ -119,19 +147,14 @@ impl DidService {
         self.manager.list_dids().await
     }
     
-    /// Get the DID manager
-    pub fn manager(&self) -> Arc<DidManager> {
-        self.manager.clone()
-    }
-
-    /// Create an authentication challenge for a DID
+    /// Create an authentication challenge
     pub async fn create_authentication_challenge(
         &self,
         did: &str,
         verification_method: Option<&str>,
     ) -> Result<AuthenticationChallenge> {
         let challenge = self.manager
-            .create_authentication_challenge(did, verification_method)
+            .create_authentication_challenge(did, verification_method, None)
             .await?;
             
         // Store challenge
@@ -139,30 +162,31 @@ impl DidService {
         
         Ok(challenge)
     }
-
+    
     /// Verify an authentication response
     pub async fn verify_authentication(
         &self,
         response: &AuthenticationResponse,
     ) -> Result<bool> {
-        // Check if challenge exists
-        let mut challenges = self.challenges.write().await;
+        // Verify challenge exists
+        let challenges = self.challenges.read().await;
         if !challenges.iter().any(|c| c.nonce == response.challenge.nonce) {
             return Ok(false);
         }
         
-        // Verify authentication
+        // Verify response
         let result = self.manager.verify_authentication(response).await?;
         
-        // Remove challenge if verification succeeded
+        // Remove challenge if valid
         if result {
+            let mut challenges = self.challenges.write().await;
             challenges.retain(|c| c.nonce != response.challenge.nonce);
         }
         
         Ok(result)
     }
-
-    /// Verify a signature for a DID
+    
+    /// Verify a signature
     pub async fn verify_signature(
         &self,
         did: &str,
@@ -172,11 +196,10 @@ impl DidService {
     ) -> Result<bool> {
         self.manager.verify_signature(did, method_id, message, signature).await
     }
-
-    /// Clean up expired challenges
-    async fn cleanup_expired_challenges(&self) {
-        let mut challenges = self.challenges.write().await;
-        challenges.retain(|c| !c.is_expired().unwrap_or(true));
+    
+    /// Get the DID manager
+    pub fn manager(&self) -> Arc<DidManager> {
+        self.manager.clone()
     }
 }
 
@@ -197,6 +220,7 @@ mod tests {
                 sync_writes: true,
                 compress: false,
             },
+            ..Default::default()
         };
         
         // Create service
@@ -236,6 +260,7 @@ mod tests {
                 sync_writes: true,
                 compress: false,
             },
+            ..Default::default()
         };
         
         let service = DidService::new(config, state_manager).await.unwrap();
@@ -296,6 +321,7 @@ mod tests {
                 sync_writes: true,
                 compress: false,
             },
+            ..Default::default()
         };
         
         let service = DidService::new(config, state_manager).await.unwrap();
@@ -326,6 +352,7 @@ mod tests {
                 sync_writes: true,
                 compress: false,
             },
+            ..Default::default()
         };
         
         let service = Arc::new(DidService::new(config, state_manager).await.unwrap());
@@ -366,6 +393,7 @@ mod tests {
                 sync_writes: true,
                 compress: false,
             },
+            ..Default::default()
         };
         
         let service = DidService::new(config, state_manager).await.unwrap();
@@ -412,6 +440,7 @@ mod tests {
                 sync_writes: true,
                 compress: false,
             },
+            ..Default::default()
         };
         
         let service = DidService::new(config, state_manager).await.unwrap();

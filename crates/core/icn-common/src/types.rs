@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::collections::HashMap;
+use chrono::{DateTime, Utc};
 
 /// A unique identifier type
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -35,6 +37,63 @@ impl From<&str> for Identifier {
     fn from(s: &str) -> Self {
         Self(s.to_string())
     }
+}
+
+/// Health information for a component
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentHealth {
+    /// Current health status
+    pub status: HealthStatus,
+    
+    /// Optional message describing the health status
+    pub message: Option<String>,
+    
+    /// When the health check was performed
+    pub last_checked: DateTime<Utc>,
+    
+    /// Current metric values
+    pub metrics: HashMap<String, f64>,
+}
+
+/// A metric reported by a component
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentMetric {
+    /// Name of the metric
+    pub name: String,
+    
+    /// Current value
+    pub value: f64,
+    
+    /// Labels/dimensions for the metric
+    pub labels: HashMap<String, String>,
+    
+    /// When the metric was recorded
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Types of components in the system
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ComponentType {
+    /// Identity management component
+    Identity,
+    
+    /// Governance component
+    Governance,
+    
+    /// Economic/transaction component
+    Economic,
+    
+    /// Resource management component
+    Resource,
+    
+    /// Consensus component
+    Consensus,
+    
+    /// Storage component
+    Storage,
+    
+    /// Network/communication component
+    Network,
 }
 
 /// Application version information
