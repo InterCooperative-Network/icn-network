@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use icn_common::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use icn_storage_system::{Storage, StorageOptions};
+use icn_storage_system::{Storage, StorageOptions, StorageExt};
 use crate::{DidDocument, DID_METHOD};
 
 /// Resolution metadata according to the DID Resolution spec

@@ -11,7 +11,9 @@ icn-crypto = { path = "crates/core/icn-crypto" }
 members = [
     "crates/core/icn-common",
     "crates/core/icn-crypto",
-    "crates/identity/icn-credentials"
+    "crates/identity/icn-did",
+    "crates/identity/icn-credentials",
+    "crates/storage/icn-storage-system"
 ]
 resolver = "2"
 

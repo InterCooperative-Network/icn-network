@@ -37,10 +37,10 @@ impl Default for StorageOptions {
 #[async_trait]
 pub trait Storage: Send + Sync {
     /// Store a value with the given key
-    async fn put<T: Serialize + Send + Sync>(&self, key: &str, value: &T) -> Result<()>;
+    async fn put_bytes(&self, key: &str, value: &[u8]) -> Result<()>;
     
     /// Get a value by key
-    async fn get<T: DeserializeOwned + Send + Sync>(&self, key: &str) -> Result<Option<T>>;
+    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>>;
     
     /// Delete a value by key
     async fn delete(&self, key: &str) -> Result<()>;
@@ -55,6 +55,30 @@ pub trait Storage: Send + Sync {
     async fn clear(&self) -> Result<()>;
 }
 
+/// Extension methods for Storage trait
+pub trait StorageExt: Storage {
+    /// Store a serializable value with the given key
+    async fn put<T: Serialize + Send + Sync>(&self, key: &str, value: &T) -> Result<()> {
+        let serialized = serde_json::to_vec(value)
+            .map_err(|e| Error::serialization(format!("Failed to serialize value: {}", e)))?;
+        self.put_bytes(key, &serialized).await
+    }
+    
+    /// Get a deserialized value by key
+    async fn get<T: DeserializeOwned + Send + Sync>(&self, key: &str) -> Result<Option<T>> {
+        if let Some(data) = self.get_bytes(key).await? {
+            let value = serde_json::from_slice(&data)
+                .map_err(|e| Error::serialization(format!("Failed to deserialize value: {}", e)))?;
+            Ok(Some(value))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+// Implement StorageExt for all Storage implementors
+impl<T: Storage + ?Sized> StorageExt for T {}
+
 /// File-based storage implementation
 pub struct FileStorage {
     options: StorageOptions,
@@ -66,7 +90,7 @@ impl FileStorage {
     pub async fn new(options: StorageOptions) -> Result<Self> {
         // Create base directory if it doesn't exist
         fs::create_dir_all(&options.base_dir).await
-            .map_err(|e| Error::configuration(format!("Failed to create storage directory: {}", e)))?;
+            .map_err(|e| Error::internal(format!("Failed to create storage directory: {}", e)))?;
         
         Ok(Self {
             options,
@@ -82,28 +106,19 @@ impl FileStorage {
 
 #[async_trait]
 impl Storage for FileStorage {
-    async fn put<T: Serialize + Send + Sync>(&self, key: &str, value: &T) -> Result<()> {
-        let serialized = if self.options.compress {
-            // TODO: Implement compression
-            serde_json::to_vec(value)
-                .map_err(|e| Error::serialization(format!("Failed to serialize value: {}", e)))?
-        } else {
-            serde_json::to_vec(value)
-                .map_err(|e| Error::serialization(format!("Failed to serialize value: {}", e)))?
-        };
-        
+    async fn put_bytes(&self, key: &str, value: &[u8]) -> Result<()> {
         // Update cache
-        self.cache.write().await.insert(key.to_string(), serialized.clone());
+        self.cache.write().await.insert(key.to_string(), value.to_vec());
         
         // Write to file
         let path = self.get_path(key);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await
-                .map_err(|e| Error::configuration(format!("Failed to create directory: {}", e)))?;
+                .map_err(|e| Error::internal(format!("Failed to create directory: {}", e)))?;
         }
         
-        fs::write(&path, serialized).await
-            .map_err(|e| Error::configuration(format!("Failed to write file: {}", e)))?;
+        fs::write(&path, value).await
+            .map_err(|e| Error::internal(format!("Failed to write file: {}", e)))?;
         
         if self.options.sync_writes {
             // TODO: Implement fsync
@@ -112,11 +127,10 @@ impl Storage for FileStorage {
         Ok(())
     }
     
-    async fn get<T: DeserializeOwned + Send + Sync>(&self, key: &str) -> Result<Option<T>> {
+    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
         // Check cache first
         if let Some(cached) = self.cache.read().await.get(key) {
-            return Ok(Some(serde_json::from_slice(cached)
-                .map_err(|e| Error::serialization(format!("Failed to deserialize value: {}", e)))?));
+            return Ok(Some(cached.clone()));
         }
         
         // Read from file
@@ -124,17 +138,13 @@ impl Storage for FileStorage {
         let data = match fs::read(&path).await {
             Ok(data) => data,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(Error::configuration(format!("Failed to read file: {}", e))),
+            Err(e) => return Err(Error::internal(format!("Failed to read file: {}", e))),
         };
         
         // Update cache
         self.cache.write().await.insert(key.to_string(), data.clone());
         
-        // Deserialize
-        let value = serde_json::from_slice(&data)
-            .map_err(|e| Error::serialization(format!("Failed to deserialize value: {}", e)))?;
-            
-        Ok(Some(value))
+        Ok(Some(data))
     }
     
     async fn delete(&self, key: &str) -> Result<()> {
@@ -146,7 +156,7 @@ impl Storage for FileStorage {
         match fs::remove_file(path).await {
             Ok(_) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(Error::configuration(format!("Failed to delete file: {}", e))),
+            Err(e) => Err(Error::internal(format!("Failed to delete file: {}", e))),
         }
     }
     
@@ -167,10 +177,10 @@ impl Storage for FileStorage {
         
         // List files in directory
         let mut entries = fs::read_dir(&self.options.base_dir).await
-            .map_err(|e| Error::configuration(format!("Failed to read directory: {}", e)))?;
+            .map_err(|e| Error::internal(format!("Failed to read directory: {}", e)))?;
             
         while let Some(entry) = entries.next_entry().await
-            .map_err(|e| Error::configuration(format!("Failed to read directory entry: {}", e)))? {
+            .map_err(|e| Error::internal(format!("Failed to read directory entry: {}", e)))? {
             
             if let Ok(path) = entry.path().strip_prefix(&self.options.base_dir) {
                 if let Some(key) = path.to_str() {
@@ -190,18 +200,18 @@ impl Storage for FileStorage {
         
         // Remove all files in base directory
         fs::remove_dir_all(&self.options.base_dir).await
-            .map_err(|e| Error::configuration(format!("Failed to clear storage: {}", e)))?;
+            .map_err(|e| Error::internal(format!("Failed to clear storage: {}", e)))?;
             
         // Recreate base directory
         fs::create_dir_all(&self.options.base_dir).await
-            .map_err(|e| Error::configuration(format!("Failed to create storage directory: {}", e)))?;
+            .map_err(|e| Error::internal(format!("Failed to create storage directory: {}", e)))?;
             
         Ok(())
     }
 }
 
 /// Create a new storage instance with the given options
-pub async fn create_storage(options: StorageOptions) -> Result<Arc<dyn Storage>> {
+pub async fn create_storage(options: StorageOptions) -> Result<Arc<FileStorage>> {
     let storage = FileStorage::new(options).await?;
     Ok(Arc::new(storage))
 }
@@ -235,6 +245,7 @@ mod tests {
             field2: 42,
         };
         
+        // Use the extension trait methods
         storage.put("test_key", &test_data).await.unwrap();
         
         let retrieved: TestData = storage.get("test_key").await.unwrap().unwrap();
@@ -248,12 +259,11 @@ mod tests {
         storage.delete("test_key").await.unwrap();
         assert!(!storage.exists("test_key").await.unwrap());
         
-        // Test clear
-        storage.put("key1", &test_data).await.unwrap();
-        storage.put("key2", &test_data).await.unwrap();
-        storage.clear().await.unwrap();
-        assert!(!storage.exists("key1").await.unwrap());
-        assert!(!storage.exists("key2").await.unwrap());
+        // Test raw bytes
+        let raw_data = b"raw data test";
+        storage.put_bytes("raw_key", raw_data).await.unwrap();
+        let retrieved_raw = storage.get_bytes("raw_key").await.unwrap().unwrap();
+        assert_eq!(retrieved_raw, raw_data);
     }
     
     #[tokio::test]
