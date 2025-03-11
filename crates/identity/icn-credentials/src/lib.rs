@@ -65,6 +65,14 @@ pub struct VerifiableCredential {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential_schema: Option<CredentialSchema>,
     
+    /// Service to refresh the credential
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_service: Option<serde_json::Value>,
+    
+    /// Terms of use for the credential
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terms_of_use: Option<serde_json::Value>,
+    
     /// The evidence for the credential
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<serde_json::Value>,
@@ -98,6 +106,8 @@ impl VerifiableCredential {
             credential_subject: subject,
             credential_status: None,
             credential_schema: None,
+            refresh_service: None,
+            terms_of_use: None,
             evidence: None,
             proof: None,
         }
@@ -190,13 +200,11 @@ pub struct VerifiablePresentation {
     #[serde(rename = "type")]
     pub types: Vec<String>,
     
-    /// Verifiable credentials included in this presentation
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub verifiable_credential: Vec<VerifiableCredential>,
-    
     /// The holder of the presentation
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub holder: Option<String>,
+    pub holder: String,
+    
+    /// Verifiable credentials included in this presentation
+    pub verifiable_credential: Vec<VerifiableCredential>,
     
     /// The cryptographic proof
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -205,7 +213,7 @@ pub struct VerifiablePresentation {
 
 impl VerifiablePresentation {
     /// Create a new verifiable presentation
-    pub fn new(holder: Option<&str>) -> Self {
+    pub fn new(holder: &str) -> Self {
         VerifiablePresentation {
             context: vec![
                 "https://www.w3.org/2018/credentials/v1".to_string(),
@@ -213,8 +221,8 @@ impl VerifiablePresentation {
             ],
             id: format!("urn:uuid:{}", Uuid::new_v4()),
             types: vec!["VerifiablePresentation".to_string()],
+            holder: holder.to_string(),
             verifiable_credential: Vec::new(),
-            holder: holder.map(String::from),
             proof: None,
         }
     }
@@ -288,54 +296,46 @@ mod tests {
     
     #[test]
     fn test_credential_creation() {
-        let subject = CredentialSubject {
-            id: Some("did:icn:test:subject".to_string()),
-            properties: {
-                let mut props = HashMap::new();
-                props.insert("name".to_string(), serde_json::json!("Test Subject"));
-                props.insert("age".to_string(), serde_json::json!(25));
-                props
-            },
-        };
+        let mut subject = CredentialSubject::new(Some("did:icn:test:123".to_string()));
+        subject.add_property("name", "John Doe");
         
-        let credential = VerifiableCredential::new(
-            "did:icn:test:issuer",
-            vec!["TestCredential".to_string()],
+        let mut credential = VerifiableCredential::new(
+            "did:icn:issuer:456",
+            vec!["IdentityCredential".to_string()],
             subject,
         );
         
         assert!(credential.types.contains(&"VerifiableCredential".to_string()));
-        assert!(credential.types.contains(&"TestCredential".to_string()));
-        assert_eq!(credential.issuer, "did:icn:test:issuer");
-        assert!(!credential.is_expired());
+        assert!(credential.types.contains(&"IdentityCredential".to_string()));
+        assert_eq!(credential.issuer, "did:icn:issuer:456");
+        assert!(credential.proof.is_none());
         
-        let subject_props = &credential.credential_subject.properties;
-        assert_eq!(subject_props.get("name").unwrap().as_str().unwrap(), "Test Subject");
-        assert_eq!(subject_props.get("age").unwrap().as_i64().unwrap(), 25);
+        let schema = CredentialSchema {
+            id: "https://icn.coop/schemas/identity".to_string(),
+            type_: "JsonSchema".to_string(),
+            properties: HashMap::new(),
+        };
+        
+        credential.set_schema(schema);
+        assert!(credential.credential_schema.is_some());
     }
     
     #[test]
     fn test_presentation_creation() {
-        let subject = CredentialSubject {
-            id: Some("did:icn:test:subject".to_string()),
-            properties: {
-                let mut props = HashMap::new();
-                props.insert("name".to_string(), serde_json::json!("Test Subject"));
-                props
-            },
-        };
+        let mut subject = CredentialSubject::new(Some("did:icn:test:123".to_string()));
+        subject.add_property("name", "John Doe");
         
         let credential = VerifiableCredential::new(
-            "did:icn:test:issuer",
-            vec!["TestCredential".to_string()],
+            "did:icn:issuer:456",
+            vec!["IdentityCredential".to_string()],
             subject,
         );
         
-        let mut presentation = VerifiablePresentation::new(Some("did:icn:test:holder"));
+        let mut presentation = VerifiablePresentation::new("did:icn:test:123");
         presentation.add_credential(credential);
         
-        assert!(presentation.types.contains(&"VerifiablePresentation".to_string()));
-        assert_eq!(presentation.holder, Some("did:icn:test:holder".to_string()));
+        assert_eq!(presentation.holder, "did:icn:test:123");
         assert_eq!(presentation.verifiable_credential.len(), 1);
+        assert_eq!(presentation.verifiable_credential[0].issuer, "did:icn:issuer:456");
     }
 } 

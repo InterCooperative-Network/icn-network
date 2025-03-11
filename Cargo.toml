@@ -10,7 +10,8 @@ icn-crypto = { path = "crates/core/icn-crypto" }
 [workspace]
 members = [
     "crates/core/icn-common",
-    "crates/core/icn-crypto"
+    "crates/core/icn-crypto",
+    "crates/identity/icn-credentials"
 ]
 resolver = "2"
 
@@ -20,3 +21,8 @@ authors = ["ICN Contributors"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/intercoin/icn"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.36", features = ["full"] }
+async-trait = "0.1"
