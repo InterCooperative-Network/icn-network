@@ -336,9 +336,9 @@ mod tests {
             id: "key-1".to_string(),
             type_: "Ed25519VerificationKey2020".to_string(),
             controller: did.to_string(),
-            public_key: crate::PublicKeyMaterial::Ed25519VerificationKey2020(
-                "BASE58_PUBLIC_KEY".to_string()
-            ),
+            public_key: crate::PublicKeyMaterial::Ed25519VerificationKey2020 {
+                key: "BASE58_PUBLIC_KEY".to_string()
+            },
         });
         
         resolver.update(did, document.clone()).await.unwrap();
