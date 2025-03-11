@@ -18,6 +18,8 @@ ed25519-dalek.workspace = true
 k256.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+bs58 = "0.5"
+base64 = "0.13"
 
 [features]
 default = ["std", "ed25519"]

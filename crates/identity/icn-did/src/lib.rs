@@ -3,13 +3,22 @@
 //! This crate implements the W3C DID specification for the ICN project,
 //! providing identity management capabilities.
 
+pub mod resolver;
+pub mod manager;
+pub mod verification;
+
 use icn_common::{Error, Result};
-use icn_crypto::{PublicKey, Signature, Verifier};
+use icn_crypto::{PublicKey, Signature, Verifier, KeyType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// The ICN DID method name
 pub const DID_METHOD: &str = "icn";
+
+// Re-export commonly used types
+pub use resolver::{DidResolver, ResolutionResult};
+pub use manager::{DidManager, DidManagerConfig, CreateDidOptions};
+pub use verification::*;
 
 /// A DID document representing an identity in the ICN system
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -135,6 +144,78 @@ impl DidDocument {
         }
         Ok(())
     }
+
+    /// Get a verification method by ID
+    pub fn get_verification_method(&self, id: &str) -> Option<&VerificationMethod> {
+        let full_id = if id.starts_with(&self.id) {
+            id.to_string()
+        } else {
+            format!("{}#{}", self.id, id.trim_start_matches('#'))
+        };
+
+        self.verification_method.iter()
+            .find(|m| m.id == full_id)
+    }
+
+    /// Get a verification method by ID and verify it's usable for authentication
+    pub fn get_authentication_method(&self, id: &str) -> Option<&VerificationMethod> {
+        let method = self.get_verification_method(id)?;
+        
+        // Check if method is listed in authentication
+        if !self.authentication.iter().any(|r| match r {
+            VerificationMethodReference::Reference(ref_id) => ref_id == &method.id,
+            VerificationMethodReference::Embedded(vm) => vm.id == method.id,
+        }) {
+            return None;
+        }
+
+        Some(method)
+    }
+
+    /// Verify a signature using a specific verification method
+    pub fn verify_signature(
+        &self,
+        method_id: &str,
+        message: &[u8],
+        signature: &Signature,
+    ) -> Result<bool> {
+        let method = self.get_verification_method(method_id)
+            .ok_or_else(|| Error::not_found("Verification method not found"))?;
+
+        let verifier = self.create_verifier(method)?;
+        verifier.verify(message, signature)
+    }
+
+    /// Verify a signature for authentication purposes
+    pub fn verify_authentication(
+        &self,
+        method_id: &str,
+        message: &[u8],
+        signature: &Signature,
+    ) -> Result<bool> {
+        let method = self.get_authentication_method(method_id)
+            .ok_or_else(|| Error::not_found("Authentication method not found"))?;
+
+        let verifier = self.create_verifier(method)?;
+        verifier.verify(message, signature)
+    }
+
+    /// Create a verifier for a verification method
+    fn create_verifier(&self, method: &VerificationMethod) -> Result<Box<dyn Verifier>> {
+        match &method.public_key {
+            PublicKeyMaterial::Ed25519VerificationKey2020(key) => {
+                let public_key = icn_crypto::decode_public_key(KeyType::Ed25519, key)?;
+                Ok(Box::new(icn_crypto::Ed25519Verifier::new(public_key)))
+            }
+            PublicKeyMaterial::JsonWebKey2020(_) => {
+                Err(Error::not_implemented("JWK verification not implemented"))
+            }
+            PublicKeyMaterial::MultibaseKey(key) => {
+                let public_key = icn_crypto::decode_multibase_key(key)?;
+                Ok(Box::new(icn_crypto::Ed25519Verifier::new(public_key)))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -155,5 +236,36 @@ mod tests {
         // Test invalid DID
         did_doc.id = "invalid:did".to_string();
         assert!(did_doc.validate().is_err());
+    }
+
+    #[test]
+    fn test_verification_method_lookup() {
+        let mut doc = DidDocument::new("123456789").unwrap();
+        let method = VerificationMethod {
+            id: format!("{}#keys-1", doc.id),
+            type_: "Ed25519VerificationKey2020".to_string(),
+            controller: doc.id.clone(),
+            public_key: PublicKeyMaterial::Ed25519VerificationKey2020(
+                "BASE58_PUBLIC_KEY".to_string()
+            ),
+        };
+
+        doc.add_verification_method(method.clone());
+        doc.add_authentication(VerificationMethodReference::Embedded(method.clone()));
+
+        // Test full ID lookup
+        let found = doc.get_verification_method(&method.id);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, method.id);
+
+        // Test fragment lookup
+        let found = doc.get_verification_method("#keys-1");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, method.id);
+
+        // Test authentication method lookup
+        let found = doc.get_authentication_method("#keys-1");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, method.id);
     }
 }

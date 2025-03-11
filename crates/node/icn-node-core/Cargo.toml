@@ -12,9 +12,15 @@ description = "Core node functionality for ICN"
 icn-common = { path = "../../core/icn-common" }
 icn-crypto = { path = "../../core/icn-crypto" }
 icn-did = { path = "../../identity/icn-did" }
+icn-storage-system = { path = "../../storage/icn-storage-system" }
 
 # External dependencies
 serde.workspace = true 
 tokio.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+
+[dev-dependencies]
+tempfile = "3.8"
