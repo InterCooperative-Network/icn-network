@@ -2,17 +2,13 @@
 name = "icn-common"
 version = "0.1.0"
 edition = "2021"
-description = "Common utilities and types for ICN"
+description = "Common utilities and types for the Intercooperative Network"
 
 [dependencies]
-thiserror = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-async-trait = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
-rand = "0.8"
-regex = "1.9"
-toml = "0.8"
+serde = { version = "1.0.197", features = ["derive"] }
+thiserror = "1.0.61"
+uuid = { version = "1.7.0", features = ["v4", "serde"] }
+log = "0.4.21"
 
 [dev-dependencies]
 tempfile = "3.8"

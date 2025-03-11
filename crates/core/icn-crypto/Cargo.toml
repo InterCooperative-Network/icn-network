@@ -1,29 +1,25 @@
 [package]
 name = "icn-crypto"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-description = "Cryptographic primitives for ICN"
+version = "0.1.0"
+edition = "2021"
+description = "Cryptographic utilities for ICN"
 
 [dependencies]
-# Internal dependencies
+serde = { version = "1.0.197", features = ["derive"] }
+thiserror = "1.0.61"
+rand = "0.7.3"
+sha2 = "0.9.9"
+bs58 = "0.4.0"
+hex = "0.4.3"
+ed25519-dalek = "1.0.1"
+k256 = "0.11.6"
+chacha20poly1305 = "0.9.1"
+base64 = "0.13.1"
+zeroize = { version = "1.7.0", features = ["derive"] }
 icn-common = { path = "../icn-common" }
 
-# External dependencies
-rand.workspace = true
-sha2.workspace = true
-ed25519-dalek.workspace = true
-k256.workspace = true
-serde.workspace = true
-thiserror.workspace = true
-bs58 = "0.5"
-base64 = "0.13"
-
 [features]
-default = ["std", "ed25519"]
-std = ["serde/std", "rand/std"]
-alloc = ["serde/alloc"]
-ed25519 = ["ed25519-dalek"]
-secp256k1 = ["k256"]
+default = []
+ed25519 = []
+secp256k1 = []
+hardware-acceleration = []

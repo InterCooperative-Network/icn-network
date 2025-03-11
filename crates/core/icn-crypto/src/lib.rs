@@ -1,40 +1,29 @@
-//! Cryptographic primitives for the Intercooperative Network
-//!
-//! This crate provides cryptographic functionality including:
-//! - Key generation and management
-//! - Digital signatures
-//! - Hashing utilities
-//! - Encryption/decryption
+//! Cryptographic primitives for ICN
+//! 
+//! This crate provides cryptographic functions and types used throughout the ICN project.
 
-mod hash;
-mod keys;
-mod signature;
-#[cfg(feature = "ed25519")]
-mod ed25519;
-#[cfg(feature = "secp256k1")]
-mod secp256k1;
+pub mod ed25519;
+pub mod error;
+pub mod key;
+pub mod signature;
 
-// Re-exports
-pub use hash::{Hash, HashAlgorithm, Hasher};
-pub use keys::{KeyPair, PublicKey, PrivateKey};
-pub use signature::{Signature, Signer, Verifier};
+pub use key::{KeyPair, PublicKey, PrivateKey, KeyType};
+pub use signature::Signature;
+use error::Result;
 
-/// Create a new key pair using the default algorithm
-pub fn generate_keypair() -> icn_common::Result<Box<dyn KeyPair>> {
-    #[cfg(feature = "ed25519")]
-    {
-        Ok(Box::new(ed25519::Ed25519KeyPair::generate()?))
-    }
-    #[cfg(all(feature = "secp256k1", not(feature = "ed25519")))]
-    {
-        Ok(Box::new(secp256k1::Secp256k1KeyPair::generate()?))
-    }
-    #[cfg(not(any(feature = "ed25519", feature = "secp256k1")))]
-    {
-        Err(icn_common::Error::configuration(
-            "No signature algorithm enabled. Enable either 'ed25519' or 'secp256k1' feature."
-        ))
-    }
+/// Sign a message using a key pair
+pub fn sign(key_pair: &KeyPair, message: &[u8]) -> Result<Signature> {
+    key_pair.sign(message)
+}
+
+/// Verify a signature against a message using a public key
+pub fn verify(public_key: &PublicKey, message: &[u8], signature: &Signature) -> Result<bool> {
+    public_key.verify(message, signature)
+}
+
+/// Generate a new key pair of the specified type
+pub fn generate_keypair(key_type: KeyType) -> Result<KeyPair> {
+    KeyPair::generate(key_type)
 }
 
 #[cfg(test)]
@@ -42,14 +31,19 @@ mod tests {
     use super::*;
     
     #[test]
-    fn test_generate_and_verify() {
-        let keypair = generate_keypair().expect("Failed to generate keypair");
+    fn test_sign_verify_roundtrip() {
+        let keypair = generate_keypair(KeyType::Ed25519).unwrap();
         let message = b"test message";
         
-        let signature = keypair.sign(message).expect("Failed to sign message");
-        let verified = keypair.public_key().verify(message, &signature)
-            .expect("Failed to verify signature");
+        let signature = sign(&keypair, message).unwrap();
+        let result = verify(&keypair.public_key(), message, &signature).unwrap();
         
-        assert!(verified);
+        assert!(result);
+        
+        // Test with wrong message
+        let wrong_message = b"wrong message";
+        let result = verify(&keypair.public_key(), wrong_message, &signature).unwrap();
+        
+        assert!(!result);
     }
 }

@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  # Primary node for coop-1
+  coop1-primary:
+    build: .
+    container_name: icn-coop1-primary
+    environment:
+      - ICN_NODE_ID=coop1-primary
+      - ICN_COOP_ID=coop-1
+      - ICN_NODE_TYPE=primary
+      - ICN_LISTEN_ADDR=0.0.0.0:9000
+      - ICN_LOG_LEVEL=info
+    ports:
+      - "9000:9000"
+    volumes:
+      - coop1-primary-data:/var/lib/icn
+      - coop1-primary-certs:/etc/icn/certs
+      - coop1-primary-logs:/var/log/icn
+    networks:
+      - icn-net
+
+  # Secondary node for coop-1
+  coop1-secondary:
+    build: .
+    container_name: icn-coop1-secondary
+    environment:
+      - ICN_NODE_ID=coop1-secondary
+      - ICN_COOP_ID=coop-1
+      - ICN_NODE_TYPE=secondary
+      - ICN_LISTEN_ADDR=0.0.0.0:9001
+      - ICN_PEERS=icn-coop1-primary:9000
+      - ICN_LOG_LEVEL=info
+    ports:
+      - "9001:9001"
+    volumes:
+      - coop1-secondary-data:/var/lib/icn
+      - coop1-secondary-certs:/etc/icn/certs
+      - coop1-secondary-logs:/var/log/icn
+    networks:
+      - icn-net
+    depends_on:
+      - coop1-primary
+
+  # Primary node for coop-2
+  coop2-primary:
+    build: .
+    container_name: icn-coop2-primary
+    environment:
+      - ICN_NODE_ID=coop2-primary
+      - ICN_COOP_ID=coop-2
+      - ICN_NODE_TYPE=primary
+      - ICN_LISTEN_ADDR=0.0.0.0:9002
+      - ICN_PEERS=icn-coop1-primary:9000
+      - ICN_LOG_LEVEL=info
+    ports:
+      - "9002:9002"
+    volumes:
+      - coop2-primary-data:/var/lib/icn
+      - coop2-primary-certs:/etc/icn/certs
+      - coop2-primary-logs:/var/log/icn
+    networks:
+      - icn-net
+    depends_on:
+      - coop1-primary
+
+  # Secondary node for coop-2
+  coop2-secondary:
+    build: .
+    container_name: icn-coop2-secondary
+    environment:
+      - ICN_NODE_ID=coop2-secondary
+      - ICN_COOP_ID=coop-2
+      - ICN_NODE_TYPE=secondary
+      - ICN_LISTEN_ADDR=0.0.0.0:9003
+      - ICN_PEERS=icn-coop2-primary:9002
+      - ICN_LOG_LEVEL=info
+    ports:
+      - "9003:9003"
+    volumes:
+      - coop2-secondary-data:/var/lib/icn
+      - coop2-secondary-certs:/etc/icn/certs
+      - coop2-secondary-logs:/var/log/icn
+    networks:
+      - icn-net
+    depends_on:
+      - coop2-primary
+
+volumes:
+  coop1-primary-data:
+  coop1-primary-certs:
+  coop1-primary-logs:
+  coop1-secondary-data:
+  coop1-secondary-certs:
+  coop1-secondary-logs:
+  coop2-primary-data:
+  coop2-primary-certs:
+  coop2-primary-logs:
+  coop2-secondary-data:
+  coop2-secondary-certs:
+  coop2-secondary-logs:
+
+networks:
+  icn-net:
+    driver: bridge 

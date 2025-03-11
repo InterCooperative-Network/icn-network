@@ -11,6 +11,12 @@ use icn_common::{ComponentHealth, ComponentMetric, ComponentType, ICNComponent};
 use std::any::Any;
 use std::collections::HashMap;
 use systems::capabilities::{CapabilityManager, HardwareProfile};
+use crate::{
+    error::Result as CrateResult,
+    systems::{did_service::DidService, capabilities::CapabilityService},
+    governance::GovernanceEngine,
+    economics::EconomicEngine,
+};
 
 mod config;
 mod state;
@@ -18,7 +24,7 @@ mod systems;
 
 pub use config::{NodeConfig, NetworkMode};
 pub use state::{NodeState, StateManager};
-pub use systems::{DidService, DidServiceConfig};
+pub use systems::{DidServiceConfig};
 
 /// The Node trait defines the core functionality of an ICN node
 #[async_trait]
@@ -51,13 +57,22 @@ pub struct IcnNode {
     state_manager: Arc<StateManager>,
     
     /// DID service
-    did_service: Option<Arc<DidService>>,
+    did_service: DidService,
     
     /// Node metrics
     metrics: HashMap<String, f64>,
 
     /// Capability manager
     capabilities: Option<CapabilityManager>,
+
+    /// Capability service
+    capability_service: CapabilityService,
+
+    /// Governance engine
+    governance_engine: GovernanceEngine,
+
+    /// Economic engine
+    economic_engine: EconomicEngine,
 }
 
 impl IcnNode {
@@ -73,7 +88,7 @@ impl IcnNode {
     }
     
     /// Get the DID service if enabled
-    pub fn did_service(&self) -> Option<Arc<DidService>> {
+    pub fn did_service(&self) -> DidService {
         self.did_service.clone()
     }
 
@@ -92,20 +107,8 @@ impl Node for IcnNode {
         // Create state manager
         let state_manager = Arc::new(StateManager::new());
         
-        // Initialize DID service if enabled
-        let did_service = if config.enable_identity {
-            let did_config = DidServiceConfig {
-                storage_options: icn_storage_system::StorageOptions {
-                    base_dir: Path::new(&config.data_dir).join("did").to_path_buf(),
-                    sync_writes: true,
-                    compress: false,
-                },
-            };
-            
-            Some(Arc::new(DidService::new(did_config, state_manager.clone()).await?))
-        } else {
-            None
-        };
+        // Initialize DID service
+        let did_service = DidService::new(config.clone())?;
 
         // Initialize capabilities manager
         let mut capabilities = None;
@@ -116,12 +119,22 @@ impl Node for IcnNode {
             capabilities = Some(manager);
         }
         
+        // Initialize capability service
+        let capability_service = CapabilityService::new(config.clone())?;
+
+        // Initialize governance and economic systems
+        let governance_engine = GovernanceEngine::new();
+        let economic_engine = EconomicEngine::new();
+        
         Ok(Self {
             config,
             state_manager,
             did_service,
             metrics: HashMap::new(),
             capabilities,
+            capability_service,
+            governance_engine,
+            economic_engine,
         })
     }
     
@@ -132,15 +145,17 @@ impl Node for IcnNode {
         
         self.state_manager.transition(NodeState::Starting)?;
         
-        // Start DID service if enabled
-        if let Some(did_service) = &self.did_service {
-            did_service.start().await?;
-        }
+        // Start DID service
+        self.did_service.start().await?;
 
         // Start capabilities if enabled
         if let Some(capabilities) = &mut self.capabilities {
             capabilities.start_all().await?;
         }
+
+        // Initialize governance and economic systems
+        self.initialize_governance().await?;
+        self.initialize_economics().await?;
         
         self.state_manager.transition(NodeState::Running)?;
         Ok(())
@@ -159,9 +174,7 @@ impl Node for IcnNode {
         }
         
         // Stop DID service
-        if let Some(did_service) = &self.did_service {
-            did_service.stop().await?;
-        }
+        self.did_service.stop().await?;
         
         self.state_manager.transition(NodeState::Stopped)?;
         Ok(())
@@ -177,6 +190,20 @@ impl Node for IcnNode {
     
     fn config(&self) -> &NodeConfig {
         &self.config
+    }
+
+    async fn initialize_governance(&mut self) -> Result<()> {
+        // TODO: Load governance policies from storage
+        // TODO: Initialize voting mechanisms
+        // TODO: Set up policy execution engine
+        Ok(())
+    }
+
+    async fn initialize_economics(&mut self) -> Result<()> {
+        // TODO: Load economic assets from storage
+        // TODO: Initialize treasury
+        // TODO: Set up economic metrics tracking
+        Ok(())
     }
 }
 

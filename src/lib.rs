@@ -13,20 +13,23 @@ pub mod version {
 pub mod core {
     pub use icn_common as common;
     pub use icn_crypto as crypto;
-    pub use icn_data_structures as data;
-    pub use icn_serialization as serialization;
+    // These will be implemented later
+    // pub use icn_data_structures as data;
+    // pub use icn_serialization as serialization;
 }
 
 /// Re-export system components
 pub mod systems {
-    pub use icn_identity_system as identity;
-    pub use icn_governance_system as governance;
-    pub use icn_economic_system as economic;
+    // These will be implemented later
+    // pub use icn_identity_system as identity;
+    // pub use icn_governance_system as governance;
+    // pub use icn_economic_system as economic;
 }
 
 /// Node implementation components
 pub mod node {
-    pub use icn_node_core as core;
+    // This will be implemented later
+    // pub use icn_node_core as core;
 }
 
 #[cfg(test)]

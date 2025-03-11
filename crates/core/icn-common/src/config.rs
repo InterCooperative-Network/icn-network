@@ -1,8 +1,12 @@
 //! Common configuration utilities
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::Path;
-use crate::error::{Error, Result};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+    net::SocketAddr,
+};
+use crate::{error::Result, types::NodeType};
 
 /// Base trait for all configuration types
 pub trait Configuration: Serialize + for<'de> Deserialize<'de> + Default {
@@ -113,6 +117,120 @@ pub fn ensure_directory(path: impl AsRef<Path>) -> Result<()> {
     }
     
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeConfig {
+    // Node identity
+    pub node_id: String,
+    pub coop_id: String,
+    pub node_type: NodeType,
+
+    // Network configuration
+    pub listen_addr: SocketAddr,
+    pub peers: Vec<SocketAddr>,
+    pub discovery_interval: Option<Duration>,
+    pub health_check_interval: Option<Duration>,
+
+    // Storage configuration
+    pub data_dir: PathBuf,
+    pub cert_dir: PathBuf,
+
+    // Logging configuration
+    pub log_dir: PathBuf,
+    pub log_level: String,
+}
+
+impl Default for NodeConfig {
+    fn default() -> Self {
+        Self {
+            node_id: "node-0".to_string(),
+            coop_id: "coop-0".to_string(),
+            node_type: NodeType::Primary,
+            listen_addr: "127.0.0.1:9000".parse().unwrap(),
+            peers: Vec::new(),
+            discovery_interval: Some(Duration::from_secs(30)),
+            health_check_interval: Some(Duration::from_secs(10)),
+            data_dir: PathBuf::from("/var/lib/icn"),
+            cert_dir: PathBuf::from("/etc/icn/certs"),
+            log_dir: PathBuf::from("/var/log/icn"),
+            log_level: "info".to_string(),
+        }
+    }
+}
+
+impl NodeConfig {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let content = fs::read_to_string(path)?;
+        let config: NodeConfig = serde_yaml::from_str(&content)?;
+        Ok(config)
+    }
+
+    pub fn from_env() -> Result<Self> {
+        let mut config = Self::default();
+
+        if let Ok(node_id) = std::env::var("ICN_NODE_ID") {
+            config.node_id = node_id;
+        }
+
+        if let Ok(coop_id) = std::env::var("ICN_COOP_ID") {
+            config.coop_id = coop_id;
+        }
+
+        if let Ok(node_type) = std::env::var("ICN_NODE_TYPE") {
+            config.node_type = match node_type.to_lowercase().as_str() {
+                "primary" => NodeType::Primary,
+                "secondary" => NodeType::Secondary,
+                "edge" => NodeType::Edge,
+                _ => return Err("Invalid node type".into()),
+            };
+        }
+
+        if let Ok(addr) = std::env::var("ICN_LISTEN_ADDR") {
+            config.listen_addr = addr.parse()?;
+        }
+
+        if let Ok(peers) = std::env::var("ICN_PEERS") {
+            config.peers = peers
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.parse())
+                .collect::<std::result::Result<_, _>>()?;
+        }
+
+        if let Ok(interval) = std::env::var("ICN_DISCOVERY_INTERVAL") {
+            config.discovery_interval = Some(Duration::from_secs(interval.parse()?));
+        }
+
+        if let Ok(interval) = std::env::var("ICN_HEALTH_CHECK_INTERVAL") {
+            config.health_check_interval = Some(Duration::from_secs(interval.parse()?));
+        }
+
+        if let Ok(dir) = std::env::var("ICN_DATA_DIR") {
+            config.data_dir = PathBuf::from(dir);
+        }
+
+        if let Ok(dir) = std::env::var("ICN_CERT_DIR") {
+            config.cert_dir = PathBuf::from(dir);
+        }
+
+        if let Ok(dir) = std::env::var("ICN_LOG_DIR") {
+            config.log_dir = PathBuf::from(dir);
+        }
+
+        if let Ok(level) = std::env::var("ICN_LOG_LEVEL") {
+            config.log_level = level;
+        }
+
+        Ok(config)
+    }
+
+    pub fn ensure_directories(&self) -> Result<()> {
+        fs::create_dir_all(&self.data_dir)?;
+        fs::create_dir_all(&self.cert_dir)?;
+        fs::create_dir_all(&self.log_dir)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

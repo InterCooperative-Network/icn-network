@@ -4,11 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+icn-common = { path = "crates/core/icn-common" }
+icn-crypto = { path = "crates/core/icn-crypto" }
 
 [workspace]
 members = [
     "crates/core/icn-common",
-    "crates/networking/icn-networking"
+    "crates/core/icn-crypto"
 ]
 resolver = "2"
 
@@ -18,30 +20,3 @@ authors = ["ICN Contributors"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/intercoin/icn"
-
-[workspace.dependencies]
-# Core dependencies
-serde = { version = "1.0", features = ["derive"] }
-thiserror = "1.0"
-tracing = "0.1"
-tokio = { version = "1", features = ["full"] }
-async-trait = "0.1"
-tokio-rustls = "0.25"
-rustls = { version = "0.22", features = ["tls12"] }
-webpki-roots = "0.26"
-futures = "0.3"
-serde_json = "1.0"
-rcgen = "0.12"
-
-# Crypto
-rand = "0.8"
-sha2 = "0.10"
-ed25519-dalek = "1.0"
-k256 = "0.11"
-
-# Data structures
-sqlx = { version = "0.6", features = ["runtime-tokio-native-tls", "sqlite"] }
-
-# Testing
-proptest = "1.0"
-tokio-test = "0.4"
