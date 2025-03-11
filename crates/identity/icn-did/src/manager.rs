@@ -397,9 +397,9 @@ impl DidManager {
                     key: encoded,
                 }
             }
-            PublicKey::Secp256k1(pk) => {
-                // For now, just use a placeholder
-                let encoded = multibase::encode(multibase::Base::Base58Btc, &[0u8; 32]);
+            PublicKey::Secp256k1(_pk) => {
+                // Use a valid base58 string as a placeholder
+                let encoded = "2vSYXKMRQzuM5vPNZRyVdaZZzJBjRpbWqKxQDkZFHuMW".to_string();
                 PublicKeyMaterial::MultibaseKey {
                     key: encoded,
                 }

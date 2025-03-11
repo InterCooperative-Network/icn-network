@@ -203,11 +203,15 @@ impl IcnDidResolver {
             match method.type_.as_str() {
                 "Ed25519VerificationKey2020" => {
                     // Ensure we can decode the key
-                    if let Err(e) = bs58::decode(method.public_key.to_string())
-                        .into_vec()
-                    {
+                    if let crate::PublicKeyMaterial::Ed25519VerificationKey2020 { key } = &method.public_key {
+                        if let Err(e) = bs58::decode(key).into_vec() {
+                            return Err(Error::validation(
+                                format!("Invalid Ed25519 public key: {}", e)
+                            ));
+                        }
+                    } else {
                         return Err(Error::validation(
-                            format!("Invalid Ed25519 public key: {}", e)
+                            "Public key material type does not match verification method type"
                         ));
                     }
                 }
@@ -376,7 +380,7 @@ mod tests {
             type_: "Ed25519VerificationKey2020".to_string(),
             controller: did.to_string(),
             public_key: crate::PublicKeyMaterial::Ed25519VerificationKey2020 {
-                key: "11111111111111111111111111111111".to_string() // Valid base58 string
+                key: "2vSYXKMRQzuM5vPNZRyVdaZZzJBjRpbWqKxQDkZFHuMW".to_string() // Valid base58 string
             },
         });
         

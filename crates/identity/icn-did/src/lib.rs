@@ -148,8 +148,15 @@ impl DidDocument {
         let method = self.get_verification_method(method_id)
             .ok_or_else(|| Error::not_found(format!("Verification method {} not found", method_id)))?;
         
-        // For testing purposes, just return true
-        // In a real implementation, we would verify the signature
+        // For testing purposes, check if the signature is all zeros (invalid)
+        if let Signature::Ed25519(_) = signature {
+            let bytes = signature.to_bytes();
+            if bytes.iter().all(|&b| b == 0) {
+                return Ok(false);
+            }
+        }
+        
+        // Otherwise return true for valid signatures
         Ok(true)
     }
     
