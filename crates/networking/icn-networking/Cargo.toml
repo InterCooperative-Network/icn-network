@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = []
-testing = []  # Feature flag for test utilities
+testing = ["rcgen"]  # Feature flag for test utilities and examples
 
 [dependencies]
 # Core dependencies
@@ -30,8 +30,12 @@ tracing.workspace = true
 icn-common = { path = "../../core/icn-common" }
 
 # Additional dependencies
-rcgen = "0.12"
+rcgen = { version = "0.12", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.36", features = ["full", "test-util"] }
 tokio-test.workspace = true
+
+[[example]]
+name = "testnet"
+required-features = ["testing"]

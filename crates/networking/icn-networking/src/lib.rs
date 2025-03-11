@@ -1,5 +1,6 @@
 pub mod error;
 pub mod tls;
+pub mod node;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod test_utils;
