@@ -8,7 +8,8 @@ pub mod manager;
 pub mod verification;
 
 use icn_common::{Error, Result};
-use icn_crypto::{PublicKey, Signature, Verifier, KeyType};
+use icn_crypto::{PublicKey, Signature, KeyType};
+use icn_crypto::signature::Verifier;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

@@ -173,19 +173,39 @@ impl Storage for FileStorage {
     
     async fn list_keys(&self, prefix: &str) -> Result<Vec<String>> {
         let mut keys = Vec::new();
-        let base_path = self.get_path(prefix);
         
-        // List files in directory
-        let mut entries = fs::read_dir(&self.options.base_dir).await
-            .map_err(|e| Error::internal(format!("Failed to read directory: {}", e)))?;
+        // Check cache first
+        for key in self.cache.read().await.keys() {
+            if key.starts_with(prefix) {
+                keys.push(key.clone());
+            }
+        }
+        
+        // Check file system
+        let prefix_path = self.get_path(prefix);
+        let prefix_dir = if prefix.ends_with('/') {
+            prefix_path
+        } else {
+            prefix_path.parent().unwrap_or(&self.options.base_dir).to_path_buf()
+        };
+        
+        if prefix_dir.exists() {
+            let mut stack = vec![prefix_dir.clone()];
             
-        while let Some(entry) = entries.next_entry().await
-            .map_err(|e| Error::internal(format!("Failed to read directory entry: {}", e)))? {
-            
-            if let Ok(path) = entry.path().strip_prefix(&self.options.base_dir) {
-                if let Some(key) = path.to_str() {
-                    if key.starts_with(prefix) {
-                        keys.push(key.to_string());
+            while let Some(dir) = stack.pop() {
+                if let Ok(mut entries) = fs::read_dir(&dir).await {
+                    while let Ok(Some(entry)) = entries.next_entry().await {
+                        let path = entry.path();
+                        
+                        if path.is_dir() {
+                            stack.push(path);
+                        } else if let Ok(rel_path) = path.strip_prefix(&self.options.base_dir) {
+                            if let Some(key) = rel_path.to_str() {
+                                if key.starts_with(prefix) && !keys.contains(&key.to_string()) {
+                                    keys.push(key.to_string());
+                                }
+                            }
+                        }
                     }
                 }
             }

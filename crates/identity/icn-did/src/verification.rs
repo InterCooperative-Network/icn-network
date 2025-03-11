@@ -7,7 +7,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use icn_common::{Error, Result};
-use icn_crypto::{KeyType, Signature, Verifier};
+use icn_crypto::{KeyType, Signature};
+use icn_crypto::signature::Verifier;
 
 /// Core trait for DID verification
 #[async_trait]

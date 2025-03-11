@@ -583,11 +583,13 @@ name = "icn-did"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bs58",
  "chrono",
  "hex",
  "icn-common",
  "icn-crypto",
  "icn-storage-system",
+ "multibase",
  "rand 0.8.5",
  "serde",
  "serde_json",
