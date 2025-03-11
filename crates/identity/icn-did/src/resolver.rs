@@ -94,14 +94,19 @@ impl IcnDidResolver {
     
     /// Store a DID document
     pub async fn store(&self, did: &str, document: DidDocument) -> Result<()> {
+        println!("Storing DID document for: {}", did);
+        
         // Validate the document
         self.validate_document(&document)?;
         
         // Ensure we have a consistent storage key format
         let storage_key = normalize_did(did);
+        println!("Storage key: {}", storage_key);
         
         // Check if document already exists
         let existing = self.storage.get::<StoredDidDocument>(&storage_key).await?;
+        println!("Document exists: {}", existing.is_some());
+        
         let metadata = if let Some(existing) = existing {
             // Update metadata for existing document
             DocumentMetadata {
@@ -131,7 +136,11 @@ impl IcnDidResolver {
             metadata,
         };
         
-        self.storage.put(&storage_key, &stored).await
+        println!("Putting document in storage");
+        self.storage.put(&storage_key, &stored).await?;
+        println!("Document stored successfully");
+        
+        Ok(())
     }
     
     /// Update a DID document
@@ -264,8 +273,11 @@ impl IcnDidResolver {
 #[async_trait]
 impl DidResolver for IcnDidResolver {
     async fn resolve(&self, did: &str) -> Result<ResolutionResult> {
+        println!("Resolver: Resolving DID: {}", did);
+        
         // Validate the DID
-        if !did.starts_with(&format!("did:{}:", DID_METHOD)) {
+        if !did.starts_with("did:icn:") {
+            println!("Resolver: Invalid DID format");
             return Ok(ResolutionResult {
                 did_document: None,
                 resolution_metadata: ResolutionMetadata {
@@ -278,9 +290,13 @@ impl DidResolver for IcnDidResolver {
         
         // Ensure we have a consistent storage key format
         let storage_key = normalize_did(did);
+        println!("Resolver: Storage key: {}", storage_key);
         
         // Look up the document
-        match self.storage.get::<StoredDidDocument>(&storage_key).await? {
+        let stored_doc = self.storage.get::<StoredDidDocument>(&storage_key).await?;
+        println!("Resolver: Document found: {}", stored_doc.is_some());
+        
+        match stored_doc {
             Some(stored) => Ok(ResolutionResult {
                 did_document: Some(stored.document),
                 resolution_metadata: ResolutionMetadata {
@@ -313,13 +329,18 @@ pub async fn create_resolver(storage_options: StorageOptions) -> Result<Arc<IcnD
 
 /// Helper function to normalize a DID for storage
 fn normalize_did(did: &str) -> String {
+    println!("Normalizing DID: {}", did);
+    
     // If it's already a fully qualified DID, return it as is
     if did.starts_with(&format!("did:{}:", DID_METHOD)) {
+        println!("DID is already fully qualified");
         did.to_string()
     } else {
         // If it's just an identifier, assume it's for the default method
         // This is mainly for backward compatibility with tests
-        format!("did:{}:local:{}", DID_METHOD, did)
+        let normalized = format!("did:{}:local:{}", DID_METHOD, did);
+        println!("Normalized DID: {}", normalized);
+        normalized
     }
 }
 
