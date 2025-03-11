@@ -1,0 +1,18 @@
+graph TD
+    DID[DID Manager] --> CRED[Credential Manager]
+    CRED --> ZKP[Zero-Knowledge Proof Engine]
+    CRED --> STORE[Credential Storage]
+    ZKP --> CIRCUIT[Circuit Generator]
+    ZKP --> PROVER[ZKP Prover]
+    ZKP --> VERIFIER[ZKP Verifier]
+    DID --> SIG[Signature Manager]
+    SIG --> RING[Ring Signature Manager]
+    RING --> MPC[Secure MPC Engine]
+    
+    classDef core fill:#bbf,stroke:#333,stroke-width:2px
+    classDef privacy fill:#fbf,stroke:#333,stroke-width:2px
+    classDef storage fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class DID,CRED,STORE core
+    class ZKP,RING,MPC privacy
+    class CIRCUIT,PROVER,VERIFIER storage

@@ -1,0 +1,47 @@
+graph TD
+    subgraph "Overlay Network"
+        DHT[Distributed Hash Table]
+        ADDR[Address Allocator]
+        ROUTE[Route Manager]
+        RENDEZVOUS[Rendezvous System]
+        NAT[NAT Traversal]
+        ONION[Onion Routing]
+    end
+    
+    DHT <--> ADDR
+    DHT <--> ROUTE
+    ROUTE <--> RENDEZVOUS
+    RENDEZVOUS <--> NAT
+    ROUTE <--> ONION
+    
+    subgraph "Node Types"
+        SUPER[Supernode]
+        RELAY[Relay Node]
+        STANDARD[Standard Node]
+        CONSTRAINED[Constrained Node]
+    end
+    
+    SUPER <--> DHT
+    RELAY <--> RENDEZVOUS
+    STANDARD <--> ROUTE
+    CONSTRAINED <--> NAT
+    
+    subgraph "Features"
+        CENSOR[Censorship Resistance]
+        P2P[P2P Direct Connection]
+        ANON[Network Anonymity]
+        SELF[Self-Organizing Topology]
+    end
+    
+    ONION --> CENSOR
+    ONION --> ANON
+    NAT --> P2P
+    DHT --> SELF
+    
+    classDef overlay fill:#bbf,stroke:#333,stroke-width:2px
+    classDef nodes fill:#fbf,stroke:#333,stroke-width:1px
+    classDef features fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class DHT,ADDR,ROUTE,RENDEZVOUS,NAT,ONION overlay
+    class SUPER,RELAY,STANDARD,CONSTRAINED nodes
+    class CENSOR,P2P,ANON,SELF features

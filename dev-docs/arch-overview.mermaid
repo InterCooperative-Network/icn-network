@@ -1,0 +1,45 @@
+flowchart TB
+    subgraph "Application Layer"
+        UI[User Interfaces]
+        API[Application APIs]
+        SDK[Developer Tools]
+    end
+    
+    subgraph "Service Layer"
+        GOVERNANCE[Governance System]
+        ECONOMIC[Economic System]
+        RESOURCE[Resource Coordination]
+        IDENTITY[Identity System]
+    end
+    
+    subgraph "Core Layer"
+        CONSENSUS[Consensus Engine]
+        STATE[State Management]
+        STORAGE[Storage System]
+        NETWORK[Network Layer]
+    end
+    
+    UI --> API
+    API --> SDK
+    
+    API --> GOVERNANCE
+    API --> ECONOMIC
+    API --> RESOURCE
+    API --> IDENTITY
+    
+    GOVERNANCE --> CONSENSUS
+    ECONOMIC --> CONSENSUS
+    RESOURCE --> CONSENSUS
+    IDENTITY --> CONSENSUS
+    
+    CONSENSUS --> STATE
+    STATE --> STORAGE
+    NETWORK --- CONSENSUS
+    
+    classDef app fill:#f9f,stroke:#333,stroke-width:2px
+    classDef service fill:#bbf,stroke:#333,stroke-width:2px
+    classDef core fill:#bfb,stroke:#333,stroke-width:2px
+    
+    class UI,API,SDK app
+    class GOVERNANCE,ECONOMIC,RESOURCE,IDENTITY service
+    class CONSENSUS,STATE,STORAGE,NETWORK core

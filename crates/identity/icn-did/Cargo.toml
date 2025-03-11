@@ -1,0 +1,17 @@
+[package]
+name = "icn-did"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Decentralized Identifier (DID) implementation for ICN"
+
+[dependencies]
+# Internal dependencies
+icn-common = { path = "../../core/icn-common" }
+icn-crypto = { path = "../../core/icn-crypto" }
+
+# External dependencies
+serde.workspace = true
+thiserror.workspace = true

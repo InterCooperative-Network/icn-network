@@ -1,0 +1,48 @@
+graph TD
+    subgraph "Mesh Network"
+        PROTO[Mesh Protocol]
+        SETUP[Network Setup]
+        ROUTE[Mesh Routing]
+        SYNC[State Synchronization]
+        STORE[Local Storage]
+        OFFLINE[Offline Operation]
+    end
+    
+    PROTO --> SETUP
+    SETUP --> ROUTE
+    ROUTE --> SYNC
+    SYNC --> STORE
+    STORE --> OFFLINE
+    OFFLINE --> PROTO
+    
+    subgraph "Connectivity Types"
+        WIFI[Wi-Fi Direct]
+        BT[Bluetooth]
+        LR[LoRa]
+        WIRED[Wired Connections]
+    end
+    
+    SETUP --> WIFI
+    SETUP --> BT
+    SETUP --> LR
+    SETUP --> WIRED
+    
+    subgraph "Deployment Scenarios"
+        RURAL[Rural Communities]
+        URBAN[Urban Coops]
+        DISASTER[Disaster Response]
+        EVENT[Temporary Events]
+    end
+    
+    MESH --> RURAL
+    MESH --> URBAN
+    MESH --> DISASTER
+    MESH --> EVENT
+    
+    classDef mesh fill:#bbf,stroke:#333,stroke-width:2px
+    classDef conn fill:#fbf,stroke:#333,stroke-width:1px
+    classDef deploy fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class PROTO,SETUP,ROUTE,SYNC,STORE,OFFLINE mesh
+    class WIFI,BT,LR,WIRED conn
+    class RURAL,URBAN,DISASTER,EVENT deploy

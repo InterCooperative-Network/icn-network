@@ -1,0 +1,47 @@
+graph TD
+    subgraph "Network Layer"
+        TRANSPORT[Transport Security]
+        OVERLAY[Overlay Network]
+        PEER[Peer Management]
+        ROUTE[Routing Engine]
+        DISCOVERY[Discovery Service]
+        MESH[Mesh Networking]
+    end
+    
+    TRANSPORT --- OVERLAY
+    OVERLAY --- PEER
+    PEER --- ROUTE
+    ROUTE --- DISCOVERY
+    ROUTE --- MESH
+    
+    subgraph "Security Features"
+        TLS[TLS 1.3]
+        WIREGUARD[WireGuard]
+        PQC[Post-Quantum Crypto]
+        ONION[Onion Routing]
+    end
+    
+    TRANSPORT -->|Uses| TLS
+    TRANSPORT -->|Uses| WIREGUARD
+    TRANSPORT -->|Uses| PQC
+    OVERLAY -->|Uses| ONION
+    
+    subgraph "Network Topologies"
+        FEDERATION[Federation Networks]
+        P2P[Pure P2P Networks]
+        HYBRID[Hybrid Networks]
+        OFFLINE[Offline-First Networks]
+    end
+    
+    ROUTE -->|Supports| FEDERATION
+    ROUTE -->|Supports| P2P
+    ROUTE -->|Supports| HYBRID
+    MESH -->|Supports| OFFLINE
+    
+    classDef core fill:#bbf,stroke:#333,stroke-width:2px
+    classDef security fill:#fbf,stroke:#333,stroke-width:1px
+    classDef topologies fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class TRANSPORT,OVERLAY,PEER,ROUTE,DISCOVERY,MESH core
+    class TLS,WIREGUARD,PQC,ONION security
+    class FEDERATION,P2P,HYBRID,OFFLINE topologies

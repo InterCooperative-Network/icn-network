@@ -1,0 +1,40 @@
+graph TD
+    subgraph "ICN Node"
+        subgraph "Core Components"
+            IDENTITY[Identity Component] 
+            NETWORKING[Networking Component]
+            CONSENSUS[Consensus Component]
+        end
+        
+        subgraph "Optional Capabilities"
+            GOV[Governance Capability]
+            STORAGE[Storage Capability]
+            COMPUTE[Compute Capability]
+            GATEWAY[Gateway Capability]
+        end
+    end
+    
+    IDENTITY --- NETWORKING
+    NETWORKING --- CONSENSUS
+    CONSENSUS --- IDENTITY
+    
+    IDENTITY --> GOV
+    IDENTITY --> STORAGE
+    IDENTITY --> COMPUTE
+    IDENTITY --> GATEWAY
+    
+    NETWORKING --> GOV
+    NETWORKING --> STORAGE
+    NETWORKING --> COMPUTE
+    NETWORKING --> GATEWAY
+    
+    CONSENSUS --> GOV
+    CONSENSUS --> STORAGE
+    CONSENSUS --> COMPUTE
+    CONSENSUS --> GATEWAY
+    
+    classDef core fill:#bbf,stroke:#333,stroke-width:2px
+    classDef optional fill:#fbb,stroke:#333,stroke-width:1px
+    
+    class IDENTITY,NETWORKING,CONSENSUS core
+    class GOV,STORAGE,COMPUTE,GATEWAY optional

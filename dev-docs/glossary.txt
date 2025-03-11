@@ -1,0 +1,221 @@
+# ICN Glossary of Terms
+
+## A
+
+**Adaptive Governance**  
+A governance system that evolves based on outcomes and analysis, using machine learning and simulation to improve policies over time.
+
+**Address Space**  
+The range of possible addresses in the overlay network, typically following an IPv6-like structure.
+
+**Allocation**  
+The assignment of a resource to a specific user or cooperative for a defined period.
+
+**Amount**  
+A value representing a quantity of mutual credit, used in economic transactions.
+
+## B
+
+**Blinding Factor**  
+A random value used in Pedersen commitments to hide transaction amounts while maintaining verifiability.
+
+**Bulletproofs**  
+A non-interactive zero-knowledge proof protocol that enables efficient range proofs.
+
+## C
+
+**Capability**  
+A functionality that can be enabled or disabled in a node, allowing for flexible deployment across different hardware.
+
+**Circuit**  
+In onion routing, a pre-established path through multiple nodes for private communication.
+
+**Clearing**  
+The process of settling balances between federations or accounts to reduce gross obligations to net obligations.
+
+**Commitment**  
+A cryptographic primitive that allows committing to a value while keeping it hidden, used in confidential transactions.
+
+**Confidential Transaction**  
+A transaction where the amount is hidden using zero-knowledge proofs while ensuring the transaction is valid.
+
+**Consensus**  
+The process by which nodes in the network agree on the state of the system.
+
+**Cooperative**  
+An autonomous association of persons united voluntarily to meet common economic, social, and cultural needs through jointly owned and democratically controlled enterprise.
+
+**Credit Line**  
+A mutual credit relationship between two accounts, defining the maximum credit that can be extended.
+
+**Credit Graph**  
+The network of credit relationships between accounts, represented as a directed graph.
+
+## D
+
+**DAG (Directed Acyclic Graph)**  
+A data structure used for consensus where transactions form a directed graph without cycles, enabling parallel processing.
+
+**DID (Decentralized Identifier)**  
+A globally unique identifier that doesn't require a centralized registration authority, core to the ICN identity system.
+
+**DSL (Domain-Specific Language)**  
+A specialized language for expressing governance rules and policies in the ICN.
+
+## E
+
+**Economic System**  
+The ICN subsystem that handles mutual credit, transactions, and resource exchange between cooperatives.
+
+**Edge Node**  
+A node operating at the network periphery, often with limited resources but providing local connectivity.
+
+## F
+
+**Federation**  
+A group of cooperatives that share a common namespace, governance, and trust relationships, forming a cooperative network.
+
+**Federation Exchange**  
+The system that enables economic activity between different federations.
+
+## G
+
+**Governance**  
+The system of rules, practices, and processes by which cooperatives are directed and controlled.
+
+**Governance VM**  
+The virtual machine that executes governance policies in a secure, sandboxed environment.
+
+## I
+
+**ICN (Intercooperative Network)**  
+The complete system described in this documentation, comprising all subsystems and components.
+
+**Identity System**  
+The subsystem responsible for DIDs, credentials, and privacy-preserving identity verification.
+
+## K
+
+**Key Rotation**  
+The periodic changing of cryptographic keys to mitigate the risk of key compromise.
+
+## M
+
+**Mesh Network**  
+A network topology where nodes connect directly to as many other nodes as possible, enabling resilient local connectivity.
+
+**Mutual Credit**  
+A non-speculative economic system where credit is created when an account goes negative, balanced by another account going positive.
+
+## N
+
+**Network Layer**  
+The subsystem handling communication between nodes, including transport security, overlay networking, and mesh capabilities.
+
+**Node**  
+A participant in the ICN network that implements one or more ICN subsystems.
+
+## O
+
+**Onion Routing**  
+A technique for anonymous communication where messages are encrypted in layers, like an onion.
+
+**Overlay Network**  
+A virtual network built on top of existing network infrastructure, enabling ICN-specific routing and addressing.
+
+**OverlayAddress**  
+A unique identifier for a node in the overlay network, often mapped to a DID.
+
+## P
+
+**Path Transaction**  
+A transaction that flows through multiple credit lines to reach its destination.
+
+**Pedersen Commitment**  
+A cryptographic commitment scheme used in confidential transactions to hide amounts.
+
+**Post-Quantum Cryptography**  
+Cryptographic algorithms believed to be secure against attacks by quantum computers.
+
+**Privacy**  
+The protection of information and identity in the ICN, implemented through zero-knowledge proofs, ring signatures, and secure multi-party computation.
+
+## Q
+
+**Quadratic Voting**  
+A collective decision-making procedure where voting power scales as the square root of the number of votes, reducing the power of large stakeholders.
+
+## R
+
+**Range Proof**  
+A zero-knowledge proof that a value lies within a specific range, used to prove transaction amounts are positive without revealing them.
+
+**Reputation**  
+A measure of trustworthiness in the ICN, affecting credit limits and governance weight.
+
+**Resource**  
+Any shareable asset managed by the ICN, including computing resources, storage, network, and physical assets.
+
+**Resource Coordination System**  
+The subsystem responsible for registering, allocating, and coordinating resources among cooperatives.
+
+**Ring Signature**  
+A cryptographic signature that specifies a group of possible signers without revealing which member actually produced the signature.
+
+## S
+
+**Secure Channel**  
+An encrypted communication path between nodes, typically using TLS 1.3 or WireGuard.
+
+**Secure Multi-Party Computation (MPC)**  
+A cryptographic technique allowing multiple parties to jointly compute a function over their inputs while keeping those inputs private.
+
+**Security Domain**  
+A classification for information and operations based on their security requirements.
+
+**Selective Disclosure**  
+The ability to reveal only specific attributes from a credential without exposing the entire credential.
+
+**SNARK (Succinct Non-interactive Argument of Knowledge)**  
+A form of zero-knowledge proof that is small in size and quick to verify.
+
+**STARK (Scalable Transparent Argument of Knowledge)**  
+A transparent, post-quantum secure zero-knowledge proof system.
+
+## T
+
+**Time Slot**  
+A period of time for which a resource is allocated or an operation is scheduled.
+
+**Transaction**  
+An economic exchange between accounts recorded in the system.
+
+**TransportSecurityManager**  
+The component responsible for securing network communications.
+
+## V
+
+**Verifiable Credential**  
+A cryptographically secure digital credential that can be verified without contacting the issuer.
+
+**VM (Virtual Machine)**  
+In ICN, the sandboxed execution environment for governance policies.
+
+**Voting System**  
+The component responsible for collecting, tallying, and verifying votes on governance proposals.
+
+## W
+
+**WireGuard**  
+A modern VPN protocol used in the ICN for secure peer-to-peer connections.
+
+## Z
+
+**Zero-Knowledge Proof (ZKP)**  
+A cryptographic method by which one party can prove to another that a statement is true without revealing any information beyond the validity of the statement itself.
+
+**zkp-SNARK**  
+A specific type of zero-knowledge proof used in the ICN for efficient verification.
+
+**zkp-STARK**  
+A transparent, post-quantum secure zero-knowledge proof system used in the ICN.

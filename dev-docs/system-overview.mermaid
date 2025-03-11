@@ -1,0 +1,28 @@
+graph TD
+    subgraph "Core Infrastructure"
+        A[Consensus Engine] --> B[State Manager]
+        C[Networking Layer] --> B
+        B --> D[Storage System]
+    end
+
+    subgraph "Governance Layer"
+        E[Governance DSL] --> F[Governance VM]
+        F --> G[Policy Enforcement]
+    end
+
+    subgraph "Economic Layer"
+        H[Mutual Credit System] --> I[Transaction Processor]
+        I --> J[Credit Graph]
+        J --> K[Resource Allocation]
+    end
+
+    subgraph "Identity Layer"
+        L[DID Manager] --> M[Credential System]
+        M --> N[Zero-Knowledge Proofs]
+        N --> O[Privacy System]
+    end
+
+    B <--> F
+    B <--> I
+    D <--> K
+    M <--> G

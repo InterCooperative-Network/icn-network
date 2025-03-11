@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant Alice as Sender (Alice)
+    participant System as ICN System
+    participant Bob as Recipient (Bob)
+    
+    Alice->>Alice: Generate Pedersen commitment to amount
+    Alice->>Alice: Create range proof (amount is positive)
+    Alice->>System: Submit commitment & range proof
+    
+    System->>System: Verify range proof is valid
+    System->>System: Check transaction consistency
+    System->>System: Update confidential balances
+    
+    System->>Bob: Notify of incoming transaction
+    
+    Alice->>Bob: Share blinding factor (encrypted)
+    Bob->>Bob: Reconstruct transaction amount
+    
+    Note over Alice,Bob: Only sender and recipient know the actual amount

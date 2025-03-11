@@ -1,0 +1,60 @@
+graph TD
+    subgraph "Voting Methods"
+        SIMPLE[Simple Majority]
+        SUPER[Supermajority]
+        QUAD[Quadratic Voting]
+        RANKED[Ranked Choice]
+        LIQUID[Liquid Democracy]
+        CONSENT[Consent-Based]
+    end
+    
+    subgraph "Privacy Modes"
+        PUBLIC[Public Voting]
+        ANON[Anonymous Voting]
+        CONF[Confidential Voting]
+    end
+    
+    subgraph "Verification"
+        VERIFY[Vote Verification]
+        PROVE[Outcome Proving]
+        AUDIT[Audit System]
+    end
+    
+    SIMPLE --> PUBLIC
+    SIMPLE --> ANON
+    SIMPLE --> CONF
+    
+    SUPER --> PUBLIC
+    SUPER --> ANON
+    SUPER --> CONF
+    
+    QUAD --> PUBLIC
+    QUAD --> ANON
+    QUAD --> CONF
+    
+    RANKED --> PUBLIC
+    RANKED --> ANON
+    RANKED --> CONF
+    
+    LIQUID --> PUBLIC
+    LIQUID --> ANON
+    LIQUID --> CONF
+    
+    CONSENT --> PUBLIC
+    CONSENT --> ANON
+    CONSENT --> CONF
+    
+    PUBLIC --> VERIFY
+    ANON --> VERIFY
+    CONF --> VERIFY
+    
+    VERIFY --> PROVE
+    PROVE --> AUDIT
+    
+    classDef methods fill:#bbf,stroke:#333,stroke-width:2px
+    classDef privacy fill:#fbf,stroke:#333,stroke-width:1px
+    classDef verification fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class SIMPLE,SUPER,QUAD,RANKED,LIQUID,CONSENT methods
+    class PUBLIC,ANON,CONF privacy
+    class VERIFY,PROVE,AUDIT verification

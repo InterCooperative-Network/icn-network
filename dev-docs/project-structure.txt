@@ -1,0 +1,239 @@
+# ICN Project Structure
+
+The Intercooperative Network codebase is organized as a modular, component-based system with clear separation of concerns. This document outlines the overall project structure.
+
+## Repository Organization
+
+```
+intercooperative-network/
+├── Cargo.toml                      # Main workspace definition
+├── Cargo.lock                      
+├── .github/                        # GitHub workflows and actions
+├── docs/                           # Documentation
+│   ├── architecture/               # Architecture documentation
+│   ├── development/                # Developer guides
+│   ├── governance/                 # Governance documentation  
+│   ├── economic/                   # Economic system documentation
+│   └── identity/                   # Identity system documentation
+├── crates/                         # Rust crates (libraries and binaries)
+│   ├── core/                       # Core shared components
+│   │   ├── icn-common/             # Common utilities and types
+│   │   ├── icn-crypto/             # Cryptographic primitives
+│   │   ├── icn-data-structures/    # Shared data structures
+│   │   └── icn-serialization/      # Serialization protocols
+│   ├── identity/                   # Identity System
+│   │   ├── icn-did/                # DID implementation
+│   │   ├── icn-credentials/        # Verifiable credentials
+│   │   ├── icn-zkp/                # Zero-knowledge proofs
+│   │   └── icn-identity-system/    # Main identity system
+│   ├── governance/                 # Governance System
+│   │   ├── icn-governance-dsl/     # Governance DSL
+│   │   ├── icn-governance-vm/      # Governance VM
+│   │   ├── icn-voting/             # Voting systems
+│   │   └── icn-governance-system/  # Main governance system
+│   ├── economic/                   # Economic System
+│   │   ├── icn-mutual-credit/      # Mutual credit implementation
+│   │   ├── icn-transactions/       # Transaction processing
+│   │   ├── icn-confidential-tx/    # Confidential transactions
+│   │   └── icn-economic-system/    # Main economic system
+│   ├── resource/                   # Resource System
+│   │   ├── icn-resource-registry/  # Resource registry
+│   │   ├── icn-resource-allocation/# Resource allocation
+│   │   └── icn-resource-system/    # Main resource system
+│   ├── network/                    # Network Layer
+│   │   ├── icn-transport/          # Transport security
+│   │   ├── icn-overlay/            # Overlay networking
+│   │   ├── icn-mesh/               # Mesh networking
+│   │   └── icn-network-layer/      # Main network layer
+│   ├── storage/                    # Storage systems
+│   │   ├── icn-distributed-storage/# Distributed storage
+│   │   ├── icn-local-storage/      # Local storage
+│   │   └── icn-storage-system/     # Main storage system
+│   ├── node/                       # Node implementations
+│   │   ├── icn-node-core/          # Core node functionality
+│   │   ├── icn-node-cli/           # Command-line interface
+│   │   └── icn-node/               # Main node binary
+│   └── tools/                      # Developer tools
+│       ├── icn-simulator/          # Network simulator
+│       ├── icn-benchmark/          # Benchmarking tools
+│       └── icn-debugger/           # Debugging tools
+├── examples/                       # Example applications
+│   ├── cooperative-chat/           # Simple messaging app
+│   ├── resource-sharing/           # Resource sharing example
+│   └── governance-demo/            # Governance demonstration
+├── scripts/                        # Utility scripts
+│   ├── build/                      # Build scripts
+│   ├── deploy/                     # Deployment scripts
+│   └── test/                       # Test scripts
+└── tests/                          # Integration tests
+    ├── identity/                   # Identity system tests
+    ├── governance/                 # Governance system tests
+    ├── economic/                   # Economic system tests
+    ├── network/                    # Network layer tests
+    └── federation/                 # Federation tests
+```
+
+## Crate Structure
+
+Each crate follows a consistent internal structure:
+
+```
+icn-example-crate/
+├── Cargo.toml             # Crate manifest
+├── src/
+│   ├── lib.rs             # Library entry point
+│   ├── types.rs           # Type definitions
+│   ├── error.rs           # Error definitions
+│   ├── config.rs          # Configuration
+│   ├── component1/        # Component-specific modules
+│   │   ├── mod.rs
+│   │   └── ...
+│   ├── component2/
+│   │   ├── mod.rs
+│   │   └── ...
+│   └── tests/             # Unit tests
+├── examples/              # Crate-specific examples
+│   └── ...
+└── benches/               # Benchmarks
+    └── ...
+```
+
+## Dependency Management
+
+ICN follows a strict dependency hierarchy to prevent circular dependencies and ensure maintainability:
+
+```
++--------------------+
+| Application Layer  |
++--------------------+
+          |
++--------------------+
+|   System Layer     |
++--------------------+
+          |
++--------------------+
+|  Component Layer   |
++--------------------+
+          |
++--------------------+
+|    Core Layer      |
++--------------------+
+```
+
+Rules:
+- Core Layer: May only depend on external crates, not on other ICN crates
+- Component Layer: May depend on Core Layer and external crates
+- System Layer: May depend on Component Layer, Core Layer, and external crates
+- Application Layer: May depend on any layer
+
+## Testing Strategy
+
+ICN employs a comprehensive testing strategy:
+
+1. **Unit Tests**: Within each crate, testing individual components
+2. **Integration Tests**: In the top-level `tests/` directory, testing interaction between components
+3. **Property Tests**: Using property-based testing for complex systems
+4. **Simulation Tests**: Using the simulator for network behavior
+5. **Fuzz Tests**: For security-critical components
+
+Example of test organization:
+
+```rust
+// Unit test example in a crate
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_credential_verification() {
+        // Test implementation
+    }
+}
+
+// Integration test example in tests/ directory
+#[test]
+fn test_identity_governance_integration() {
+    // Set up identity system
+    let identity_system = IdentitySystem::new();
+    
+    // Set up governance system with identity
+    let governance_system = GovernanceSystem::new(identity_system);
+    
+    // Test interaction
+    // ...
+}
+```
+
+## Feature Flags
+
+ICN makes extensive use of Rust's conditional compilation through feature flags to enable:
+
+1. Different deployment configurations
+2. Optional components
+3. Hardware-specific optimizations
+
+Example from a `Cargo.toml`:
+
+```toml
+[features]
+default = ["std", "secp256k1"]
+std = ["serde/std", "rand/std"]
+alloc = ["serde/alloc"]
+secp256k1 = ["k256"]
+ed25519 = ["ed25519-dalek"]
+zkp = ["bulletproofs", "groth16"]
+hardware-acceleration = ["zkp", "accelerate"]
+mesh-network = ["libp2p-autonat", "libp2p-relay"]
+```
+
+## Documentation Structure
+
+Documentation follows a consistent pattern:
+
+1. **Overview Documents**: High-level explanation of concepts
+2. **API Documentation**: Generated from doc comments in code
+3. **Examples**: Practical usage examples
+4. **Tutorials**: Step-by-step guides for specific tasks
+
+Documentation is written in Markdown and organized hierarchically:
+
+```
+docs/
+├── architecture/
+│   ├── overview.md
+│   ├── identity-system.md
+│   ├── governance-system.md
+│   └── ...
+├── development/
+│   ├── getting-started.md
+│   ├── coding-guidelines.md
+│   └── ...
+├── tutorials/
+│   ├── creating-a-cooperative.md
+│   ├── setting-up-governance.md
+│   └── ...
+└── api/
+    ├── identity/
+    ├── governance/
+    └── ...
+```
+
+## Contribution Guidelines
+
+Contributors should follow these guidelines:
+
+1. Ensure code follows the Rust style guide
+2. Add appropriate doc comments
+3. Include unit tests for new functionality
+4. Update relevant documentation
+5. Follow the semantic versioning for crates
+
+## Build Artifacts
+
+The main build artifacts produced by the ICN project include:
+
+1. **Core Libraries**: Rust libraries for embedding ICN into other applications
+2. **Node Binary**: Executable for running an ICN node
+3. **CLI Tools**: Command-line tools for interacting with ICN
+4. **WASM Package**: WebAssembly package for browser integration
+5. **Mobile Libraries**: Native libraries for Android and iOS

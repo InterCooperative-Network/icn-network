@@ -1,0 +1,20 @@
+[package]
+name = "icn-node-core"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core node functionality for ICN"
+
+[dependencies]
+# Internal dependencies
+icn-common = { path = "../../core/icn-common" }
+icn-crypto = { path = "../../core/icn-crypto" }
+icn-did = { path = "../../identity/icn-did" }
+
+# External dependencies
+serde.workspace = true 
+tokio.workspace = true
+tracing.workspace = true
+async-trait.workspace = true

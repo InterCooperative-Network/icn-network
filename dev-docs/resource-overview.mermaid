@@ -1,0 +1,39 @@
+graph TD
+    subgraph "Resource System"
+        REGISTRY[Resource Registry]
+        ALLOCATOR[Resource Allocator]
+        MONITOR[Usage Monitor]
+        PREDICT[Resource Predictor]
+        PLANNER[Capacity Planner]
+        EXCHANGE[Resource Exchange]
+    end
+    
+    REGISTRY -->|Resource Metadata| ALLOCATOR
+    ALLOCATOR -->|Allocation Data| MONITOR
+    MONITOR -->|Usage Patterns| PREDICT
+    PREDICT -->|Future Needs| PLANNER
+    PLANNER -->|Capacity Plans| REGISTRY
+    REGISTRY -->|Available Resources| EXCHANGE
+    EXCHANGE -->|Exchange Outcomes| REGISTRY
+    
+    subgraph "Resource Types"
+        COMPUTE[Computing Resources]
+        STORAGE[Storage Resources]
+        NETWORK[Network Resources]
+        PHYSICAL[Physical Resources]
+        LABOR[Labor Resources]
+        EXPERTISE[Expertise Resources]
+    end
+    
+    REGISTRY -->|Manages| COMPUTE
+    REGISTRY -->|Manages| STORAGE
+    REGISTRY -->|Manages| NETWORK
+    REGISTRY -->|Manages| PHYSICAL
+    REGISTRY -->|Manages| LABOR
+    REGISTRY -->|Manages| EXPERTISE
+    
+    classDef system fill:#bbf,stroke:#333,stroke-width:2px
+    classDef resources fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class REGISTRY,ALLOCATOR,MONITOR,PREDICT,PLANNER,EXCHANGE system
+    class COMPUTE,STORAGE,NETWORK,PHYSICAL,LABOR,EXPERTISE resources

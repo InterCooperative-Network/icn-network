@@ -1,0 +1,53 @@
+graph LR
+    subgraph "Deployment Models"
+        direction TB
+        subgraph "Data Center"
+            DC_CORE[Core Nodes]
+            DC_COMPUTE[Compute Nodes]
+            DC_STORAGE[Storage Nodes]
+            DC_GATEWAY[Gateway Nodes]
+            
+            DC_CORE --- DC_COMPUTE
+            DC_CORE --- DC_STORAGE
+            DC_CORE --- DC_GATEWAY
+        end
+        
+        subgraph "Cooperative Office"
+            CO_NODE[Standard Node]
+            CO_STORAGE[Local Storage]
+            CO_SERVICES[Cooperative Services]
+            
+            CO_NODE --- CO_STORAGE
+            CO_NODE --- CO_SERVICES
+        end
+        
+        subgraph "Edge Deployment"
+            EDGE_NODE[Edge Node]
+            EDGE_MESH[Mesh Networking]
+            EDGE_CACHE[Local Cache]
+            
+            EDGE_NODE --- EDGE_MESH
+            EDGE_NODE --- EDGE_CACHE
+        end
+        
+        subgraph "Minimal Device"
+            MIN_CLIENT[Minimal Client]
+            MIN_PROXY[Proxy Services]
+            
+            MIN_CLIENT --- MIN_PROXY
+        end
+    end
+    
+    DC_GATEWAY -.->|Federation Link| CO_NODE
+    CO_NODE -.->|Mesh Connection| EDGE_NODE
+    EDGE_NODE -.->|Gateway Service| MIN_CLIENT
+    
+    classDef datacenter fill:#bbf,stroke:#333,stroke-width:2px
+    classDef office fill:#fbf,stroke:#333,stroke-width:1px
+    classDef edge fill:#bfb,stroke:#333,stroke-width:1px
+    classDef minimal fill:#fbb,stroke:#333,stroke-width:1px
+    
+    class DC_CORE,DC_COMPUTE,DC_STORAGE,DC_GATEWAY datacenter
+    class CO_NODE,CO_STORAGE,CO_SERVICES office
+    class EDGE_NODE,EDGE_MESH,EDGE_CACHE edge
+    class MIN_CLIENT,MIN_PROXY minimal

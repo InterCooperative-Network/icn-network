@@ -1,0 +1,44 @@
+graph TD
+    subgraph "Federation Networking"
+        FED_PROTO[Federation Protocol]
+        FED_DISC[Federation Discovery]
+        FED_ROUTER[Federation Router]
+        FED_POLICY[Federation Policy]
+        TRUST_NEG[Trust Negotiator]
+        
+        FED_PROTO --> FED_DISC
+        FED_DISC --> FED_ROUTER
+        FED_ROUTER --> FED_POLICY
+        FED_POLICY --> TRUST_NEG
+        TRUST_NEG --> FED_PROTO
+    end
+    
+    subgraph "Trust Relationship Types"
+        CORE[Core Relationship]
+        PARTNER[Partner Relationship]
+        AFFIL[Affiliate Relationship]
+    end
+    
+    TRUST_NEG -->|Establishes| CORE
+    TRUST_NEG -->|Establishes| PARTNER
+    TRUST_NEG -->|Establishes| AFFIL
+    
+    subgraph "Cross-Federation Operations"
+        IDENTITY[Identity Resolution]
+        RESOURCE[Resource Sharing]
+        GOVERNANCE[Governance Coordination]
+        ECONOMIC[Economic Exchange]
+    end
+    
+    FED_ROUTER -->|Enables| IDENTITY
+    FED_ROUTER -->|Enables| RESOURCE
+    FED_ROUTER -->|Enables| GOVERNANCE
+    FED_ROUTER -->|Enables| ECONOMIC
+    
+    classDef federation fill:#bbf,stroke:#333,stroke-width:2px
+    classDef trust fill:#fbf,stroke:#333,stroke-width:1px
+    classDef operations fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class FED_PROTO,FED_DISC,FED_ROUTER,FED_POLICY,TRUST_NEG federation
+    class CORE,PARTNER,AFFIL trust
+    class IDENTITY,RESOURCE,GOVERNANCE,ECONOMIC operations

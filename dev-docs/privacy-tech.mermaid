@@ -1,0 +1,38 @@
+graph TD
+    subgraph "Privacy Systems"
+        ZKP[Zero-Knowledge Proofs]
+        RING[Ring Signatures]
+        MPC[Secure Multi-Party Computation]
+        E2E[End-to-End Encryption]
+        PDS[Personal Data Store]
+    end
+    
+    subgraph "Use Cases"
+        VOTE[Private Voting]
+        TRANS[Confidential Transactions]
+        ID[Identity Verification]
+        MSG[Secure Messaging]
+        DELIB[Private Deliberation]
+    end
+    
+    ZKP -->|Enables| VOTE
+    ZKP -->|Enables| TRANS
+    ZKP -->|Enables| ID
+    
+    RING -->|Enables| VOTE
+    RING -->|Enables| TRANS
+    
+    MPC -->|Enables| VOTE
+    MPC -->|Enables| DELIB
+    
+    E2E -->|Enables| MSG
+    E2E -->|Enables| DELIB
+    
+    PDS -->|Enables| ID
+    PDS -->|Enables| MSG
+    
+    classDef systems fill:#bbf,stroke:#333,stroke-width:2px
+    classDef cases fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class ZKP,RING,MPC,E2E,PDS systems
+    class VOTE,TRANS,ID,MSG,DELIB cases

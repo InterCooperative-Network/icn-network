@@ -1,0 +1,47 @@
+graph TD
+    subgraph "ZKP Engine"
+        SNARK[SNARK System]
+        STARK[STARK System]
+        BULLET[Bulletproof System]
+        
+        CIRCUIT[Circuit Generator]
+        OPTIMIZE[Circuit Optimizer]
+        
+        SNARK --> CIRCUIT
+        STARK --> CIRCUIT
+        BULLET --> CIRCUIT
+        
+        CIRCUIT --> OPTIMIZE
+    end
+    
+    subgraph "Integration Points"
+        CRED[Credential ZKPs]
+        VOTE[Voting ZKPs]
+        ECON[Economic ZKPs]
+        GOV[Governance ZKPs]
+    end
+    
+    OPTIMIZE --> CRED
+    OPTIMIZE --> VOTE
+    OPTIMIZE --> ECON
+    OPTIMIZE --> GOV
+    
+    subgraph "Use Cases"
+        RANGE[Range Proofs]
+        MEMBER[Membership Proofs]
+        AGE[Age Verification]
+        INCOME[Income Verification]
+    end
+    
+    CRED --> RANGE
+    CRED --> MEMBER
+    CRED --> AGE
+    CRED --> INCOME
+    
+    classDef engine fill:#bbf,stroke:#333,stroke-width:2px
+    classDef integration fill:#fbf,stroke:#333,stroke-width:1px
+    classDef usecase fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class SNARK,STARK,BULLET,CIRCUIT,OPTIMIZE engine
+    class CRED,VOTE,ECON,GOV integration
+    class RANGE,MEMBER,AGE,INCOME usecase

@@ -1,0 +1,54 @@
+graph TD
+    subgraph "Identity & Privacy System"
+        ID[Identity System]
+        CRED[Credential System]
+        ZKP[Zero-Knowledge Proofs]
+        RING[Ring Signatures]
+        MPC[Secure MPC]
+    end
+    
+    subgraph "Governance System"
+        GOV[Governance Engine]
+        DSL[Governance DSL]
+        VOTE[Voting System]
+        POL[Policy Enforcement]
+    end
+    
+    subgraph "Economic System"
+        ECON[Economic Engine]
+        CREDIT[Mutual Credit]
+        TRANS[Transaction Processing]
+        RSRC[Resource Allocation]
+    end
+    
+    subgraph "Network Layer"
+        NET[Network Layer]
+        P2P[P2P Communication]
+        ROUTE[Routing System]
+        DISC[Discovery Service]
+    end
+    
+    ID -->|Verifies identity| GOV
+    CRED -->|Authorizes access| GOV
+    ZKP -->|Enables private voting| VOTE
+    RING -->|Enables anonymous voting| VOTE
+    MPC -->|Enables confidential voting| VOTE
+    
+    ID -->|Authenticates accounts| ECON
+    CRED -->|Provides reputation| CREDIT
+    ZKP -->|Enables confidential transactions| TRANS
+    RING -->|Enables anonymous transactions| TRANS
+    
+    ID -->|Authenticates nodes| NET
+    CRED -->|Authorizes network access| P2P
+    ZKP -->|Enables private routing| ROUTE
+    
+    classDef identity fill:#bbf,stroke:#333,stroke-width:2px
+    classDef governance fill:#bfb,stroke:#333,stroke-width:1px
+    classDef economic fill:#fbf,stroke:#333,stroke-width:1px
+    classDef network fill:#fbb,stroke:#333,stroke-width:1px
+    
+    class ID,CRED,ZKP,RING,MPC identity
+    class GOV,DSL,VOTE,POL governance
+    class ECON,CREDIT,TRANS,RSRC economic
+    class NET,P2P,ROUTE,DISC network

@@ -1,0 +1,44 @@
+graph TD
+    subgraph "Governance Data"
+        PROPOSALS[Proposal History]
+        VOTES[Voting Patterns]
+        OUTCOMES[Proposal Outcomes]
+        METRICS[Governance Metrics]
+    end
+    
+    subgraph "Analysis Engine"
+        ANALYZER[Policy Analyzer]
+        SIMULATOR[Governance Simulator]
+        PREDICTOR[Outcome Predictor]
+        ML[Machine Learning Models]
+    end
+    
+    subgraph "Recommendation System"
+        SUGGEST[Policy Suggestions]
+        OPTIMIZE[Parameter Optimization]
+        TEMPLATE[Template Generation]
+        ALERTS[Governance Alerts]
+    end
+    
+    PROPOSALS --> ANALYZER
+    VOTES --> ANALYZER
+    OUTCOMES --> ANALYZER
+    METRICS --> ANALYZER
+    
+    ANALYZER --> SIMULATOR
+    SIMULATOR --> PREDICTOR
+    PREDICTOR --> ML
+    ML --> PREDICTOR
+    
+    PREDICTOR --> SUGGEST
+    PREDICTOR --> OPTIMIZE
+    ML --> TEMPLATE
+    ANALYZER --> ALERTS
+    
+    classDef data fill:#bbf,stroke:#333,stroke-width:2px
+    classDef analysis fill:#fbf,stroke:#333,stroke-width:1px
+    classDef recommend fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class PROPOSALS,VOTES,OUTCOMES,METRICS data
+    class ANALYZER,SIMULATOR,PREDICTOR,ML analysis
+    class SUGGEST,OPTIMIZE,TEMPLATE,ALERTS recommend

@@ -1,0 +1,43 @@
+flowchart TB
+    subgraph "Federation Alpha"
+        A1[Cooperative A1]
+        A2[Cooperative A2]
+        A3[Cooperative A3]
+        A1 <--> A2
+        A2 <--> A3
+        A3 <--> A1
+    end
+    
+    subgraph "Federation Beta"
+        B1[Cooperative B1]
+        B2[Cooperative B2]
+        B3[Cooperative B3]
+        B1 <--> B2
+        B2 <--> B3
+        B3 <--> B1
+    end
+    
+    subgraph "Federation Gamma"
+        G1[Cooperative G1]
+        G2[Cooperative G2]
+        G1 <--> G2
+    end
+    
+    F_ALPHA[Federation Alpha Bridge]
+    F_BETA[Federation Beta Bridge]
+    F_GAMMA[Federation Gamma Bridge]
+    
+    A2 <--> F_ALPHA
+    B1 <--> F_BETA
+    G2 <--> F_GAMMA
+    
+    F_ALPHA <-- Core Relationship --> F_BETA
+    F_BETA <-- Partner Relationship --> F_GAMMA
+    F_ALPHA <-- Affiliated Relationship --> F_GAMMA
+    
+    classDef federation fill:#bfb,stroke:#333,stroke-width:2px
+    classDef coop fill:#bbf,stroke:#333,stroke-width:1px
+    classDef bridge fill:#fbb,stroke:#333,stroke-width:2px
+    
+    class A1,A2,A3,B1,B2,B3,G1,G2 coop
+    class F_ALPHA,F_BETA,F_GAMMA bridge

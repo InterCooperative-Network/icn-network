@@ -1,0 +1,35 @@
+graph TD
+    subgraph "Economic System"
+        CREDIT[Credit Graph]
+        TRANS[Transaction Processor]
+        LIMIT[Credit Limit Calculator]
+        REP[Reputation System]
+        EXCHANGE[Federation Exchange]
+    end
+    
+    CREDIT -->|Credit Relationships| TRANS
+    TRANS -->|Transaction History| LIMIT
+    LIMIT -->|Credit Limits| CREDIT
+    REP -->|Reputation Scores| LIMIT
+    CREDIT -->|Inter-federation Credit| EXCHANGE
+    EXCHANGE -->|Exchange Rates| CREDIT
+    
+    subgraph "Transaction Types"
+        DIRECT[Direct Transactions]
+        PATH[Path Transactions]
+        PRIVATE[Confidential Transactions]
+        ANON[Anonymous Transactions]
+        CROSS[Cross-Federation Transactions]
+    end
+    
+    TRANS -->|Processes| DIRECT
+    TRANS -->|Processes| PATH
+    TRANS -->|Processes| PRIVATE
+    TRANS -->|Processes| ANON
+    TRANS -->|Processes| CROSS
+    
+    classDef core fill:#bbf,stroke:#333,stroke-width:2px
+    classDef trans fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class CREDIT,TRANS,LIMIT,REP,EXCHANGE core
+    class DIRECT,PATH,PRIVATE,ANON,CROSS trans

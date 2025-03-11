@@ -1,0 +1,31 @@
+graph TD
+    subgraph "Credit Graph"
+        A[Account A]
+        B[Account B]
+        C[Account C]
+        D[Account D]
+        E[Account E]
+        
+        A -- "+50/-50" --> B
+        B -- "+100/-100" --> C
+        C -- "+75/-75" --> D
+        D -- "+30/-30" --> A
+        B -- "+60/-60" --> E
+        E -- "+40/-40" --> D
+    end
+    
+    subgraph "Path Transaction"
+        P1[Step 1: A->B]
+        P2[Step 2: B->C]
+        P3[Step 3: C->D]
+        
+        P1 --> P2 --> P3
+    end
+    
+    A -.- P1
+    
+    classDef account fill:#bbf,stroke:#333,stroke-width:2px
+    classDef path fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class A,B,C,D,E account
+    class P1,P2,P3 path

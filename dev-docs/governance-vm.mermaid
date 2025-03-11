@@ -1,0 +1,35 @@
+graph TD
+    subgraph "Governance VM"
+        BYTECODE[Bytecode Loader]
+        EXECUTION[Execution Engine]
+        STATE[State Manager]
+        SECURITY[Security Sandbox]
+        STORAGE[Storage Interface]
+    end
+    
+    BYTECODE --> EXECUTION
+    EXECUTION --> STATE
+    STATE --> STORAGE
+    SECURITY --- EXECUTION
+    SECURITY --- STATE
+    SECURITY --- STORAGE
+    
+    subgraph "External Systems"
+        CONSENSUS[Consensus Engine]
+        IDENTITY[Identity System]
+        ECONOMIC[Economic System]
+        RESOURCE[Resource System]
+    end
+    
+    STORAGE --> CONSENSUS
+    STATE --> IDENTITY
+    STATE --> ECONOMIC
+    STATE --> RESOURCE
+    
+    classDef vm fill:#bbf,stroke:#333,stroke-width:2px
+    classDef security fill:#fbb,stroke:#333,stroke-width:2px
+    classDef external fill:#bfb,stroke:#333,stroke-width:1px
+    
+    class BYTECODE,EXECUTION,STATE vm
+    class SECURITY security
+    class STORAGE,CONSENSUS,IDENTITY,ECONOMIC,RESOURCE external

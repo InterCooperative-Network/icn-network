@@ -1,0 +1,36 @@
+graph TD
+    subgraph "Governance System"
+        DSL[Governance DSL]
+        COMP[DSL Compiler]
+        VM[Governance VM]
+        POLICY[Policy Registry]
+        
+        PROP[Proposal Manager]
+        VOTE[Voting System]
+        DELIB[Deliberation System]
+        
+        ANALYZER[Policy Analyzer]
+        SIM[Governance Simulator]
+        RECOMMENDER[Recommendation Engine]
+    end
+    
+    DSL --> COMP
+    COMP --> VM
+    VM --> POLICY
+    
+    POLICY --> PROP
+    PROP --> VOTE
+    VOTE --> DELIB
+    
+    POLICY --> ANALYZER
+    ANALYZER --> SIM
+    SIM --> RECOMMENDER
+    RECOMMENDER --> POLICY
+    
+    classDef dsl fill:#bbf,stroke:#333,stroke-width:2px
+    classDef execution fill:#bfb,stroke:#333,stroke-width:1px
+    classDef adaptation fill:#fbf,stroke:#333,stroke-width:1px
+    
+    class DSL,COMP,VM,POLICY dsl
+    class PROP,VOTE,DELIB execution
+    class ANALYZER,SIM,RECOMMENDER adaptation

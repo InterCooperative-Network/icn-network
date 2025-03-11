@@ -1,0 +1,56 @@
+graph TD
+    subgraph "Governance System"
+        GOV[Governance Engine]
+        DSL[DSL & VM]
+        VOTE[Voting System]
+        ADAPT[Adaptive System]
+    end
+    
+    subgraph "Economic System"
+        ECON[Economic Engine]
+        CREDIT[Credit System]
+        TRANS[Transaction System]
+        ALLOC[Resource Allocation]
+    end
+    
+    subgraph "Identity System"
+        ID[Identity Engine]
+        CRED[Credential System]
+        TRUST[Trust System]
+        PRIVACY[Privacy System]
+    end
+    
+    subgraph "Network Layer"
+        NET[Network Engine]
+        FED[Federation System]
+        P2P[P2P Layer]
+        DISCO[Discovery System]
+    end
+    
+    GOV -->|Policy Enforcement| ECON
+    GOV -->|Membership Governance| ID
+    GOV -->|Network Governance| NET
+    
+    DSL -->|Economic Rules| CREDIT
+    DSL -->|Resource Rules| ALLOC
+    DSL -->|Trust Rules| TRUST
+    DSL -->|Federation Rules| FED
+    
+    VOTE -->|Uses Credentials| CRED
+    VOTE -->|Uses Privacy| PRIVACY
+    
+    ID -->|Identity Verification| VOTE
+    ID -->|Permission Management| GOV
+    
+    ECON -->|Resource Feedback| ADAPT
+    NET -->|Federation Feedback| ADAPT
+    
+    classDef gov fill:#bbf,stroke:#333,stroke-width:2px
+    classDef econ fill:#bfb,stroke:#333,stroke-width:1px
+    classDef id fill:#fbf,stroke:#333,stroke-width:1px
+    classDef net fill:#fbb,stroke:#333,stroke-width:1px
+    
+    class GOV,DSL,VOTE,ADAPT gov
+    class ECON,CREDIT,TRANS,ALLOC econ
+    class ID,CRED,TRUST,PRIVACY id
+    class NET,FED,P2P,DISCO net

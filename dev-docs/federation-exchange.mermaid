@@ -1,0 +1,44 @@
+graph TD
+    subgraph "Federation Alpha"
+        A_COOP1[Cooperative A1]
+        A_COOP2[Cooperative A2]
+        A_EXCHANGE[Alpha Exchange]
+        
+        A_COOP1 --> A_EXCHANGE
+        A_COOP2 --> A_EXCHANGE
+    end
+    
+    subgraph "Federation Beta"
+        B_COOP1[Cooperative B1]
+        B_COOP2[Cooperative B2]
+        B_EXCHANGE[Beta Exchange]
+        
+        B_COOP1 --> B_EXCHANGE
+        B_COOP2 --> B_EXCHANGE
+    end
+    
+    subgraph "Exchange Mechanism"
+        RATES[Exchange Rates]
+        CLEARING[Clearing System]
+        LIMITS[Credit Limits]
+        GOVERNANCE[Exchange Governance]
+        
+        RATES --> CLEARING
+        LIMITS --> CLEARING
+        GOVERNANCE --> RATES
+        GOVERNANCE --> LIMITS
+    end
+    
+    A_EXCHANGE -->|Alpha-Beta Rate| RATES
+    B_EXCHANGE -->|Beta-Alpha Rate| RATES
+    
+    CLEARING -->|Settled Transactions| A_EXCHANGE
+    CLEARING -->|Settled Transactions| B_EXCHANGE
+    
+    classDef alpha fill:#bbf,stroke:#333,stroke-width:1px
+    classDef beta fill:#bfb,stroke:#333,stroke-width:1px
+    classDef exchange fill:#fbf,stroke:#333,stroke-width:2px
+    
+    class A_COOP1,A_COOP2,A_EXCHANGE alpha
+    class B_COOP1,B_COOP2,B_EXCHANGE beta
+    class RATES,CLEARING,LIMITS,GOVERNANCE exchange
