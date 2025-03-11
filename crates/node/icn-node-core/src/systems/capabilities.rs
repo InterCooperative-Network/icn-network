@@ -448,6 +448,175 @@ impl ICNComponent for GatewayCapability {
     }
 }
 
+use async_trait::async_trait;
+use icn_common::Result;
+use std::sync::Arc;
+use crate::state::StateManager;
+
+/// Capability requirements for node systems
+#[async_trait]
+pub trait Capability: Send + Sync {
+    /// Start the capability
+    async fn start(&self) -> Result<()>;
+    
+    /// Stop the capability
+    async fn stop(&self) -> Result<()>;
+    
+    /// Check if capability is running
+    fn is_running(&self) -> bool;
+}
+
+/// Federation capability for cross-federation operations
+#[async_trait]
+pub trait FederationCapability: Capability {
+    /// Get this node's federation ID
+    fn federation_id(&self) -> &str;
+    
+    /// Get federation endpoints
+    fn federation_endpoints(&self) -> &[String];
+    
+    /// Handle incoming federation request
+    async fn handle_federation_request(&self, request: FederationRequest) -> Result<FederationResponse>;
+}
+
+/// Federation request types
+#[derive(Debug, Clone)]
+pub enum FederationRequest {
+    /// DID resolution request
+    ResolveDid {
+        did: String,
+        federation_id: String,
+    },
+    
+    /// DID verification request
+    VerifyDid {
+        did: String,
+        challenge: Vec<u8>,
+        signature: Vec<u8>,
+    },
+}
+
+/// Federation response types
+#[derive(Debug, Clone)]
+pub enum FederationResponse {
+    /// DID resolution response
+    DidResolution {
+        document: Option<icn_did::DidDocument>,
+        error: Option<String>,
+    },
+    
+    /// Verification response
+    Verification {
+        is_valid: bool,
+        error: Option<String>,
+    },
+}
+
+/// Base capability trait for common functionality
+#[async_trait]
+pub trait BaseCapability {
+    /// Initialize the capability
+    async fn init(&self) -> Result<()>;
+    
+    /// Get capability name
+    fn name(&self) -> &'static str;
+    
+    /// Get capability version
+    fn version(&self) -> &'static str;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    struct TestCapability {
+        running: bool,
+    }
+
+    #[async_trait]
+    impl Capability for TestCapability {
+        async fn start(&self) -> Result<()> {
+            Ok(())
+        }
+
+        async fn stop(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn is_running(&self) -> bool {
+            self.running
+        }
+    }
+
+    #[async_trait]
+    impl FederationCapability for TestCapability {
+        fn federation_id(&self) -> &str {
+            "test-federation"
+        }
+
+        fn federation_endpoints(&self) -> &[String] {
+            &[]
+        }
+
+        async fn handle_federation_request(&self, request: FederationRequest) -> Result<FederationResponse> {
+            match request {
+                FederationRequest::ResolveDid { did, federation_id } => {
+                    Ok(FederationResponse::DidResolution {
+                        document: None,
+                        error: None,
+                    })
+                }
+                FederationRequest::VerifyDid { did, challenge, signature } => {
+                    Ok(FederationResponse::Verification {
+                        is_valid: true,
+                        error: None,
+                    })
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_federation_capability() {
+        let capability = TestCapability { running: true };
+
+        // Test federation ID
+        assert_eq!(capability.federation_id(), "test-federation");
+
+        // Test handling resolution request
+        let request = FederationRequest::ResolveDid {
+            did: "did:icn:test:123".to_string(),
+            federation_id: "test-federation".to_string(),
+        };
+
+        let response = capability.handle_federation_request(request).await.unwrap();
+        match response {
+            FederationResponse::DidResolution { document, error } => {
+                assert!(document.is_none());
+                assert!(error.is_none());
+            }
+            _ => panic!("Unexpected response type"),
+        }
+
+        // Test handling verification request
+        let request = FederationRequest::VerifyDid {
+            did: "did:icn:test:123".to_string(),
+            challenge: vec![1, 2, 3],
+            signature: vec![4, 5, 6],
+        };
+
+        let response = capability.handle_federation_request(request).await.unwrap();
+        match response {
+            FederationResponse::Verification { is_valid, error } => {
+                assert!(is_valid);
+                assert!(error.is_none());
+            }
+            _ => panic!("Unexpected response type"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

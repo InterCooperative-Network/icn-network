@@ -1,124 +1,191 @@
 use async_trait::async_trait;
+use icn_common::{Error, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use crate::{DidDocument, DID_METHOD};
 
+/// Federation client for cross-federation DID operations
 pub struct FederationClient {
+    /// Federation ID for this node
     federation_id: String,
+    
+    /// Federation endpoints
     endpoints: Vec<String>,
-    trust_store: Arc<RwLock<TrustStore>>,
-    transport: Arc<dyn FederationTransport>,
+    
+    /// Cached DID documents from other federations
+    cache: Arc<RwLock<HashMap<String, CachedDocument>>>,
 }
 
-struct TrustStore {
-    trusted_federations: HashMap<String, FederationTrust>,
+/// A cached DID document with metadata
+#[derive(Clone, Debug)]
+struct CachedDocument {
+    document: DidDocument,
+    timestamp: u64,
+    ttl: u64,
 }
 
-#[derive(Clone)]
-struct FederationTrust {
-    trust_level: TrustLevel,
-    public_key: Vec<u8>,
-    last_verified: chrono::DateTime<chrono::Utc>,
+/// Federation resolution request
+#[derive(Debug, Serialize, Deserialize)]
+struct ResolutionRequest {
+    did: String,
+    federation_id: String,
 }
 
-#[derive(Clone, PartialEq)]
-enum TrustLevel {
-    Core,        // Direct trust relationship
-    Partner,     // Indirect through core federation
-    Affiliate,   // Limited trust through partner
-}
-
-#[async_trait]
-pub trait FederationTransport: Send + Sync {
-    async fn resolve_did(&self, did: &str, federation: &str) -> Result<Option<DidDocument>>;
-    async fn verify_federation(&self, federation_id: &str) -> Result<FederationMetadata>;
+/// Federation resolution response
+#[derive(Debug, Serialize, Deserialize)]
+struct ResolutionResponse {
+    document: Option<DidDocument>,
+    error: Option<String>,
 }
 
 impl FederationClient {
+    /// Create a new federation client
     pub async fn new(federation_id: &str, endpoints: Vec<String>) -> Result<Self> {
-        let transport = Arc::new(HttpFederationTransport::new(endpoints.clone()));
-        
         Ok(Self {
             federation_id: federation_id.to_string(),
             endpoints,
-            trust_store: Arc::new(RwLock::new(TrustStore {
-                trusted_federations: HashMap::new(),
-            })),
-            transport,
+            cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
+    /// Resolve a DID from another federation
     pub async fn resolve_did(&self, did: &str, federation_id: &str) -> Result<Option<DidDocument>> {
-        // Check federation trust level
-        let trust = {
-            let store = self.trust_store.read().await;
-            store.trusted_federations.get(federation_id).cloned()
+        // Check cache first
+        if let Some(cached) = self.get_cached_document(did).await? {
+            return Ok(Some(cached.document));
+        }
+
+        // If not in cache, try federation resolution
+        for endpoint in &self.endpoints {
+            match self.resolve_from_endpoint(endpoint, did, federation_id).await {
+                Ok(Some(doc)) => {
+                    // Cache the document
+                    self.cache_document(did, doc.clone(), 3600).await?;
+                    return Ok(Some(doc));
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    log::warn!("Failed to resolve DID from endpoint {}: {}", endpoint, e);
+                    continue;
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Get a cached document if it exists and hasn't expired
+    async fn get_cached_document(&self, did: &str) -> Result<Option<CachedDocument>> {
+        let cache = self.cache.read().await;
+        if let Some(cached) = cache.get(did) {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| Error::system_time("Failed to get system time"))?
+                .as_secs();
+
+            if now - cached.timestamp < cached.ttl {
+                return Ok(Some(cached.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Cache a document with TTL
+    async fn cache_document(&self, did: &str, document: DidDocument, ttl: u64) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| Error::system_time("Failed to get system time"))?
+            .as_secs();
+
+        let cached = CachedDocument {
+            document,
+            timestamp: now,
+            ttl,
         };
 
-        match trust {
-            Some(trust) => {
-                // We have an existing trust relationship
-                let doc = self.transport.resolve_did(did, federation_id).await?;
-                
-                // Verify document signature using federation's public key
-                if let Some(doc) = doc {
-                    if self.verify_document(&doc, &trust.public_key).await? {
-                        Ok(Some(doc))
-                    } else {
-                        Ok(None)
-                    }
-                } else {
-                    Ok(None)
-                }
-            }
-            None => {
-                // Try to establish federation trust
-                let metadata = self.transport.verify_federation(federation_id).await?;
-                
-                // Store new federation trust info
-                let trust = FederationTrust {
-                    trust_level: self.determine_trust_level(federation_id, &metadata).await?,
-                    public_key: metadata.public_key,
-                    last_verified: chrono::Utc::now(),
-                };
-
-                {
-                    let mut store = self.trust_store.write().await;
-                    store.trusted_federations.insert(federation_id.to_string(), trust.clone());
-                }
-
-                // Now resolve the DID
-                self.resolve_did(did, federation_id).await
-            }
-        }
+        let mut cache = self.cache.write().await;
+        cache.insert(did.to_string(), cached);
+        Ok(())
     }
 
-    async fn determine_trust_level(
-        &self, 
+    /// Resolve a DID from a specific federation endpoint
+    async fn resolve_from_endpoint(
+        &self,
+        endpoint: &str,
+        did: &str,
         federation_id: &str,
-        metadata: &FederationMetadata
-    ) -> Result<TrustLevel> {
-        // Check if this is a core federation relationship
-        if metadata.core_federations.contains(&self.federation_id) {
-            return Ok(TrustLevel::Core);
+    ) -> Result<Option<DidDocument>> {
+        let client = reqwest::Client::new();
+        
+        let request = ResolutionRequest {
+            did: did.to_string(),
+            federation_id: federation_id.to_string(),
+        };
+
+        let response = client
+            .post(endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| Error::network(format!("Failed to send resolution request: {}", e)))?;
+
+        let resolution: ResolutionResponse = response
+            .json()
+            .await
+            .map_err(|e| Error::network(format!("Failed to parse resolution response: {}", e)))?;
+
+        if let Some(error) = resolution.error {
+            return Err(Error::resolution(error));
         }
 
-        // Check if connected through a core federation
-        let store = self.trust_store.read().await;
-        for (fed_id, trust) in &store.trusted_federations {
-            if trust.trust_level == TrustLevel::Core &&
-               metadata.core_federations.contains(fed_id) {
-                return Ok(TrustLevel::Partner);
-            }
-        }
+        Ok(resolution.document)
+    }
+}
 
-        // Default to affiliate level
-        Ok(TrustLevel::Affiliate)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::verification::PublicKeyMaterial;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_federation_client() {
+        let client = FederationClient::new(
+            "test-federation",
+            vec!["http://localhost:8080".to_string()]
+        ).await.unwrap();
+
+        // Test caching
+        let doc = DidDocument::new("test123").unwrap();
+        client.cache_document(&doc.id, doc.clone(), 1).await.unwrap();
+
+        // Should get from cache
+        let cached = client.get_cached_document(&doc.id).await.unwrap();
+        assert!(cached.is_some());
+        assert_eq!(cached.unwrap().document.id, doc.id);
+
+        // Wait for TTL to expire
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Should not get from cache
+        let cached = client.get_cached_document(&doc.id).await.unwrap();
+        assert!(cached.is_none());
     }
 
-    async fn verify_document(&self, doc: &DidDocument, federation_key: &[u8]) -> Result<bool> {
-        // Verify the document signature using federation's public key
-        // Implementation would use actual crypto verification
-        Ok(true) // Placeholder
+    #[tokio::test]
+    async fn test_federation_resolution() {
+        let client = FederationClient::new(
+            "test-federation",
+            vec!["http://localhost:8080".to_string()]
+        ).await.unwrap();
+
+        // Test resolution with invalid endpoint (should handle error gracefully)
+        let result = client
+            .resolve_did("did:icn:test:123", "other-federation")
+            .await
+            .unwrap();
+        assert!(result.is_none());
     }
 }

@@ -316,6 +316,51 @@ impl DidManager {
         Ok(None)
     }
 
+    /// Resolve a DID, including federated resolution
+    pub async fn resolve(&self, did: &str) -> Result<ResolutionResult> {
+        // Try local resolution first
+        let result = self.resolver.resolve(did).await?;
+        if result.did_document.is_some() {
+            return Ok(result);
+        }
+
+        // If not found locally and it's a federated DID, try federation resolution
+        if let Some(federation_id) = self.extract_federation_id(did) {
+            if let Some(doc) = self.federation_client
+                .resolve_did(did, &federation_id)
+                .await? {
+                return Ok(ResolutionResult {
+                    did_document: Some(doc),
+                    resolution_metadata: ResolutionMetadata {
+                        content_type: Some("application/did+json".to_string()),
+                        source_federation: Some(federation_id),
+                        ..Default::default()
+                    },
+                    document_metadata: DocumentMetadata::default(),
+                });
+            }
+        }
+
+        // Not found in any federation
+        Ok(ResolutionResult {
+            did_document: None,
+            resolution_metadata: ResolutionMetadata {
+                error: Some("notFound".to_string()),
+                ..Default::default()
+            },
+            document_metadata: DocumentMetadata::default(),
+        })
+    }
+
+    /// Handle a resolution request from another federation
+    pub async fn handle_federation_resolution(
+        &self,
+        did: &str,
+        federation_id: &str,
+    ) -> Result<ResolutionResult> {
+        self.resolver.handle_federation_resolution(did, federation_id).await
+    }
+
     fn extract_federation_id(&self, did: &str) -> Option<String> {
         // Format: did:icn:<federation>:<identifier>
         let parts: Vec<&str> = did.split(':').collect();
@@ -603,5 +648,90 @@ mod tests {
         ).await.unwrap();
         
         assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_federated_resolution() {
+        let temp_dir = tempdir().unwrap();
+        let config = DidManagerConfig {
+            storage_options: StorageOptions {
+                base_dir: temp_dir.path().to_path_buf(),
+                sync_writes: true,
+                compress: false,
+            },
+            federation_id: "test-fed".to_string(),
+            federation_endpoints: vec![
+                "http://federation1.example.com".to_string(),
+                "http://federation2.example.com".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let manager = DidManager::new(config).await.unwrap();
+
+        // Test local federation resolution
+        let did = "did:icn:test-fed:123";
+        let doc = DidDocument::new("test-fed:123").unwrap();
+        manager.store(did, doc.clone()).await.unwrap();
+
+        let result = manager.resolve(did).await.unwrap();
+        assert!(result.did_document.is_some());
+        assert_eq!(result.did_document.unwrap().id, did);
+
+        // Test external federation resolution
+        let external_did = "did:icn:other-fed:456";
+        let result = manager.resolve(external_did).await.unwrap();
+        assert!(result.did_document.is_none());
+        assert_eq!(result.resolution_metadata.error.unwrap(), "notFound");
+
+        // Test federation resolution request handling
+        let result = manager
+            .handle_federation_resolution(did, "test-fed")
+            .await
+            .unwrap();
+        assert!(result.did_document.is_some());
+        assert_eq!(
+            result.resolution_metadata.source_federation.unwrap(),
+            "test-fed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_federation_caching() {
+        let temp_dir = tempdir().unwrap();
+        let config = DidManagerConfig {
+            storage_options: StorageOptions {
+                base_dir: temp_dir.path().to_path_buf(),
+                sync_writes: true,
+                compress: false,
+            },
+            federation_id: "test-fed".to_string(),
+            federation_endpoints: vec!["http://localhost:8080".to_string()],
+            ..Default::default()
+        };
+
+        let manager = DidManager::new(config).await.unwrap();
+
+        // Create a test DID document
+        let did = "did:icn:test-fed:123";
+        let doc = DidDocument::new("test-fed:123").unwrap();
+
+        // Store in federation client cache
+        manager
+            .federation_client
+            .cache_document(did, doc.clone(), 1)
+            .await
+            .unwrap();
+
+        // First resolution should use cache
+        let result = manager.resolve(did).await.unwrap();
+        assert!(result.did_document.is_some());
+
+        // Wait for cache to expire
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Second resolution should not find document
+        let result = manager.resolve(did).await.unwrap();
+        assert!(result.did_document.is_none());
     }
 }

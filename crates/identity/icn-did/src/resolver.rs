@@ -16,6 +16,10 @@ pub struct ResolutionMetadata {
     /// Error during resolution
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+
+    /// Source federation ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_federation: Option<String>,
 }
 
 /// DID document metadata according to the DID Core spec
@@ -195,6 +199,54 @@ impl IcnDidResolver {
         }
 
         Ok(())
+    }
+
+    /// Handle a resolution request from another federation
+    pub async fn handle_federation_resolution(
+        &self,
+        did: &str,
+        federation_id: &str,
+    ) -> Result<ResolutionResult> {
+        // Extract federation ID from DID
+        let parts: Vec<&str> = did.split(':').collect();
+        if parts.len() != 4 || parts[0] != "did" || parts[1] != "icn" {
+            return Ok(ResolutionResult {
+                did_document: None,
+                resolution_metadata: ResolutionMetadata {
+                    error: Some("Invalid DID format".to_string()),
+                    content_type: None,
+                    source_federation: Some(federation_id.to_string()),
+                },
+                document_metadata: DocumentMetadata {
+                    created: None,
+                    updated: None,
+                    deactivated: None,
+                    version_id: None,
+                },
+            });
+        }
+
+        // Check if this DID belongs to our federation
+        let did_federation = parts[2];
+        if did_federation != federation_id {
+            return Ok(ResolutionResult {
+                did_document: None,
+                resolution_metadata: ResolutionMetadata {
+                    error: Some("DID not found in this federation".to_string()),
+                    content_type: None,
+                    source_federation: Some(federation_id.to_string()),
+                },
+                document_metadata: DocumentMetadata {
+                    created: None,
+                    updated: None,
+                    deactivated: None,
+                    version_id: None,
+                },
+            });
+        }
+
+        // Resolve locally
+        self.resolve(did).await
     }
 }
 
@@ -402,5 +454,53 @@ mod tests {
 
         let dids = resolver.list_dids().await.unwrap();
         assert_eq!(dids.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_federation_resolution() {
+        let temp_dir = tempdir().unwrap();
+        let storage_options = StorageOptions {
+            base_dir: temp_dir.path().to_path_buf(),
+            sync_writes: true,
+            compress: false,
+        };
+
+        let resolver = IcnDidResolver::new(storage_options).await.unwrap();
+        
+        // Test with local federation DID
+        let did = "did:icn:test-fed:123";
+        let resolution = resolver
+            .handle_federation_resolution(did, "test-fed")
+            .await
+            .unwrap();
+            
+        assert!(resolution.did_document.is_none());
+        assert!(resolution.resolution_metadata.error.is_some());
+        
+        // Test with different federation DID
+        let did = "did:icn:other-fed:123";
+        let resolution = resolver
+            .handle_federation_resolution(did, "test-fed")
+            .await
+            .unwrap();
+            
+        assert!(resolution.did_document.is_none());
+        assert_eq!(
+            resolution.resolution_metadata.error.unwrap(),
+            "DID not found in this federation"
+        );
+        
+        // Test with invalid DID
+        let did = "invalid:did";
+        let resolution = resolver
+            .handle_federation_resolution(did, "test-fed")
+            .await
+            .unwrap();
+            
+        assert!(resolution.did_document.is_none());
+        assert_eq!(
+            resolution.resolution_metadata.error.unwrap(),
+            "Invalid DID format"
+        );
     }
 }

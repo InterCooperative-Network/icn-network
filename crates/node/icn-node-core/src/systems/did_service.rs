@@ -15,6 +15,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::state::{ComponentState, StateManager};
 use icn_crypto::Signature;
+use super::capabilities::{Capability, FederationCapability, FederationRequest, FederationResponse};
 
 /// DID service configuration
 #[derive(Debug, Clone)]
@@ -49,6 +50,9 @@ pub struct DidService {
     
     /// Active authentication challenges
     challenges: Arc<RwLock<Vec<AuthenticationChallenge>>>,
+    
+    /// Running state
+    running: bool,
 }
 
 impl DidService {
@@ -75,7 +79,22 @@ impl DidService {
             manager: Arc::new(manager),
             state_manager,
             challenges: Arc::new(RwLock::new(Vec::new())),
+            running: false,
         })
+    }
+
+    /// Create a new DID service from node config
+    pub async fn from_config(
+        config: &crate::config::NodeConfig,
+        state_manager: Arc<StateManager>,
+    ) -> Result<Self> {
+        let service_config = DidServiceConfig {
+            storage_options: config.storage.clone(),
+            federation_id: config.federation_id.clone(),
+            federation_endpoints: config.federation_endpoints.clone(),
+        };
+
+        Self::new(service_config, state_manager).await
     }
     
     /// Start the DID service
@@ -203,12 +222,67 @@ impl DidService {
     }
 }
 
+#[async_trait]
+impl Capability for DidService {
+    async fn start(&self) -> Result<()> {
+        self.state_manager.register_component("did_service")?;
+        self.state_manager.update_component("did_service", "running")?;
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<()> {
+        self.state_manager.update_component("did_service", "stopped")?;
+        Ok(())
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+#[async_trait]
+impl FederationCapability for DidService {
+    fn federation_id(&self) -> &str {
+        &self.manager.federation_id()
+    }
+
+    fn federation_endpoints(&self) -> &[String] {
+        self.manager.federation_endpoints()
+    }
+
+    async fn handle_federation_request(&self, request: FederationRequest) -> Result<FederationResponse> {
+        match request {
+            FederationRequest::ResolveDid { did, federation_id } => {
+                let result = self.manager
+                    .handle_federation_resolution(&did, &federation_id)
+                    .await?;
+                
+                Ok(FederationResponse::DidResolution {
+                    document: result.did_document,
+                    error: result.resolution_metadata.error,
+                })
+            }
+            FederationRequest::VerifyDid { did, challenge, signature } => {
+                let is_valid = self.manager
+                    .verify_signature(&did, "#key-1", &challenge, &signature)
+                    .await?;
+                    
+                Ok(FederationResponse::Verification {
+                    is_valid,
+                    error: None,
+                })
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
     use icn_did::Service;
-    
+    use crate::config::{NodeConfig, NetworkConfig, CapabilitiesConfig};
+
     #[tokio::test]
     async fn test_did_service_lifecycle() {
         let temp_dir = tempdir().unwrap();
@@ -472,5 +546,39 @@ mod tests {
             .unwrap();
             
         assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_service_from_config() {
+        let temp_dir = tempdir().unwrap();
+        let state_manager = Arc::new(StateManager::new());
+        
+        let config = NodeConfig {
+            node_id: "test-node".to_string(),
+            federation_id: "test-federation".to_string(),
+            federation_endpoints: vec![
+                "http://federation1.test".to_string(),
+                "http://federation2.test".to_string(),
+            ],
+            storage: StorageOptions {
+                base_dir: temp_dir.path().to_path_buf(),
+                sync_writes: true,
+                compress: false,
+            },
+            capabilities: CapabilitiesConfig::default(),
+            network: NetworkConfig::default(),
+        };
+
+        let service = DidService::from_config(&config, state_manager).await.unwrap();
+        
+        // Verify service initialized with correct federation config 
+        let did = "did:icn:test-federation:123";
+        let doc = DidDocument::new("test-federation:123").unwrap();
+        
+        service.create_did(CreateDidOptions::default()).await.unwrap();
+        
+        // Test federation resolution
+        let result = service.resolve_did(did).await.unwrap();
+        assert_eq!(result.resolution_metadata.source_federation.unwrap(), "test-federation");
     }
 }
