@@ -222,6 +222,7 @@ impl IcnDidResolver {
                     updated: None,
                     deactivated: None,
                     version_id: None,
+                    next_version_id: None,
                 },
             });
         }
@@ -241,6 +242,7 @@ impl IcnDidResolver {
                     updated: None,
                     deactivated: None,
                     version_id: None,
+                    next_version_id: None,
                 },
             });
         }
@@ -281,7 +283,13 @@ impl DidResolver for IcnDidResolver {
                     error: Some("notFound".to_string()),
                     ..Default::default()
                 },
-                document_metadata: DocumentMetadata::default(),
+                document_metadata: DocumentMetadata {
+                    created: None,
+                    updated: None,
+                    deactivated: None,
+                    version_id: None,
+                    next_version_id: None,
+                },
             }),
         }
     }

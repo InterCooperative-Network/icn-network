@@ -1,18 +1,19 @@
 //! DID manager implementation
 use async_trait::async_trait;
 use icn_common::{Error, Result};
-use icn_crypto::{KeyPair, KeyType, PublicKey, Signature};
+use icn_crypto::{KeyType, PublicKey, Signature};
+use icn_crypto::key::KeyPair;
 use icn_storage_system::StorageOptions;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::{
     DidDocument, VerificationMethod, VerificationMethodReference, PublicKeyMaterial,
-    resolver::{DidResolver, IcnDidResolver, ResolutionResult},
-    verification::{AuthenticationChallenge, AuthenticationResponse, VerificationResult},
     DID_METHOD,
+    resolver::{DidResolver, IcnDidResolver, ResolutionResult, DocumentMetadata, ResolutionMetadata},
+    verification::{AuthenticationChallenge, AuthenticationResponse, VerificationResult}
 };
 use crate::federation::FederationClient;
-use rand::{thread_rng, Rng};
+use rand::Rng;
 
 /// DID manager configuration
 #[derive(Debug, Clone)]
@@ -97,7 +98,7 @@ impl DidManager {
     }
     
     /// Create a new DID with the given options
-    pub async fn create_did(&self, options: CreateDidOptions) -> Result<(DidDocument, Box<dyn KeyPair>)> {
+    pub async fn create_did(&self, options: CreateDidOptions) -> Result<(DidDocument, KeyPair)> {
         // Generate key pair
         let key_type = options.key_type.unwrap_or(self.config.default_key_type);
         let key_pair = icn_crypto::generate_keypair(key_type)?;
@@ -114,7 +115,7 @@ impl DidManager {
             &did,
             "key-1",
             key_type,
-            key_pair.public_key(),
+            &key_pair.public_key(),
         )?;
         
         document.add_verification_method(auth_method.clone());
@@ -141,7 +142,7 @@ impl DidManager {
         &self,
         options: CreateDidOptions,
         federation_id: Option<String>
-    ) -> Result<(DidDocument, Box<dyn KeyPair>)> {
+    ) -> Result<(DidDocument, KeyPair)> {
         let federation = federation_id.unwrap_or_else(|| self.config.federation_id.clone());
         
         // Create local DID first
@@ -193,7 +194,7 @@ impl DidManager {
         verification_method: Option<&str>,
         ttl_secs: Option<u64>,
     ) -> Result<AuthenticationChallenge> {
-        let doc = self.resolve_did(did).await?;
+        let doc = self.resolve(did).await?;
         
         // If no verification method specified, use the first authentication method
         let method_id = match verification_method {
@@ -222,7 +223,7 @@ impl DidManager {
         }
 
         // Resolve the DID document
-        let doc = self.resolve_did(&response.challenge.did).await?;
+        let doc = self.resolve(&response.challenge.did).await?;
         
         // Get the verification method
         let method = doc.get_verification_method(&response.challenge.verification_method)
@@ -250,57 +251,6 @@ impl DidManager {
         document.verify_signature(method_id, message, signature)
     }
 
-    pub async fn create_authentication_challenge(&self, did: &str, method_id: &str) -> Result<AuthenticationChallenge> {
-        // Verify DID exists and method is valid
-        let doc = self.resolver.resolve(did).await?;
-        
-        if !doc.verification_methods.iter().any(|m| m.id == method_id) {
-            return Err(Error::not_found(format!("Verification method {} not found", method_id)));
-        }
-
-        Ok(AuthenticationChallenge::new(method_id.to_string()))
-    }
-
-    pub async fn verify_authentication(&self, did: &str, response: AuthenticationResponse) -> Result<VerificationResult> {
-        let doc = self.resolver.resolve(did).await?;
-        
-        // Find the verification method
-        let method = doc.verification_methods.iter()
-            .find(|m| m.id == response.challenge.method_id)
-            .ok_or_else(|| Error::not_found("Verification method not found"))?;
-
-        // Verify the signature
-        let is_valid = response.challenge.verify_signature(
-            &method.public_key_bytes()?,
-            &response.signature
-        )?;
-
-        Ok(VerificationResult {
-            is_valid,
-            method_id: method.id.clone(),
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-        })
-    }
-
-    pub async fn verify_signature(&self, did: &str, method_id: &str, message: &[u8], signature: &[u8]) -> Result<bool> {
-        let doc = self.resolver.resolve(did).await?;
-        
-        // Find the verification method
-        let method = doc.verification_methods.iter()
-            .find(|m| m.id == method_id)
-            .ok_or_else(|| Error::not_found("Verification method not found"))?;
-
-        // Convert signature to proper type
-        let sig = Signature::from_bytes(signature)
-            .map_err(|e| Error::validation(format!("Invalid signature: {}", e)))?;
-
-        // Verify using the method's public key
-        method.verify_signature(message, &sig)
-    }
-
     /// Resolve a federated DID
     pub async fn resolve_federated_did(&self, did: &str) -> Result<Option<DidDocument>> {
         // Try local resolution first
@@ -318,38 +268,32 @@ impl DidManager {
 
     /// Resolve a DID, including federated resolution
     pub async fn resolve(&self, did: &str) -> Result<ResolutionResult> {
-        // Try local resolution first
-        let result = self.resolver.resolve(did).await?;
-        if result.did_document.is_some() {
-            return Ok(result);
+        // Check if this is a valid ICN DID
+        if !did.starts_with(&format!("did:{}:", DID_METHOD)) {
+            return Ok(ResolutionResult {
+                did_document: None,
+                resolution_metadata: ResolutionMetadata {
+                    error: Some("invalidDid".to_string()),
+                    content_type: None,
+                    source_federation: Some(self.config.federation_id.clone()),
+                },
+                document_metadata: DocumentMetadata::default(),
+            });
         }
-
-        // If not found locally and it's a federated DID, try federation resolution
+        
+        // Try to extract federation ID
         if let Some(federation_id) = self.extract_federation_id(did) {
-            if let Some(doc) = self.federation_client
-                .resolve_did(did, &federation_id)
-                .await? {
-                return Ok(ResolutionResult {
-                    did_document: Some(doc),
-                    resolution_metadata: ResolutionMetadata {
-                        content_type: Some("application/did+json".to_string()),
-                        source_federation: Some(federation_id),
-                        ..Default::default()
-                    },
-                    document_metadata: DocumentMetadata::default(),
-                });
+            // If federation matches local, resolve locally
+            if federation_id == self.config.federation_id {
+                return self.resolver.resolve(did).await;
             }
+            
+            // Otherwise, use federation resolution
+            return self.federation_client.resolve_did(did, &federation_id).await;
         }
-
-        // Not found in any federation
-        Ok(ResolutionResult {
-            did_document: None,
-            resolution_metadata: ResolutionMetadata {
-                error: Some("notFound".to_string()),
-                ..Default::default()
-            },
-            document_metadata: DocumentMetadata::default(),
-        })
+        
+        // Default to local resolution if federation can't be determined
+        self.resolver.resolve(did).await
     }
 
     /// Handle a resolution request from another federation
@@ -358,7 +302,13 @@ impl DidManager {
         did: &str,
         federation_id: &str,
     ) -> Result<ResolutionResult> {
-        self.resolver.handle_federation_resolution(did, federation_id).await
+        // If the federation matches our local federation, resolve locally
+        if federation_id == self.config.federation_id {
+            return self.resolver.resolve(did).await;
+        }
+        
+        // Attempt to resolve from federation
+        self.federation_client.resolve_did(did, federation_id).await
     }
 
     fn extract_federation_id(&self, did: &str) -> Option<String> {
@@ -374,12 +324,12 @@ impl DidManager {
 
 #[async_trait]
 impl DidResolver for DidManager {
-    async fn resolve(&self, did: &str) -> Result<crate::resolver::ResolutionResult> {
-        self.resolver.resolve(did).await
+    async fn resolve(&self, did: &str) -> Result<ResolutionResult> {
+        self.resolve(did).await
     }
     
     fn supports_method(&self, method: &str) -> bool {
-        self.resolver.supports_method(method)
+        method == DID_METHOD
     }
 }
 
@@ -388,21 +338,33 @@ fn create_verification_method(
     controller: &str,
     fragment: &str,
     key_type: KeyType,
-    public_key: &dyn PublicKey,
+    public_key: &PublicKey,
 ) -> Result<VerificationMethod> {
-    let method_type = match key_type {
-        KeyType::Ed25519 => "Ed25519VerificationKey2020",
-        KeyType::Secp256k1 => "EcdsaSecp256k1VerificationKey2019",
+    let id = format!("{}#{}", controller, fragment);
+    
+    let type_ = match key_type {
+        KeyType::Ed25519 => "Ed25519VerificationKey2020".to_string(),
+        KeyType::Secp256k1 => "EcdsaSecp256k1VerificationKey2019".to_string(),
         _ => return Err(Error::validation("Unsupported key type for verification method")),
     };
     
+    let public_key_material = match public_key {
+        PublicKey::Ed25519(_) => {
+            let key_bytes = public_key.to_bytes();
+            PublicKeyMaterial::Ed25519VerificationKey2020(bs58::encode(key_bytes).into_string())
+        },
+        PublicKey::Secp256k1(_) => {
+            let key_bytes = public_key.to_bytes();
+            PublicKeyMaterial::MultibaseKey(multibase::encode(multibase::Base::Base58Btc, key_bytes))
+        },
+        _ => return Err(Error::validation("Unsupported public key type")),
+    };
+    
     Ok(VerificationMethod {
-        id: format!("{}#{}", controller, fragment),
-        type_: method_type.to_string(),
+        id,
+        type_,
         controller: controller.to_string(),
-        public_key: PublicKeyMaterial::Ed25519VerificationKey2020(
-            public_key.to_base58(),
-        ),
+        public_key: public_key_material,
     })
 }
 

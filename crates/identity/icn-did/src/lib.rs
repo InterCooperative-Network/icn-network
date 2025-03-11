@@ -6,12 +6,14 @@
 pub mod resolver;
 pub mod manager;
 pub mod verification;
+pub mod federation;
 
 use icn_common::{Error, Result};
 use icn_crypto::{PublicKey, Signature, KeyType};
 use icn_crypto::signature::Verifier;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 
 /// The ICN DID method name
 pub const DID_METHOD: &str = "icn";
@@ -281,6 +283,17 @@ pub struct Service {
     
     /// The service endpoint URL
     pub service_endpoint: String,
+}
+
+// Implement std::fmt::Display for PublicKeyMaterial
+impl fmt::Display for PublicKeyMaterial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PublicKeyMaterial::Ed25519VerificationKey2020(key) => write!(f, "{}", key),
+            PublicKeyMaterial::JsonWebKey2020(jwk) => write!(f, "{}", serde_json::to_string(jwk).unwrap_or_default()),
+            PublicKeyMaterial::MultibaseKey(key) => write!(f, "{}", key),
+        }
+    }
 }
 
 #[cfg(test)]
