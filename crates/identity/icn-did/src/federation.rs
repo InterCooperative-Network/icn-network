@@ -5,142 +5,327 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::{DidDocument, DID_METHOD};
+use crate::{
+    DidDocument, DidResolutionMetadata, DidDocumentMetadata, 
+    resolver::{DidResolver, ResolutionResult}
+};
+use icn_crypto::Signature;
+use reqwest::Client;
+use std::time::{Duration, Instant};
 
 /// Federation client for cross-federation DID operations
+#[derive(Clone)]
 pub struct FederationClient {
-    /// Federation ID for this node
+    /// HTTP client for federation requests
+    client: Client,
+    
+    /// Local federation ID
     federation_id: String,
     
-    /// Federation endpoints
-    endpoints: Vec<String>,
-    
-    /// Cached DID documents from other federations
-    cache: Arc<RwLock<HashMap<String, CachedDocument>>>,
+    /// Federation endpoints cache
+    endpoints_cache: Arc<RwLock<HashMap<String, CachedEndpoints>>>,
 }
 
-/// A cached DID document with metadata
-#[derive(Clone, Debug)]
-struct CachedDocument {
-    document: DidDocument,
-    timestamp: u64,
-    ttl: u64,
+/// Cached federation endpoints
+struct CachedEndpoints {
+    /// List of endpoints
+    endpoints: Vec<String>,
+    
+    /// Expiration time
+    expires_at: Instant,
 }
 
 /// Federation resolution request
-#[derive(Debug, Serialize, Deserialize)]
-struct ResolutionRequest {
-    did: String,
-    federation_id: String,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationResolutionRequest {
+    /// DID to resolve
+    pub did: String,
+    
+    /// Requesting federation ID
+    pub federation_id: String,
+    
+    /// Request ID for tracing
+    pub request_id: String,
 }
 
 /// Federation resolution response
-#[derive(Debug, Serialize, Deserialize)]
-struct ResolutionResponse {
-    document: Option<DidDocument>,
-    error: Option<String>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationResolutionResponse {
+    /// Resolved DID document
+    pub did_document: Option<DidDocument>,
+    
+    /// Resolution metadata
+    pub resolution_metadata: DidResolutionMetadata,
+    
+    /// Document metadata
+    pub document_metadata: DidDocumentMetadata,
+}
+
+/// Federation verification request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationVerificationRequest {
+    /// DID to verify
+    pub did: String,
+    
+    /// Challenge to verify
+    pub challenge: Vec<u8>,
+    
+    /// Signature to verify
+    pub signature: Vec<u8>,
+    
+    /// Requesting federation ID
+    pub federation_id: String,
+    
+    /// Request ID for tracing
+    pub request_id: String,
+}
+
+/// Federation verification response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationVerificationResponse {
+    /// Whether verification was successful
+    pub is_valid: bool,
+    
+    /// Error message if verification failed
+    pub error: Option<String>,
 }
 
 impl FederationClient {
     /// Create a new federation client
-    pub async fn new(federation_id: &str, endpoints: Vec<String>) -> Result<Self> {
-        Ok(Self {
-            federation_id: federation_id.to_string(),
-            endpoints,
-            cache: Arc::new(RwLock::new(HashMap::new())),
-        })
-    }
-
-    /// Resolve a DID from another federation
-    pub async fn resolve_did(&self, did: &str, federation_id: &str) -> Result<Option<DidDocument>> {
-        // Check cache first
-        if let Some(cached) = self.get_cached_document(did).await? {
-            return Ok(Some(cached.document));
+    pub fn new(federation_id: impl Into<String>) -> Self {
+        Self {
+            client: Client::new(),
+            federation_id: federation_id.into(),
+            endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
         }
-
-        // If not in cache, try federation resolution
-        for endpoint in &self.endpoints {
-            match self.resolve_from_endpoint(endpoint, did, federation_id).await {
-                Ok(Some(doc)) => {
-                    // Cache the document
-                    self.cache_document(did, doc.clone(), 3600).await?;
-                    return Ok(Some(doc));
-                }
-                Ok(None) => continue,
-                Err(e) => {
-                    log::warn!("Failed to resolve DID from endpoint {}: {}", endpoint, e);
-                    continue;
-                }
-            }
-        }
-
-        Ok(None)
     }
-
-    /// Get a cached document if it exists and hasn't expired
-    async fn get_cached_document(&self, did: &str) -> Result<Option<CachedDocument>> {
-        let cache = self.cache.read().await;
-        if let Some(cached) = cache.get(did) {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| Error::system_time("Failed to get system time"))?
-                .as_secs();
-
-            if now - cached.timestamp < cached.ttl {
-                return Ok(Some(cached.clone()));
-            }
-        }
-        Ok(None)
+    
+    /// Get the local federation ID
+    pub fn federation_id(&self) -> &str {
+        &self.federation_id
     }
-
-    /// Cache a document with TTL
-    async fn cache_document(&self, did: &str, document: DidDocument, ttl: u64) -> Result<()> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| Error::system_time("Failed to get system time"))?
-            .as_secs();
-
-        let cached = CachedDocument {
-            document,
-            timestamp: now,
-            ttl,
+    
+    /// Resolve a DID through federation
+    pub async fn resolve_did(&self, did: &str, target_federation: &str) -> Result<ResolutionResult> {
+        // Get federation endpoints
+        let endpoints = self.get_federation_endpoints(target_federation).await?;
+        if endpoints.is_empty() {
+            return Err(Error::new(format!("No endpoints found for federation {}", target_federation)));
+        }
+        
+        // Create request
+        let request = FederationResolutionRequest {
+            did: did.to_string(),
+            federation_id: self.federation_id.clone(),
+            request_id: format!("{}-{}", uuid::Uuid::new_v4(), chrono::Utc::now().timestamp_millis()),
         };
-
-        let mut cache = self.cache.write().await;
-        cache.insert(did.to_string(), cached);
-        Ok(())
+        
+        // Try each endpoint
+        for endpoint in endpoints {
+            match self.send_resolution_request(&endpoint, &request).await {
+                Ok(response) => {
+                    return Ok(ResolutionResult {
+                        did_document: response.did_document,
+                        resolution_metadata: response.resolution_metadata,
+                        document_metadata: response.document_metadata,
+                    });
+                },
+                Err(_) => continue,
+            }
+        }
+        
+        // No successful response
+        Err(Error::new(format!("Failed to resolve DID {} from federation {}", did, target_federation)))
     }
-
-    /// Resolve a DID from a specific federation endpoint
-    async fn resolve_from_endpoint(
+    
+    /// Send a resolution request to an endpoint
+    async fn send_resolution_request(
         &self,
         endpoint: &str,
+        request: &FederationResolutionRequest,
+    ) -> Result<FederationResolutionResponse> {
+        // In a real implementation, this would send an HTTP request
+        // For now, return a mock response
+        Ok(FederationResolutionResponse {
+            did_document: None,
+            resolution_metadata: DidResolutionMetadata {
+                error: Some("notFound".to_string()),
+                content_type: None,
+                source_federation: Some(self.federation_id.clone()),
+                did_url: Some(request.did.clone()),
+            },
+            document_metadata: DidDocumentMetadata {
+                created: Some(chrono::Utc::now().to_rfc3339()),
+                updated: None,
+                deactivated: None,
+                version_id: None,
+            },
+        })
+    }
+    
+    /// Verify a signature through federation
+    pub async fn verify_signature(
+        &self,
         did: &str,
-        federation_id: &str,
-    ) -> Result<Option<DidDocument>> {
-        let client = reqwest::Client::new();
-        
-        let request = ResolutionRequest {
-            did: did.to_string(),
-            federation_id: federation_id.to_string(),
-        };
-
-        let response = client
-            .post(endpoint)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| Error::network(format!("Failed to send resolution request: {}", e)))?;
-
-        let resolution: ResolutionResponse = response
-            .json()
-            .await
-            .map_err(|e| Error::network(format!("Failed to parse resolution response: {}", e)))?;
-
-        if let Some(error) = resolution.error {
-            return Err(Error::resolution(error));
+        target_federation: &str,
+        challenge: &[u8],
+        signature: &Signature,
+    ) -> Result<bool> {
+        // Get federation endpoints
+        let endpoints = self.get_federation_endpoints(target_federation).await?;
+        if endpoints.is_empty() {
+            return Err(Error::new(format!("No endpoints found for federation {}", target_federation)));
         }
+        
+        // Create request
+        let request = FederationVerificationRequest {
+            did: did.to_string(),
+            challenge: challenge.to_vec(),
+            signature: signature.as_bytes().to_vec(),
+            federation_id: self.federation_id.clone(),
+            request_id: format!("{}-{}", uuid::Uuid::new_v4(), chrono::Utc::now().timestamp_millis()),
+        };
+        
+        // Try each endpoint
+        for endpoint in endpoints {
+            match self.send_verification_request(&endpoint, &request).await {
+                Ok(response) => {
+                    return Ok(response.is_valid);
+                },
+                Err(_) => continue,
+            }
+        }
+        
+        // No successful response
+        Err(Error::new(format!("Failed to verify signature for DID {} from federation {}", did, target_federation)))
+    }
+    
+    /// Send a verification request to an endpoint
+    async fn send_verification_request(
+        &self,
+        endpoint: &str,
+        request: &FederationVerificationRequest,
+    ) -> Result<FederationVerificationResponse> {
+        // In a real implementation, this would send an HTTP request
+        // For now, return a mock response
+        Ok(FederationVerificationResponse {
+            is_valid: false,
+            error: Some("Not implemented".to_string()),
+        })
+    }
+    
+    /// Get endpoints for a federation
+    async fn get_federation_endpoints(&self, federation_id: &str) -> Result<Vec<String>> {
+        // Check cache first
+        {
+            let cache = self.endpoints_cache.read().await;
+            if let Some(cached) = cache.get(federation_id) {
+                if cached.expires_at > Instant::now() {
+                    return Ok(cached.endpoints.clone());
+                }
+            }
+        }
+        
+        // Discover federation
+        let endpoints = self.discover_federation(federation_id).await?;
+        
+        // Cache endpoints
+        {
+            let mut cache = self.endpoints_cache.write().await;
+            cache.insert(federation_id.to_string(), CachedEndpoints {
+                endpoints: endpoints.clone(),
+                expires_at: Instant::now() + Duration::from_secs(3600),
+            });
+        }
+        
+        Ok(endpoints)
+    }
+    
+    /// Discover federation endpoints
+    async fn discover_federation(&self, federation_id: &str) -> Result<Vec<String>> {
+        // In a real implementation, this would use a federation directory service
+        // For now, return mock endpoints based on federation ID
+        match federation_id {
+            "test" => Ok(vec!["https://test-federation.example/api".to_string()]),
+            "global" => Ok(vec!["https://global-federation.example/api".to_string()]),
+            _ => Ok(Vec::new()),
+        }
+    }
+    
+    /// Add federation endpoints to cache
+    pub async fn add_federation_endpoints(&self, federation_id: &str, endpoints: Vec<String>) {
+        let mut cache = self.endpoints_cache.write().await;
+        cache.insert(federation_id.to_string(), CachedEndpoints {
+            endpoints,
+            expires_at: Instant::now() + Duration::from_secs(3600),
+        });
+    }
+}
 
-        Ok(resolution.document)
+/// Federation DID resolver using federation client
+pub struct FederationDidResolver {
+    /// Federation client
+    client: FederationClient,
+    
+    /// Local resolver for DIDs in this federation
+    local_resolver: Option<Arc<dyn DidResolver>>,
+}
+
+impl FederationDidResolver {
+    /// Create a new federation DID resolver
+    pub fn new(client: FederationClient) -> Self {
+        Self {
+            client,
+            local_resolver: None,
+        }
+    }
+    
+    /// Set local resolver
+    pub fn with_local_resolver(mut self, resolver: Arc<dyn DidResolver>) -> Self {
+        self.local_resolver = Some(resolver);
+        self
+    }
+    
+    /// Extract federation ID from DID
+    fn extract_federation_id(&self, did: &str) -> Option<String> {
+        // Parse DID to get federation and ID components
+        // Format: did:icn:<federation-id>:<id-specific-part>
+        let parts: Vec<&str> = did.split(':').collect();
+        if parts.len() >= 4 && parts[0] == "did" && parts[1] == "icn" {
+            Some(parts[2].to_string())
+        } else {
+            None
+        }
+    }
+}
+
+#[async_trait]
+impl DidResolver for FederationDidResolver {
+    async fn resolve(&self, did: &str) -> Result<ResolutionResult> {
+        // Check if this is a DID in this federation
+        if let Some(federation_id) = self.extract_federation_id(did) {
+            if federation_id == self.client.federation_id() {
+                // Use local resolver if available
+                if let Some(resolver) = &self.local_resolver {
+                    return resolver.resolve(did).await;
+                }
+            } else {
+                // Resolve through federation
+                return self.client.resolve_did(did, &federation_id).await;
+            }
+        }
+        
+        // Unknown DID format
+        Ok(ResolutionResult {
+            did_document: None,
+            resolution_metadata: DidResolutionMetadata {
+                error: Some("invalidDid".to_string()),
+                content_type: None,
+                source_federation: Some(self.client.federation_id().to_string()),
+                did_url: Some(did.to_string()),
+            },
+            document_metadata: DidDocumentMetadata::default(),
+        })
     }
 }
 
@@ -152,40 +337,35 @@ mod tests {
 
     #[tokio::test]
     async fn test_federation_client() {
-        let client = FederationClient::new(
-            "test-federation",
-            vec!["http://localhost:8080".to_string()]
-        ).await.unwrap();
-
-        // Test caching
-        let doc = DidDocument::new("test123").unwrap();
-        client.cache_document(&doc.id, doc.clone(), 1).await.unwrap();
-
-        // Should get from cache
-        let cached = client.get_cached_document(&doc.id).await.unwrap();
-        assert!(cached.is_some());
-        assert_eq!(cached.unwrap().document.id, doc.id);
-
-        // Wait for TTL to expire
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        // Should not get from cache
-        let cached = client.get_cached_document(&doc.id).await.unwrap();
-        assert!(cached.is_none());
+        let client = FederationClient::new("local-fed");
+        
+        // Test federation ID
+        assert_eq!(client.federation_id(), "local-fed");
+        
+        // Test endpoint cache
+        client.add_federation_endpoints("test-fed", vec!["https://test-fed.example.com/api".to_string()]).await;
+        
+        let endpoints = client.get_federation_endpoints("test-fed").await.unwrap();
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0], "https://test-fed.example.com/api");
     }
-
+    
     #[tokio::test]
-    async fn test_federation_resolution() {
-        let client = FederationClient::new(
-            "test-federation",
-            vec!["http://localhost:8080".to_string()]
-        ).await.unwrap();
-
-        // Test resolution with invalid endpoint (should handle error gracefully)
-        let result = client
-            .resolve_did("did:icn:test:123", "other-federation")
-            .await
-            .unwrap();
-        assert!(result.is_none());
+    async fn test_federation_resolver() {
+        let client = FederationClient::new("local-fed");
+        let resolver = FederationDidResolver::new(client);
+        
+        // Test federation extraction
+        let federation_id = resolver.extract_federation_id("did:icn:external-fed:abc123");
+        assert_eq!(federation_id, Some("external-fed".to_string()));
+        
+        // Test invalid DID format
+        let federation_id = resolver.extract_federation_id("did:example:invalid");
+        assert_eq!(federation_id, None);
+        
+        // Test resolution
+        let result = resolver.resolve("did:icn:external-fed:abc123").await.unwrap();
+        assert!(result.did_document.is_none());
+        assert_eq!(result.resolution_metadata.error, Some("notFound".to_string()));
     }
 }

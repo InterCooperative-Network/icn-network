@@ -1,7 +1,13 @@
 pub mod federation;
 
-use icn_common::{Error, Result};
+use axum::{
+    routing::{get, post},
+    Router,
+    Extension,
+};
 use std::sync::Arc;
+use crate::state::NodeState;
+use icn_common::{Error, Result};
 use crate::systems::SystemsManager;
 use federation::FederationApi;
 
@@ -35,6 +41,28 @@ impl ApiServer {
     pub fn federation_api(&self) -> Option<&FederationApi> {
         self.federation_api.as_ref()
     }
+}
+
+/// Create API router with all routes
+pub fn create_api_router(state: Arc<NodeState>) -> Router {
+    // Create main router
+    Router::new()
+        .nest("/api", api_routes())
+        .layer(Extension(state))
+}
+
+/// Create API routes
+fn api_routes() -> Router {
+    Router::new()
+        // Health check endpoint
+        .route("/health", get(health_check))
+        // Include federation API routes
+        .merge(federation::create_federation_router())
+}
+
+/// Health check handler
+async fn health_check() -> &'static str {
+    "OK"
 }
 
 #[cfg(test)]
