@@ -240,30 +240,33 @@ impl FederationDidResolver {
 #[async_trait]
 impl DidResolver for FederationDidResolver {
     async fn resolve(&self, did: &str) -> Result<ResolutionResult> {
-        // Check if this is a DID in this federation
-        if let Some(federation_id) = self.extract_federation_id(did) {
-            if federation_id == self.client.federation_id() {
-                // Use local resolver if available
-                if let Some(resolver) = &self.local_resolver {
-                    return resolver.resolve(did).await;
-                }
-            } else {
-                // Resolve through federation
-                return self.client.resolve_did(did, &federation_id).await;
+        // If we have a local resolver, try that first
+        if let Some(resolver) = &self.local_resolver {
+            let result = resolver.resolve(did).await?;
+            if result.did_document.is_some() {
+                return Ok(result);
             }
         }
         
-        // Unknown DID format
+        // If not resolved locally, try federation resolution
+        if let Some(federation_id) = self.extract_federation_id(did) {
+            return self.client.resolve_did(did, &federation_id).await;
+        }
+        
+        // Not found
         Ok(ResolutionResult {
             did_document: None,
             resolution_metadata: ResolutionMetadata {
-                error: Some("invalidDid".to_string()),
+                error: Some("notFound".to_string()),
                 content_type: None,
                 source_federation: Some(self.client.federation_id().to_string()),
-                did_url: Some(did.to_string()),
             },
             document_metadata: DocumentMetadata::default(),
         })
+    }
+    
+    fn supports_method(&self, method: &str) -> bool {
+        method == DID_METHOD
     }
 }
 
@@ -274,13 +277,14 @@ mod tests {
     use std::time::Duration;
 
     #[tokio::test]
-    async fn test_federation_client() {
+    async fn test_federation_client_creation() {
         let client = FederationClient::new(
-            "test-federation",
-            vec!["https://example.com/federation".to_string()],
+            "local-fed",
+            vec!["http://localhost:8080".to_string()]
         ).await.unwrap();
         
-        assert_eq!(client.federation_id(), "test-federation");
+        assert_eq!(client.federation_id(), "local-fed");
+        assert_eq!(client.endpoints.len(), 1);
     }
     
     #[tokio::test]

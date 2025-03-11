@@ -10,6 +10,7 @@ use icn_crypto::Signature;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use rand::{thread_rng, Rng};
+use icn_crypto::signature::Verifier;
 
 /// Core trait for DID verification
 #[async_trait]
@@ -156,26 +157,35 @@ impl VerificationMethod {
         }
     }
 
+    /// Verify a signature using this verification method
     pub fn verify_signature(&self, message: &[u8], signature: &Signature) -> Result<bool> {
         match &self.public_key {
             PublicKeyMaterial::Ed25519VerificationKey2020(key) => {
-                let key_bytes = bs58::decode(key)
+                let key_bytes = bs58::decode(&key.key)
                     .into_vec()
                     .map_err(|e| Error::validation(format!("Invalid base58 key: {}", e)))?;
                 
-                let public_key = icn_crypto::ed25519::PublicKey::from_bytes(&key_bytes)?;
-                public_key.verify(message, signature)
+                let public_key = icn_crypto::ed25519::public_key_from_bytes(&key_bytes)?;
+                
+                match public_key.verify(message, signature) {
+                    Ok(_) => Ok(true),
+                    Err(_) => Ok(false),
+                }
             }
             PublicKeyMaterial::JsonWebKey2020(_) => {
-                Err(Error::not_implemented("JWK verification not implemented"))
+                Err(Error::internal("JWK verification not implemented"))
             }
             PublicKeyMaterial::MultibaseKey(key) => {
-                let key_bytes = multibase::decode(key)
+                let key_bytes = multibase::decode(&key.key)
                     .map_err(|e| Error::validation(format!("Invalid multibase key: {}", e)))?
                     .1;
                 
-                let public_key = icn_crypto::ed25519::PublicKey::from_bytes(&key_bytes)?;
-                public_key.verify(message, signature)
+                let public_key = icn_crypto::ed25519::public_key_from_bytes(&key_bytes)?;
+                
+                match public_key.verify(message, signature) {
+                    Ok(_) => Ok(true),
+                    Err(_) => Ok(false),
+                }
             }
         }
     }
@@ -183,12 +193,12 @@ impl VerificationMethod {
 
 /// Implementation specific verifiers
 pub struct Ed25519Verifier {
-    public_key: icn_crypto::ed25519::PublicKey,
+    public_key: ed25519_dalek::PublicKey,
     key_material: PublicKeyMaterial,
 }
 
 impl Ed25519Verifier {
-    pub fn new(public_key: icn_crypto::ed25519::PublicKey, key_material: PublicKeyMaterial) -> Self {
+    pub fn new(public_key: ed25519_dalek::PublicKey, key_material: PublicKeyMaterial) -> Self {
         Self {
             public_key,
             key_material,
@@ -199,7 +209,10 @@ impl Ed25519Verifier {
 #[async_trait]
 impl DidVerifier for Ed25519Verifier {
     async fn verify(&self, message: &[u8], signature: &Signature) -> Result<bool> {
-        self.public_key.verify(message, signature)
+        match self.public_key.verify(message, signature) {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false),
+        }
     }
     
     fn method_type(&self) -> &str {
