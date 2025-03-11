@@ -26,7 +26,7 @@ members = [
     "crates/economic/icn-economic-system",
     "crates/node/icn-node-core",
     "crates/node/icn-node-cli",
-    "crates/node/icn-node",
+    "crates/node/icn-node", "crates/networking/icn-networking",
 ]
 resolver = "2"
 
