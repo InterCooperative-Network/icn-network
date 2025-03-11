@@ -106,10 +106,10 @@ impl DidManager {
         
         // Generate a unique identifier
         let id = generate_did_identifier();
-        let did = format!("did:{}:{}", DID_METHOD, id);
+        let did = format!("did:{}:{}:{}", DID_METHOD, self.config.federation_id, id);
         
         // Create DID document
-        let mut document = DidDocument::new(&id)?;
+        let mut document = DidDocument::new(&did)?;
         
         // Add authentication verification method
         let auth_method = self.create_verification_method(&did, "key-1", &key_pair.public_key())?;
@@ -266,16 +266,18 @@ impl DidManager {
     /// Resolve a federated DID
     pub async fn resolve_federated_did(&self, did: &str) -> Result<Option<DidDocument>> {
         // Try local resolution first
-        if let Ok(doc) = self.resolver.resolve(did).await {
-            return Ok(Some(doc));
+        match self.resolve_local(did).await? {
+            Some(doc) => return Ok(Some(doc)),
+            None => {
+                // If not found locally, try federation resolution
+                if let Some(federation_id) = self.extract_federation_id(did) {
+                    let result = self.federation_client.resolve_did(did, &federation_id).await?;
+                    return Ok(result.did_document);
+                }
+                
+                Ok(None)
+            }
         }
-        
-        // If not found locally, try federation resolution
-        if let Some(federation_id) = self.extract_federation_id(did) {
-            return self.federation_client.resolve_did(did, &federation_id).await;
-        }
-        
-        Ok(None)
     }
 
     /// Resolve a DID
@@ -285,19 +287,21 @@ impl DidManager {
             Some(doc) => {
                 // Create a successful resolution result
                 let metadata = DocumentMetadata {
-                    created: Some(chrono::Utc::now()),
-                    updated: Some(chrono::Utc::now()),
+                    created: Some(chrono::Utc::now().to_rfc3339()),
+                    updated: Some(chrono::Utc::now().to_rfc3339()),
                     deactivated: None,
                     version_id: None,
                     next_version_id: None,
-                    equivalent_id: None,
-                    canonical_id: None,
                 };
                 
                 Ok(ResolutionResult {
                     did_document: Some(doc),
-                    metadata: Some(metadata),
-                    did_resolution_metadata: None,
+                    resolution_metadata: ResolutionMetadata {
+                        content_type: Some("application/did+json".to_string()),
+                        error: None,
+                        source_federation: None,
+                    },
+                    document_metadata: metadata,
                 })
             },
             None => {
@@ -312,12 +316,12 @@ impl DidManager {
                 // DID not found
                 Ok(ResolutionResult {
                     did_document: None,
-                    metadata: None,
-                    did_resolution_metadata: Some(ResolutionMetadata {
+                    resolution_metadata: ResolutionMetadata {
                         error: Some("notFound".to_string()),
-                        error_message: Some(format!("DID {} not found", did)),
                         content_type: None,
-                    }),
+                        source_federation: None,
+                    },
+                    document_metadata: DocumentMetadata::default(),
                 })
             }
         }
@@ -409,11 +413,10 @@ impl DidManager {
             return Ok(None);
         }
 
-        // Try to get the document from storage
-        let key = format!("did:{}", did);
-        match self.resolver.get::<DidDocument>(&key).await? {
-            Some(doc) => Ok(Some(doc)),
-            None => Ok(None),
+        // Try to resolve using the resolver
+        match self.resolver.resolve(did).await {
+            Ok(result) => Ok(result.did_document),
+            Err(_) => Ok(None)
         }
     }
 }

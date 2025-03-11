@@ -97,8 +97,11 @@ impl IcnDidResolver {
         // Validate the document
         self.validate_document(&document)?;
         
+        // Ensure we have a consistent storage key format
+        let storage_key = normalize_did(did);
+        
         // Check if document already exists
-        let existing = self.storage.get::<StoredDidDocument>(did).await?;
+        let existing = self.storage.get::<StoredDidDocument>(&storage_key).await?;
         let metadata = if let Some(existing) = existing {
             // Update metadata for existing document
             DocumentMetadata {
@@ -116,19 +119,19 @@ impl IcnDidResolver {
             DocumentMetadata {
                 created: Some(chrono::Utc::now().to_rfc3339()),
                 updated: Some(chrono::Utc::now().to_rfc3339()),
-                deactivated: Some(false),
+                deactivated: None,
                 version_id: Some("1".to_string()),
                 next_version_id: None,
             }
         };
         
-        // Store document with metadata
+        // Store the document with metadata
         let stored = StoredDidDocument {
             document,
             metadata,
         };
         
-        self.storage.put(did, &stored).await
+        self.storage.put(&storage_key, &stored).await
     }
     
     /// Update a DID document
@@ -136,8 +139,11 @@ impl IcnDidResolver {
         // Validate the document
         self.validate_document(&document)?;
 
+        // Ensure we have a consistent storage key format
+        let storage_key = normalize_did(did);
+
         // Ensure document exists
-        if !self.storage.exists(did).await? {
+        if !self.storage.exists(&storage_key).await? {
             return Err(Error::not_found(format!("DID {} not found", did)));
         }
         
@@ -147,7 +153,10 @@ impl IcnDidResolver {
     
     /// Deactivate a DID
     pub async fn deactivate(&self, did: &str) -> Result<()> {
-        let mut stored = self.storage.get::<StoredDidDocument>(did).await?
+        // Ensure we have a consistent storage key format
+        let storage_key = normalize_did(did);
+
+        let mut stored = self.storage.get::<StoredDidDocument>(&storage_key).await?
             .ok_or_else(|| Error::not_found(format!("DID {} not found", did)))?;
             
         // Update metadata
@@ -155,7 +164,7 @@ impl IcnDidResolver {
         stored.metadata.updated = Some(chrono::Utc::now().to_rfc3339());
         
         // Store updated document
-        self.storage.put(did, &stored).await
+        self.storage.put(&storage_key, &stored).await
     }
     
     /// List all DIDs
@@ -255,7 +264,7 @@ impl IcnDidResolver {
 #[async_trait]
 impl DidResolver for IcnDidResolver {
     async fn resolve(&self, did: &str) -> Result<ResolutionResult> {
-        // Validate DID format
+        // Validate the DID
         if !did.starts_with(&format!("did:{}:", DID_METHOD)) {
             return Ok(ResolutionResult {
                 did_document: None,
@@ -267,8 +276,11 @@ impl DidResolver for IcnDidResolver {
             });
         }
         
+        // Ensure we have a consistent storage key format
+        let storage_key = normalize_did(did);
+        
         // Look up the document
-        match self.storage.get::<StoredDidDocument>(did).await? {
+        match self.storage.get::<StoredDidDocument>(&storage_key).await? {
             Some(stored) => Ok(ResolutionResult {
                 did_document: Some(stored.document),
                 resolution_metadata: ResolutionMetadata {
@@ -283,13 +295,7 @@ impl DidResolver for IcnDidResolver {
                     error: Some("notFound".to_string()),
                     ..Default::default()
                 },
-                document_metadata: DocumentMetadata {
-                    created: None,
-                    updated: None,
-                    deactivated: None,
-                    version_id: None,
-                    next_version_id: None,
-                },
+                document_metadata: DocumentMetadata::default(),
             }),
         }
     }
@@ -303,6 +309,18 @@ impl DidResolver for IcnDidResolver {
 pub async fn create_resolver(storage_options: StorageOptions) -> Result<Arc<IcnDidResolver>> {
     let resolver = IcnDidResolver::new(storage_options).await?;
     Ok(Arc::new(resolver))
+}
+
+/// Helper function to normalize a DID for storage
+fn normalize_did(did: &str) -> String {
+    // If it's already a fully qualified DID, return it as is
+    if did.starts_with(&format!("did:{}:", DID_METHOD)) {
+        did.to_string()
+    } else {
+        // If it's just an identifier, assume it's for the default method
+        // This is mainly for backward compatibility with tests
+        format!("did:{}:local:{}", DID_METHOD, did)
+    }
 }
 
 #[cfg(test)]
@@ -333,11 +351,11 @@ mod tests {
         
         // Update the document
         document.add_verification_method(crate::VerificationMethod {
-            id: "key-1".to_string(),
+            id: format!("{}#key-1", did),
             type_: "Ed25519VerificationKey2020".to_string(),
             controller: did.to_string(),
             public_key: crate::PublicKeyMaterial::Ed25519VerificationKey2020 {
-                key: "BASE58_PUBLIC_KEY".to_string()
+                key: "11111111111111111111111111111111".to_string() // Valid base58 string
             },
         });
         
@@ -348,12 +366,10 @@ mod tests {
         assert!(updated.did_document.is_some());
         assert_eq!(updated.did_document.unwrap().verification_method.len(), 1);
         
-        // Deactivate the DID
-        resolver.deactivate(did).await.unwrap();
-        
-        // Check deactivation
-        let deactivated = resolver.resolve(did).await.unwrap();
-        assert!(deactivated.document_metadata.deactivated.unwrap());
+        // Test non-existent DID
+        let not_found = resolver.resolve("did:icn:nonexistent").await.unwrap();
+        assert!(not_found.did_document.is_none());
+        assert_eq!(not_found.resolution_metadata.error.unwrap(), "notFound");
     }
     
     #[tokio::test]
@@ -397,32 +413,37 @@ mod tests {
 
         // Create a test document
         let doc = DidDocument::new("test123").unwrap();
-        resolver.store("test123", doc.clone()).await.unwrap();
+        let did = "did:icn:test123";
+        resolver.store(did, doc.clone()).await.unwrap();
 
         // Resolve the document
-        let result = resolver.resolve("test123").await.unwrap();
+        let result = resolver.resolve(did).await.unwrap();
         assert!(result.did_document.is_some());
         assert_eq!(result.did_document.unwrap().id, doc.id);
 
         // Update the document
         let mut updated_doc = doc.clone();
         updated_doc.add_service(crate::Service {
-            id: "service-1".to_string(),
+            id: format!("{}#service-1", did),
             type_: "TestService".to_string(),
             service_endpoint: "https://example.com".to_string(),
         });
 
-        resolver.update("test123", updated_doc).await.unwrap();
+        resolver.update(did, updated_doc.clone()).await.unwrap();
 
-        // Verify update
-        let result = resolver.resolve("test123").await.unwrap();
-        assert_eq!(result.did_document.unwrap().service.len(), 1);
+        // Resolve updated document
+        let result = resolver.resolve(did).await.unwrap();
+        assert!(result.did_document.is_some());
+        let resolved_doc = result.did_document.unwrap();
+        assert_eq!(resolved_doc.service.len(), 1);
+        assert_eq!(resolved_doc.service[0].type_, "TestService");
 
-        // Deactivate
-        resolver.deactivate("test123").await.unwrap();
+        // Deactivate the document
+        resolver.deactivate(did).await.unwrap();
 
-        // Verify deactivation
-        let result = resolver.resolve("test123").await.unwrap();
+        // Resolve deactivated document
+        let result = resolver.resolve(did).await.unwrap();
+        assert!(result.did_document.is_some());
         assert!(result.document_metadata.deactivated.unwrap());
     }
 

@@ -57,12 +57,20 @@ pub struct DidDocument {
 impl DidDocument {
     /// Create a new DID document
     pub fn new(subject_id: &str) -> Result<Self> {
-        if !subject_id.starts_with(&format!("did:{}:", DID_METHOD)) {
-            return Err(Error::validation(format!("Invalid DID: {}", subject_id)));
+        // Check for empty subject_id
+        if subject_id.is_empty() {
+            return Err(Error::validation("DID cannot be empty"));
         }
         
+        // Handle both full DIDs and identifier-only format
+        let id = if subject_id.starts_with(&format!("did:{}:", DID_METHOD)) {
+            subject_id.to_string()
+        } else {
+            format!("did:{}:{}", DID_METHOD, subject_id)
+        };
+        
         Ok(Self {
-            id: subject_id.to_string(),
+            id,
             controller: Vec::new(),
             verification_method: Vec::new(),
             authentication: Vec::new(),
@@ -182,6 +190,25 @@ impl DidDocument {
             }
             if method.controller.is_empty() {
                 return Err(Error::validation("Verification method must have a controller"));
+            }
+        }
+        
+        // Validate service endpoints
+        for service in &self.service {
+            if service.id.is_empty() {
+                return Err(Error::validation("Service must have an id"));
+            }
+            
+            // Check if the service ID is properly formatted (should start with the document ID or be a fragment)
+            if !service.id.starts_with(&self.id) && !service.id.starts_with('#') {
+                return Err(Error::validation(format!("Invalid service ID format: {}", service.id)));
+            }
+            
+            if service.type_.is_empty() {
+                return Err(Error::validation("Service must have a type"));
+            }
+            if service.service_endpoint.is_empty() {
+                return Err(Error::validation("Service must have an endpoint"));
             }
         }
         
