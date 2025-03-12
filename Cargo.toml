@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 icn-common = { path = "crates/core/icn-common" }
 icn-crypto = { path = "crates/core/icn-crypto" }
+icn-mutual-credit = { path = "crates/economic/icn-mutual-credit" }
 
 [workspace]
 members = [
@@ -13,7 +14,8 @@ members = [
     "crates/core/icn-crypto",
     "crates/identity/icn-did",
     "crates/identity/icn-credentials",
-    "crates/storage/icn-storage-system"
+    "crates/storage/icn-storage-system",
+    "crates/economic/icn-mutual-credit"
 ]
 resolver = "2"
 
