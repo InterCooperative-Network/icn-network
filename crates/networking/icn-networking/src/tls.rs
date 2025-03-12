@@ -112,6 +112,33 @@ impl Default for TlsConfig {
     }
 }
 
+// Manual implementation of Clone for TlsConfig
+impl Clone for TlsConfig {
+    fn clone(&self) -> Self {
+        // Create a new TlsConfig with the same configuration
+        let mut config = TlsConfig::default();
+        
+        // Clone simple fields
+        config.cert_path = self.cert_path.clone();
+        config.key_path = self.key_path.clone();
+        config.ca_path = self.ca_path.clone();
+        config.server_name_override = self.server_name_override.clone();
+        
+        // For the certificate chain, we need to reload it
+        if self.cert_path.is_some() && self.key_path.is_some() {
+            let _ = config.load_certificates();
+            let _ = config.load_private_key();
+        }
+        
+        // For root certificates, reload if path is available
+        if let Some(ca_path) = &self.ca_path {
+            let _ = config.load_root_certs(ca_path);
+        }
+        
+        config
+    }
+}
+
 impl TlsConfig {
     /// Create a new TLS configuration with certificate files
     pub fn new(
