@@ -15,6 +15,11 @@ use async_trait::async_trait;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use rust_decimal::prelude::ToPrimitive;
+use crate::confidential::{
+    ConfidentialTransaction, ConfidentialTransactionProcessor, ConfidentialBalance,
+    BlindingFactor, ConfidentialError,
+};
 
 /// Parameters for the credit clearing algorithm
 #[derive(Debug, Clone)]
@@ -61,6 +66,13 @@ pub struct TransactionProcessor {
     pending_transactions: VecDeque<Transaction>,
     /// Processed transaction history
     transaction_history: Vec<TransactionResult>,
+    /// Confidential transaction processor
+    confidential_processor: ConfidentialTransactionProcessor,
+    /// Mapping of confidential transactions to their blinding factors
+    /// In a real implementation, this would NOT be stored here, but would be 
+    /// securely managed by the sender and recipient
+    #[cfg(test)]
+    confidential_blinding_factors: HashMap<String, BlindingFactor>,
 }
 
 impl TransactionProcessor {
@@ -71,6 +83,9 @@ impl TransactionProcessor {
             clearing_params: clearing_params.unwrap_or_default(),
             pending_transactions: VecDeque::new(),
             transaction_history: Vec::new(),
+            confidential_processor: ConfidentialTransactionProcessor::new(),
+            #[cfg(test)]
+            confidential_blinding_factors: HashMap::new(),
         }
     }
 
@@ -625,6 +640,112 @@ impl TransactionProcessor {
                 result.transaction.from == *account || result.transaction.to == *account
             })
             .collect()
+    }
+
+    /// Create and submit a confidential transaction
+    pub async fn create_confidential_transaction(
+        &mut self,
+        from: &DID,
+        to: &DID,
+        amount: Amount,
+        description: Option<String>,
+    ) -> Result<String, CreditError> {
+        // Verify the accounts exist and are active
+        let graph = self.credit_graph.lock().await;
+        graph.verify_account_active(from).await?;
+        graph.verify_account_active(to).await?;
+        drop(graph);
+        
+        // Create the confidential transaction
+        let (conf_tx, blinding_factor) = self.confidential_processor.create_transaction(
+            from,
+            to,
+            amount,
+            description,
+        ).map_err(|e| CreditError::from(e))?;
+        
+        // In a real implementation, the blinding factor would be securely shared with the recipient
+        // via an encrypted channel. For simplicity in this prototype, we store it internally.
+        #[cfg(test)]
+        {
+            self.confidential_blinding_factors.insert(
+                conf_tx.base.id.clone(),
+                blinding_factor,
+            );
+        }
+        
+        // Submit the base transaction for processing
+        self.submit_transaction(conf_tx.base.clone()).await?;
+        
+        // Store the confidential transaction data along with the base transaction
+        // This would typically involve storing the commitment and range proof separately
+        // in a confidential storage system
+        
+        Ok(conf_tx.base.id.clone())
+    }
+    
+    /// Verify a confidential transaction
+    pub fn verify_confidential_transaction(
+        &self,
+        conf_tx: &ConfidentialTransaction,
+    ) -> Result<bool, CreditError> {
+        self.confidential_processor.verify_transaction(conf_tx)
+            .map_err(|e| CreditError::from(e))
+    }
+    
+    /// Reveal the amount of a confidential transaction (for authorized parties only)
+    #[cfg(test)]
+    pub fn reveal_confidential_amount(
+        &self,
+        transaction_id: &str,
+    ) -> Result<Amount, CreditError> {
+        // In a real implementation, this would involve secure key exchange
+        // between the sender and recipient
+        
+        // For this prototype, we just retrieve the stored blinding factor
+        let blinding_factor = self.confidential_blinding_factors.get(transaction_id)
+            .ok_or_else(|| CreditError::InvalidTransaction(
+                format!("No blinding factor found for transaction {}", transaction_id)
+            ))?;
+        
+        // Create a dummy confidential transaction for demonstration
+        // In a real implementation, we would retrieve the actual confidential transaction
+        let transaction = self.transaction_history.iter()
+            .find(|result| result.transaction.id == transaction_id)
+            .ok_or_else(|| CreditError::InvalidTransaction(
+                format!("Transaction {} not found", transaction_id)
+            ))?;
+        
+        // Get amount as i64 for cryptographic operations
+        let amount_i64 = transaction.transaction.amount.value()
+            .to_i64()
+            .ok_or_else(|| CreditError::Other(
+                "Amount cannot be converted to i64".to_string()
+            ))?;
+        
+        // Create a placeholder confidential transaction
+        // In a real implementation, we would retrieve the stored commitment and range proof
+        let dummy_commitment = self.confidential_processor.pedersen_generator.create_commitment(
+            amount_i64,
+            blinding_factor,
+        ).map_err(|e| CreditError::from(e))?;
+        
+        let dummy_range_proof = self.confidential_processor.range_proof_system.create_range_proof(
+            amount_i64,
+            0,
+            i64::MAX,
+            blinding_factor,
+        ).map_err(|e| CreditError::from(e))?;
+        
+        let conf_tx = ConfidentialTransaction::new(
+            transaction.transaction.clone(),
+            dummy_commitment,
+            dummy_range_proof,
+        );
+        
+        // Reveal the amount
+        self.confidential_processor.reveal_amount(&conf_tx, blinding_factor)
+            .map_err(|e| CreditError::from(e))
     }
 }
 

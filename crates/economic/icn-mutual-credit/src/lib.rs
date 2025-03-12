@@ -10,6 +10,7 @@ mod error;
 mod transaction;
 mod transaction_processor;
 mod types;
+mod confidential;
 
 pub use account::{Account, AccountStatus};
 pub use credit_graph::{CreditGraph, CreditLineId, CreditLineStep};
@@ -20,6 +21,7 @@ pub use error::CreditError;
 pub use transaction::{Transaction, TransactionStatus, TransactionType};
 pub use transaction_processor::{TransactionProcessor, TransactionResult, CreditClearingParams};
 pub use types::{Amount, DID, Timestamp};
+pub use confidential::*;
 
 /// Version of the mutual credit implementation
 pub const VERSION: &str = env!("CARGO_PKG_VERSION"); 

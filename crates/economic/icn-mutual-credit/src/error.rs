@@ -1,6 +1,7 @@
 //! Error types for the mutual credit system.
 
 use thiserror::Error;
+use crate::confidential::ConfidentialError;
 
 /// Errors that can occur in the mutual credit system
 #[derive(Error, Debug)]
@@ -112,6 +113,31 @@ impl From<icn_common::error::Error> for CreditError {
             CreditError::StorageError(msg)
         } else {
             CreditError::Other(msg)
+        }
+    }
+}
+
+impl From<ConfidentialError> for CreditError {
+    fn from(error: ConfidentialError) -> Self {
+        match error {
+            ConfidentialError::CryptoError(msg) => {
+                CreditError::Other(format!("Crypto error: {}", msg))
+            }
+            ConfidentialError::InvalidCommitment(msg) => {
+                CreditError::InvalidTransaction(format!("Invalid commitment: {}", msg))
+            }
+            ConfidentialError::ValidationError(msg) => {
+                CreditError::InvalidTransaction(format!("Validation error: {}", msg))
+            }
+            ConfidentialError::ProofError(msg) => {
+                CreditError::InvalidTransaction(format!("Proof error: {}", msg))
+            }
+            ConfidentialError::AmountRangeError(msg) => {
+                CreditError::InvalidTransaction(format!("Amount range error: {}", msg))
+            }
+            ConfidentialError::BlindingError(msg) => {
+                CreditError::Other(format!("Blinding error: {}", msg))
+            }
         }
     }
 } 

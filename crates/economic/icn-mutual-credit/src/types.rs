@@ -91,6 +91,11 @@ impl Amount {
     pub fn decimal_value(&self) -> Decimal {
         self.value
     }
+
+    /// Gets the inner Decimal value
+    pub fn value(&self) -> Decimal {
+        self.value
+    }
 }
 
 impl Add for Amount {
