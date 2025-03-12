@@ -1,0 +1,43 @@
+{
+  "network_name": "icn-testnet",
+  "federations": [
+    {
+      "federation_id": "fed-1",
+      "name": "Federation One",
+      "description": "First test federation",
+      "coops": [
+        {
+          "coop_id": "coop-1-1",
+          "name": "Cooperative 1-1",
+          "nodes": [
+            {"node_id": "node-1-1-1", "node_type": "Primary", "port": 9001},
+            {"node_id": "node-1-1-2", "node_type": "Secondary", "port": 9002}
+          ]
+        },
+        {
+          "coop_id": "coop-1-2",
+          "name": "Cooperative 1-2",
+          "nodes": [
+            {"node_id": "node-1-2-1", "node_type": "Primary", "port": 9003},
+            {"node_id": "node-1-2-2", "node_type": "Secondary", "port": 9004}
+          ]
+        }
+      ]
+    },
+    {
+      "federation_id": "fed-2",
+      "name": "Federation Two",
+      "description": "Second test federation",
+      "coops": [
+        {
+          "coop_id": "coop-2-1",
+          "name": "Cooperative 2-1",
+          "nodes": [
+            {"node_id": "node-2-1-1", "node_type": "Primary", "port": 9005},
+            {"node_id": "node-2-1-2", "node_type": "Secondary", "port": 9006}
+          ]
+        }
+      ]
+    }
+  ]
+}

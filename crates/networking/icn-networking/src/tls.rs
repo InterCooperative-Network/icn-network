@@ -305,6 +305,19 @@ impl TlsConfig {
         Ok(tokio_rustls::TlsAcceptor::from(Arc::new(server_config)))
     }
     
+    /// Create a new TLS configuration with a self-signed certificate
+    #[cfg(feature = "testing")]
+    pub fn new_self_signed(common_name: &str) -> Result<Self> {
+        let (cert_chain, private_key) = Self::generate_self_signed_cert(common_name)?;
+        
+        let mut config = Self::default();
+        config.cert_chain = Some(cert_chain);
+        config.private_key = Some(private_key);
+        config.server_name_override = Some(common_name.to_string());
+        
+        Ok(config)
+    }
+    
     /// Generate a self-signed certificate for testing
     #[cfg(feature = "testing")]
     pub fn generate_self_signed_cert(common_name: &str) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {

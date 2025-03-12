@@ -3,13 +3,29 @@ name = "icn-network"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+testing = ["icn-networking/testing"]
+
 [dependencies]
+# Core crates
 icn-common = { path = "crates/core/icn-common" }
 icn-crypto = { path = "crates/core/icn-crypto" }
-icn-mutual-credit = { path = "crates/economic/icn-mutual-credit" }
+
+# Identity crates
 icn-did = { path = "crates/identity/icn-did" }
+
+# Economic crates
+icn-mutual-credit = { path = "crates/economic/icn-mutual-credit" }
+
+# Networking crates
 icn-networking = { path = "crates/networking/icn-networking" }
-tokio = { version = "1.36", features = ["full"] }
+
+# Storage crates
+icn-storage-system = { path = "crates/storage/icn-storage-system" }
+
+# External dependencies
+tokio = { version = "1.32", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
@@ -18,7 +34,6 @@ members = [
     "crates/core/icn-common",
     "crates/core/icn-crypto",
     "crates/identity/icn-did",
-    "crates/identity/icn-credentials",
     "crates/storage/icn-storage-system",
     "crates/economic/icn-mutual-credit",
     "crates/networking/icn-networking",
@@ -50,3 +65,7 @@ path = "examples/identity_and_credit.rs"
 [[example]]
 name = "identity_and_networking"
 path = "examples/identity_and_networking.rs"
+
+[[example]]
+name = "icn_testnet"
+path = "examples/icn_testnet.rs"

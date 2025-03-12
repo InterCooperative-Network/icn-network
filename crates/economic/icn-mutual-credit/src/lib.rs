@@ -12,15 +12,15 @@ mod transaction_processor;
 mod types;
 mod confidential;
 
-pub use account::{Account, AccountStatus};
+pub use account::{Account as AccountModule, AccountStatus};
 pub use credit_graph::{CreditGraph, CreditLineId, CreditLineStep};
 pub use credit_line::{
     CollateralRequirement, CollateralType, CreditCondition, CreditLine, CreditTerms, ResourceCommitment,
 };
 pub use error::CreditError;
-pub use transaction::{Transaction, TransactionStatus, TransactionType};
+pub use transaction::{Transaction as TransactionModule, TransactionStatus as TransactionStatusModule, TransactionType as TransactionTypeModule};
 pub use transaction_processor::{TransactionProcessor, TransactionResult, CreditClearingParams};
-pub use types::{Amount, DID, Timestamp};
+pub use types::{Amount as AmountType, DID, Timestamp};
 pub use confidential::*;
 
 /// Version of the mutual credit implementation
@@ -302,7 +302,7 @@ impl MutualCreditSystem {
             .map_err(|_| Error::internal("Failed to acquire write lock on accounts"))?;
         
         if accounts.contains_key(&id) {
-            return Err(Error::already_exists(format!("Account already exists: {}", id)));
+            return Err(Error::validation(format!("Account already exists: {}", id)));
         }
         
         let account = Account::new(id.clone(), name, credit_limit);
@@ -364,42 +364,52 @@ impl MutualCreditSystem {
         let mut transactions = self.transactions.write()
             .map_err(|_| Error::internal("Failed to acquire write lock on transactions"))?;
         
-        let transaction = transactions.get_mut(transaction_id)
-            .ok_or_else(|| Error::not_found(format!("Transaction not found: {}", transaction_id)))?;
+        // First, clone the transaction to avoid borrow issues
+        let transaction_opt = transactions.get(transaction_id).cloned();
+        if transaction_opt.is_none() {
+            return Err(Error::not_found(format!("Transaction not found: {}", transaction_id)));
+        }
+        let mut transaction = transaction_opt.unwrap();
         
-        // Check if the transaction is already completed
+        // Check transaction status
         if transaction.status != TransactionStatus::Pending {
             return Err(Error::validation(format!(
-                "Transaction is not pending: status={:?}",
-                transaction.status
+                "Transaction {} is not in pending state: {:?}",
+                transaction_id, transaction.status
             )));
         }
         
-        // Get the accounts
         let mut accounts = self.accounts.write()
             .map_err(|_| Error::internal("Failed to acquire write lock on accounts"))?;
         
-        let source_account = accounts.get_mut(&transaction.source_account)
-            .ok_or_else(|| Error::not_found(format!("Source account not found: {}", transaction.source_account)))?;
+        // Get clones of the accounts first to avoid multiple mutable borrows
+        let source_account_opt = accounts.get(&transaction.source_account).cloned();
+        let destination_account_opt = accounts.get(&transaction.destination_account).cloned();
         
-        let destination_account = accounts.get_mut(&transaction.destination_account)
-            .ok_or_else(|| Error::not_found(format!("Destination account not found: {}", transaction.destination_account)))?;
-        
-        // Check if the source account has enough credit
-        if !source_account.can_transact(transaction.amount.negate()) {
-            transaction.fail();
-            return Err(Error::validation(format!(
-                "Insufficient credit for account {}: balance={}, limit={}, amount={}",
-                source_account.id, source_account.balance.value(), source_account.credit_limit.value(), transaction.amount.value()
-            )));
+        if source_account_opt.is_none() {
+            return Err(Error::not_found(format!("Source account not found: {}", transaction.source_account)));
+        }
+        if destination_account_opt.is_none() {
+            return Err(Error::not_found(format!("Destination account not found: {}", transaction.destination_account)));
         }
         
-        // Apply the transaction
+        let mut source_account = source_account_opt.unwrap();
+        let mut destination_account = destination_account_opt.unwrap();
+        
+        if !source_account.can_transact(transaction.amount.negate()) {
+            transaction.fail();
+            transactions.insert(transaction.id.clone(), transaction.clone());
+            return Err(Error::validation("Insufficient funds or credit limit exceeded"));
+        }
+        
         source_account.apply_transaction(transaction.amount.negate())?;
         destination_account.apply_transaction(transaction.amount)?;
-        
-        // Mark the transaction as completed
         transaction.complete();
+        
+        // Update the accounts in the hashmap
+        accounts.insert(transaction.source_account.clone(), source_account);
+        accounts.insert(transaction.destination_account.clone(), destination_account);
+        transactions.insert(transaction.id.clone(), transaction.clone());
         
         Ok(transaction.clone())
     }

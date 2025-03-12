@@ -1,0 +1,8 @@
+{
+  "federation_id": "FEDERATION_ID",
+  "name": "FEDERATION_NAME",
+  "description": "Federation description",
+  "bootstrap_nodes": [],
+  "governance_model": "direct",
+  "membership_policy": "open"
+}
