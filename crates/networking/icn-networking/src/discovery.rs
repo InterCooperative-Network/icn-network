@@ -1,6 +1,6 @@
 use crate::{
     error::{NetworkError, Result},
-    node::{Message, NodeConfig, NodeType, PeerInfo},
+    node::{Message, NodeConfig, NodeType, PeerInfo, ConnectionStatus},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -194,10 +194,10 @@ impl DiscoveryService {
                 for peer in peers_snapshot.iter().take(5) {
                     if let Err(e) = Self::send_discovery_request(
                         &message_tx,
-                        &peer.addr,
+                        &peer.address,
                         &config,
                     ).await {
-                        warn!("Failed to send discovery request to {}: {}", peer.addr, e);
+                        warn!("Failed to send discovery request to {}: {}", peer.address, e);
                     }
                 }
             }
@@ -233,7 +233,7 @@ impl DiscoveryService {
         
         // Serialize the discovery request
         let serialized = bincode::serialize(&discovery_request)
-            .map_err(|e| NetworkError::Serialization(e))?;
+            .map_err(|e| NetworkError::BincodeError(e.to_string()))?;
         
         // Send the discovery request
         message_tx.send(Message::Data(serialized)).await
@@ -250,7 +250,7 @@ impl DiscoveryService {
     ) -> Result<()> {
         // Deserialize the discovery message
         let discovery_message: DiscoveryMessage = bincode::deserialize(message)
-            .map_err(|e| NetworkError::Serialization(e))?;
+            .map_err(|e| NetworkError::BincodeError(e.to_string()))?;
         
         match discovery_message {
             DiscoveryMessage::DiscoveryRequest { 
@@ -312,10 +312,9 @@ impl DiscoveryService {
         
         // Add the requesting node to our peer list
         let peer_info = PeerInfo {
-            node_id: node_id.clone(),
-            coop_id: coop_id.clone(),
-            node_type: node_type.clone(),
-            addr: source,
+            id: node_id.clone(),
+            address: source,
+            status: ConnectionStatus::Disconnected,
             last_seen: chrono::Utc::now().timestamp() as u64,
         };
         
@@ -357,7 +356,7 @@ impl DiscoveryService {
         
         // Serialize the response
         let serialized = bincode::serialize(&response)
-            .map_err(|e| NetworkError::Serialization(e))?;
+            .map_err(|e| NetworkError::BincodeError(e.to_string()))?;
         
         // Send the response
         self.message_tx.send(Message::Data(serialized)).await
@@ -380,7 +379,7 @@ impl DiscoveryService {
         let mut our_peers = self.peers.write().map_err(|_| NetworkError::LockError)?;
         
         for peer in peers {
-            our_peers.insert(peer.node_id.clone(), peer);
+            our_peers.insert(peer.id.clone(), peer);
         }
         
         debug!("Updated peer list from discovery response, now have {} peers", our_peers.len());
@@ -430,7 +429,7 @@ impl DiscoveryService {
         
         // Serialize the announcement
         let serialized = bincode::serialize(&announcement)
-            .map_err(|e| NetworkError::Serialization(e))?;
+            .map_err(|e| NetworkError::BincodeError(e.to_string()))?;
         
         // Send to all known peers
         let peers = {

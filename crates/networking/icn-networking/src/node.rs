@@ -73,20 +73,27 @@ pub enum Message {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PeerInfo {
-    pub node_id: String,
-    pub coop_id: String,
-    pub node_type: NodeType,
-    pub addr: SocketAddr,
-    pub last_seen: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeStatus {
     pub uptime: u64,
     pub connected_peers: usize,
     pub cpu_usage: f64,
     pub memory_usage: f64,
+}
+
+/// Information about a peer node
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PeerInfo {
+    /// The peer's identifier
+    pub id: String,
+    
+    /// The peer's address
+    pub address: SocketAddr,
+    
+    /// Connection status
+    pub status: ConnectionStatus,
+    
+    /// Last seen timestamp
+    pub last_seen: u64,
 }
 
 /// Represents a node in the ICN network
@@ -119,24 +126,8 @@ pub struct Node {
     start_time: std::time::Instant,
 }
 
-/// Information about a peer node
-#[derive(Clone, Debug)]
-pub struct PeerInfo {
-    /// The peer's identifier
-    pub id: String,
-    
-    /// The peer's address
-    pub address: SocketAddr,
-    
-    /// Connection status
-    pub status: ConnectionStatus,
-    
-    /// Last seen timestamp
-    pub last_seen: u64,
-}
-
 /// Connection status
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ConnectionStatus {
     /// Connected to the peer
     Connected,
@@ -146,35 +137,6 @@ pub enum ConnectionStatus {
     
     /// Attempting to connect to the peer
     Connecting,
-}
-
-/// A message in the ICN network
-#[derive(Clone, Debug)]
-pub struct Message {
-    /// The sender's identifier
-    pub sender: String,
-    
-    /// The recipient's identifier
-    pub recipient: String,
-    
-    /// The message payload
-    pub payload: Vec<u8>,
-    
-    /// Message type
-    pub message_type: MessageType,
-}
-
-/// Message types
-#[derive(Clone, Debug, PartialEq)]
-pub enum MessageType {
-    /// Node discovery
-    Discovery,
-    
-    /// Peer exchange
-    PeerExchange,
-    
-    /// Application data
-    Data,
 }
 
 /// Network service trait
@@ -342,10 +304,11 @@ impl NetworkService for Node {
                         // If we have a message_tx, clone it for this connection
                         if let Some(tx) = &message_tx {
                             let tx = tx.clone();
+                            let id_for_handler = id.clone();
                             
                             // Spawn a task to handle this connection
                             tokio::spawn(async move {
-                                if let Err(e) = handle_connection(socket, addr, id.clone(), tx).await {
+                                if let Err(e) = handle_connection(socket, addr, id_for_handler, tx).await {
                                     error!("Error handling connection from {}: {}", addr, e);
                                 }
                             });
@@ -397,11 +360,10 @@ impl NetworkService for Node {
     }
     
     async fn send_message(&self, message: Message) -> Result<()> {
-        info!("Sending message to {}: {:?}", message.recipient, message.message_type);
-        
         // In a real implementation, we would serialize the message
         // and send it over the appropriate connection
         // For simplicity, we'll just print that we're sending a message
+        info!("Sending message: {:?}", message);
         
         Ok(())
     }
@@ -463,56 +425,6 @@ async fn handle_connection(
     }
     
     Ok(())
-}
-
-/// Node discovery service
-pub struct DiscoveryService {
-    /// The node
-    pub node: Arc<Node>,
-    
-    /// Known bootstrap nodes
-    pub bootstrap_nodes: Vec<SocketAddr>,
-    
-    /// Discovery interval in seconds
-    pub discovery_interval: u64,
-}
-
-impl DiscoveryService {
-    /// Create a new discovery service
-    pub fn new(node: Arc<Node>, bootstrap_nodes: Vec<SocketAddr>, discovery_interval: u64) -> Self {
-        Self {
-            node,
-            bootstrap_nodes,
-            discovery_interval,
-        }
-    }
-    
-    /// Start the discovery service
-    pub async fn start(&self) -> Result<()> {
-        // Placeholder implementation
-        // In a real implementation, we would periodically send discovery
-        // messages to bootstrap nodes and process responses
-        for &addr in &self.bootstrap_nodes {
-            println!("Discovering nodes through bootstrap node at {}", addr);
-        }
-        
-        Ok(())
-    }
-    
-    /// Stop the discovery service
-    pub async fn stop(&self) -> Result<()> {
-        // Placeholder implementation
-        Ok(())
-    }
-    
-    /// Process a discovery message
-    pub async fn process_discovery_message(&self, message: Message) -> Result<()> {
-        // Placeholder implementation
-        // In a real implementation, we would extract peer information
-        // from the message and add the peers to our known peers
-        println!("Processing discovery message from {}", message.sender);
-        Ok(())
-    }
 }
 
 #[cfg(test)]

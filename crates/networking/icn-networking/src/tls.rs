@@ -74,28 +74,28 @@ impl ClientCertVerifier for AcceptAnyClientCert {
 }
 
 /// TLS configuration
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TlsConfig {
     /// Certificate path
-    pub cert_path: Option<PathBuf>,
+    pub cert_path: Option<String>,
     
     /// Private key path
-    pub key_path: Option<PathBuf>,
+    pub key_path: Option<String>,
     
     /// Root CA certificates path
-    pub ca_path: Option<PathBuf>,
+    pub ca_path: Option<String>,
     
     /// Server name override
     pub server_name_override: Option<String>,
     
     /// Certificate chain
-    pub cert_chain: Vec<CertificateDer<'static>>,
+    pub cert_chain: Option<Vec<CertificateDer<'static>>>,
     
     /// Private key
     pub private_key: Option<PrivateKeyDer<'static>>,
     
     /// Root CA certificates
-    pub root_certs: Vec<CertificateDer<'static>>,
+    pub root_certs: Option<Vec<CertificateDer<'static>>>,
 }
 
 impl Default for TlsConfig {
@@ -105,9 +105,9 @@ impl Default for TlsConfig {
             key_path: None,
             ca_path: None,
             server_name_override: None,
-            cert_chain: Vec::new(),
+            cert_chain: None,
             private_key: None,
-            root_certs: Vec::new(),
+            root_certs: None,
         }
     }
 }
@@ -115,45 +115,52 @@ impl Default for TlsConfig {
 impl TlsConfig {
     /// Create a new TLS configuration with certificate files
     pub fn new(
-        cert_path: impl AsRef<Path>,
-        key_path: impl AsRef<Path>,
-        ca_path: Option<impl AsRef<Path>>,
+        cert_path: impl AsRef<str>,
+        key_path: impl AsRef<str>,
+        ca_path: Option<impl AsRef<str>>,
     ) -> Result<Self> {
         let mut config = Self::default();
         
-        config.cert_path = Some(cert_path.as_ref().to_path_buf());
-        config.key_path = Some(key_path.as_ref().to_path_buf());
+        config.cert_path = Some(cert_path.as_ref().to_string());
+        config.key_path = Some(key_path.as_ref().to_string());
         
-        if let Some(ca_path) = ca_path {
-            config.ca_path = Some(ca_path.as_ref().to_path_buf());
+        // Store CA path if provided
+        let ca_path_str = ca_path.map(|p| p.as_ref().to_string());
+        if let Some(path) = &ca_path_str {
+            config.ca_path = Some(path.clone());
         }
         
+        // Load certificates and keys
         config.load_certificates()?;
         config.load_private_key()?;
         
-        if let Some(ca_path) = &config.ca_path {
-            config.load_root_certs(ca_path)?;
+        // Load root certificates if provided
+        if let Some(path) = &ca_path_str {
+            config.load_root_certs(path)?;
         }
         
         Ok(config)
     }
     
     /// Load certificates from file
-    pub fn load_certificates(&mut self) -> Result<()> {
+    pub fn load_certificates(&mut self) -> Result<Vec<CertificateDer<'static>>> {
         if let Some(cert_path) = &self.cert_path {
             let cert_file = File::open(cert_path)
                 .map_err(|e| NetworkError::Io(e))?;
             let mut reader = BufReader::new(cert_file);
-            self.cert_chain = certs(&mut reader)
+            let certs = rustls_pemfile::certs(&mut reader)
                 .map(|cert_result| cert_result.map_err(|e| NetworkError::Tls(e.to_string())))
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<std::result::Result<Vec<_>, NetworkError>>()?;
             
-            if self.cert_chain.is_empty() {
+            if certs.is_empty() {
                 return Err(NetworkError::Tls("No certificates found".to_string()));
             }
+            
+            self.cert_chain = Some(certs.clone());
+            return Ok(certs);
         }
         
-        Ok(())
+        Err(NetworkError::Tls("Certificate path not set".to_string()))
     }
     
     /// Load private key from file
@@ -163,52 +170,56 @@ impl TlsConfig {
                 .map_err(|e| NetworkError::Io(e))?;
             let mut reader = BufReader::new(key_file);
             
-            // Try to read PKCS8 or RSA private keys
-            if let Ok(keys) = rustls_pemfile::pkcs8_private_keys(&mut reader) {
-                if !keys.is_empty() {
-                    self.private_key = Some(PrivateKeyDer::Pkcs8(keys[0].clone()));
-                    return Ok(());
-                }
+            // Try to load PKCS8 private keys
+            let pkcs8_keys: Vec<_> = rustls_pemfile::pkcs8_private_keys(&mut reader)
+                .filter_map(|key_result| key_result.ok())
+                .collect();
+            
+            if !pkcs8_keys.is_empty() {
+                self.private_key = Some(PrivateKeyDer::Pkcs8(pkcs8_keys[0].clone_key()));
+                return Ok(());
             }
             
-            // Rewind the reader
+            // Reset the reader
             reader = BufReader::new(File::open(key_path).map_err(|e| NetworkError::Io(e))?);
             
-            if let Ok(keys) = rustls_pemfile::rsa_private_keys(&mut reader) {
-                if !keys.is_empty() {
-                    self.private_key = Some(PrivateKeyDer::Pkcs1(keys[0].clone()));
-                    return Ok(());
-                }
+            // Try to load RSA private keys
+            let rsa_keys: Vec<_> = rustls_pemfile::rsa_private_keys(&mut reader)
+                .filter_map(|key_result| key_result.ok())
+                .collect();
+            
+            if !rsa_keys.is_empty() {
+                self.private_key = Some(PrivateKeyDer::Pkcs1(rsa_keys[0].clone_key()));
+                return Ok(());
             }
             
-            // No keys found
             return Err(NetworkError::Tls("No private key found".to_string()));
         }
         
-        Ok(())
+        Err(NetworkError::Tls("Private key path not set".to_string()))
     }
     
     /// Load root certificates from file
-    pub fn load_root_certs(&mut self, ca_path: impl AsRef<Path>) -> Result<()> {
+    pub fn load_root_certs(&mut self, ca_path: &str) -> Result<()> {
         let ca_file = File::open(ca_path)
             .map_err(|e| NetworkError::Io(e))?;
         let mut reader = BufReader::new(ca_file);
-        let certs = certs(&mut reader)
+        let certs = rustls_pemfile::certs(&mut reader)
             .map(|cert_result| cert_result.map_err(|e| NetworkError::Tls(e.to_string())))
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<std::result::Result<Vec<_>, NetworkError>>()?;
         
         if certs.is_empty() {
             return Err(NetworkError::Tls("No CA certificates found".to_string()));
         }
         
-        self.root_certs = certs;
+        self.root_certs = Some(certs);
         Ok(())
     }
     
-    /// Generate a server configuration
+    /// Create a server configuration
     pub fn server_config(&self) -> Result<ServerConfig> {
         // First check if we have the necessary certificates and keys
-        if self.cert_chain.is_empty() {
+        if self.cert_chain.as_ref().map_or(true, |c| c.is_empty()) {
             return Err(NetworkError::Tls("No certificates loaded".to_string()));
         }
         
@@ -216,57 +227,70 @@ impl TlsConfig {
             return Err(NetworkError::Tls("No private key loaded".to_string()));
         }
         
-        // Build the server configuration
+        // We need to get owned versions of the cert chain and private key
+        let cert_chain = self.cert_chain.as_ref().unwrap().clone();
+        let private_key = match self.private_key.as_ref().unwrap() {
+            PrivateKeyDer::Pkcs1(key) => PrivateKeyDer::Pkcs1(key.clone_key()),
+            PrivateKeyDer::Pkcs8(key) => PrivateKeyDer::Pkcs8(key.clone_key()),
+            PrivateKeyDer::Sec1(key) => PrivateKeyDer::Sec1(key.clone_key()),
+            _ => return Err(NetworkError::Tls("Unsupported private key format".to_string())),
+        };
+        
+        // Create a server config
         let server_config = ServerConfig::builder()
             .with_no_client_auth() // For now, we don't require client authentication
-            .with_single_cert(
-                self.cert_chain.clone(), 
-                self.private_key.clone().unwrap()
-            )
-            .map_err(|e| NetworkError::Tls(e.to_string()))?;
+            .with_single_cert(cert_chain, private_key)
+            .map_err(|e| NetworkError::Tls(format!("Failed to create server config: {}", e)))?;
         
         Ok(server_config)
     }
     
-    /// Generate a client configuration
+    /// Create a client configuration
     pub fn client_config(&self) -> Result<ClientConfig> {
-        // Build a root certificate store
-        let mut root_cert_store = rustls::RootCertStore::empty();
+        let mut root_cert_store = RootCertStore::empty();
         
         // Add our root certificates
-        for cert in &self.root_certs {
-            root_cert_store.add(cert.clone())
-                .map_err(|e| NetworkError::Tls(format!("Failed to add root certificate: {}", e)))?;
+        if let Some(certs) = &self.root_certs {
+            for cert in certs {
+                root_cert_store.add(cert.clone())
+                    .map_err(|e| NetworkError::Tls(format!("Failed to add root certificate: {}", e)))?;
+            }
         }
         
         // If we don't have any root certificates, we can use the system's root certificates
         // This is more permissive and might not be appropriate for production
-        if self.root_certs.is_empty() {
-            let mut system_roots = rustls::RootCertStore::empty();
+        if self.root_certs.is_none() {
+            let mut system_roots = RootCertStore::empty();
             for cert in rustls_native_certs::load_native_certs()
                 .map_err(|e| NetworkError::Tls(format!("Failed to load system root certificates: {}", e)))? {
-                system_roots.add(cert).map_err(|e| NetworkError::Tls(e.to_string()))?;
+                system_roots.add(cert)
+                    .map_err(|e| NetworkError::Tls(format!("Failed to add system root certificate: {}", e)))?;
             }
-            
             root_cert_store = system_roots;
         }
         
-        // Build the client configuration
-        let builder = ClientConfig::builder()
-            .with_root_certificates(root_cert_store);
+        // Create a client config
+        let mut client_config = ClientConfig::builder()
+            .with_root_certificates(root_cert_store.clone())
+            .with_no_client_auth();
         
         // If we have a client certificate, use it
-        if !self.cert_chain.is_empty() && self.private_key.is_some() {
-            let client_config = builder.with_client_auth_cert(
-                self.cert_chain.clone(),
-                self.private_key.clone().unwrap(),
-            ).map_err(|e| NetworkError::Tls(e.to_string()))?;
+        if let (Some(cert_chain), Some(private_key)) = (&self.cert_chain, &self.private_key) {
+            let cert_chain = cert_chain.clone();
+            let private_key = match private_key {
+                PrivateKeyDer::Pkcs1(key) => PrivateKeyDer::Pkcs1(key.clone_key()),
+                PrivateKeyDer::Pkcs8(key) => PrivateKeyDer::Pkcs8(key.clone_key()),
+                PrivateKeyDer::Sec1(key) => PrivateKeyDer::Sec1(key.clone_key()),
+                _ => return Err(NetworkError::Tls("Unsupported private key format".to_string())),
+            };
             
-            Ok(client_config)
-        } else {
-            // Otherwise, just use the root certificates
-            Ok(builder.with_no_client_auth())
+            client_config = ClientConfig::builder()
+                .with_root_certificates(root_cert_store.clone())
+                .with_client_auth_cert(cert_chain, private_key)
+                .map_err(|e| NetworkError::Tls(e.to_string()))?;
         }
+        
+        Ok(client_config)
     }
     
     /// Create a TLS connector for client connections
@@ -282,26 +306,26 @@ impl TlsConfig {
     }
     
     /// Generate a self-signed certificate for testing
-    pub fn generate_self_signed(
-        common_name: &str,
-        cert_path: impl AsRef<Path>,
-        key_path: impl AsRef<Path>,
-    ) -> Result<Self> {
-        // Generate a certificate and key
-        let cert = rcgen::generate_simple_self_signed(vec![common_name.to_string()])
+    #[cfg(feature = "testing")]
+    pub fn generate_self_signed_cert(common_name: &str) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+        use rcgen::{Certificate, CertificateParams, DnType, KeyPair, PKCS_ECDSA_P256_SHA256};
+        
+        let mut params = CertificateParams::new(vec![common_name.to_string()]);
+        params.distinguished_name.push(DnType::CommonName, common_name);
+        params.alg = &PKCS_ECDSA_P256_SHA256;
+        
+        let cert = Certificate::from_params(params)
             .map_err(|e| NetworkError::Tls(format!("Failed to generate certificate: {}", e)))?;
         
-        // Write the certificate to a file
-        std::fs::write(cert_path.as_ref(), cert.serialize_pem()
-            .map_err(|e| NetworkError::Tls(format!("Failed to serialize certificate: {}", e)))?)
-            .map_err(|e| NetworkError::Io(e))?;
+        let cert_der = cert.serialize_der()
+            .map_err(|e| NetworkError::Tls(format!("Failed to serialize certificate: {}", e)))?;
         
-        // Write the private key to a file
-        std::fs::write(key_path.as_ref(), cert.serialize_private_key_pem())
-            .map_err(|e| NetworkError::Io(e))?;
+        let key_der = cert.serialize_private_key_der();
         
-        // Load the TLS configuration
-        Self::new(cert_path, key_path, None::<&Path>)
+        let cert_chain = vec![CertificateDer::from(cert_der)];
+        let private_key = PrivateKeyDer::Pkcs8(key_der.into());
+        
+        Ok((cert_chain, private_key))
     }
 }
 
@@ -328,7 +352,7 @@ mod tests {
         assert!(key_path.exists());
         
         // Verify that the configuration has the certificate and key
-        assert!(!config.cert_chain.is_empty());
+        assert!(!config.cert_chain.as_ref().unwrap().is_empty());
         assert!(config.private_key.is_some());
         
         // Clean up

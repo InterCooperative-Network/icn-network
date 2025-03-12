@@ -18,6 +18,10 @@ pub enum NetworkError {
     /// Serialization error
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+    
+    /// Bincode serialization error
+    #[error("Bincode serialization error: {0}")]
+    BincodeError(String),
 
     /// Connection error
     #[error("Connection error: {0}")]
@@ -74,7 +78,7 @@ impl From<std::sync::mpsc::RecvError> for NetworkError {
     }
 }
 
-impl From<tokio::sync::mpsc::error::SendError<T>> for NetworkError 
+impl<T> From<tokio::sync::mpsc::error::SendError<T>> for NetworkError 
 where
     T: std::fmt::Debug,
 {
