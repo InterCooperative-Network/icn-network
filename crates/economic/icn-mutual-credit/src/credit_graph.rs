@@ -250,6 +250,36 @@ impl CreditGraph {
         
         Ok(())
     }
+
+    /// Get a read-only account by DID
+    pub async fn get_account(&self, account: &DID) -> Result<Option<&Account>, CreditError> {
+        Ok(self.accounts.get(account))
+    }
+
+    /// Get a mutable account by DID
+    pub async fn get_account_mut(&mut self, account: &DID) -> Result<Option<&mut Account>, CreditError> {
+        Ok(self.accounts.get_mut(account))
+    }
+
+    /// Get all accounts in the system
+    pub async fn get_all_accounts(&self) -> Result<Vec<&Account>, CreditError> {
+        Ok(self.accounts.values().collect())
+    }
+
+    /// Get a read-only credit line by ID
+    pub async fn get_credit_line(&self, id: &CreditLineId) -> Result<Option<&CreditLine>, CreditError> {
+        Ok(self.credit_lines.get(id))
+    }
+
+    /// Get a mutable credit line by ID
+    pub async fn get_credit_line_mut(&mut self, id: &CreditLineId) -> Result<Option<&mut CreditLine>, CreditError> {
+        Ok(self.credit_lines.get_mut(id))
+    }
+
+    /// Get all credit lines in the system
+    pub async fn get_all_credit_lines(&self) -> Result<Vec<&CreditLine>, CreditError> {
+        Ok(self.credit_lines.values().collect())
+    }
 }
 
 #[cfg(test)]

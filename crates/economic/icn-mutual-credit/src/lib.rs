@@ -8,6 +8,7 @@ mod credit_graph;
 mod credit_line;
 mod error;
 mod transaction;
+mod transaction_processor;
 mod types;
 
 pub use account::{Account, AccountStatus};
@@ -17,6 +18,7 @@ pub use credit_line::{
 };
 pub use error::CreditError;
 pub use transaction::{Transaction, TransactionStatus, TransactionType};
+pub use transaction_processor::{TransactionProcessor, TransactionResult, CreditClearingParams};
 pub use types::{Amount, DID, Timestamp};
 
 /// Version of the mutual credit implementation
