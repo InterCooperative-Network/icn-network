@@ -237,7 +237,7 @@ mod tests {
         );
         
         // Just verify that the client was created successfully
-        assert!(client.is_some());
+        // No need to assert anything - if creation fails, it will panic
     }
 
     #[tokio::test]
@@ -249,6 +249,6 @@ mod tests {
         
         // This test is just a placeholder for now
         // In a real test, we would mock the HTTP responses
-        assert!(client.is_some());
+        // No need to assert anything - if creation fails, it will panic
     }
 }

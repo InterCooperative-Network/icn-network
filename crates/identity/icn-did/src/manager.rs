@@ -680,11 +680,9 @@ mod tests {
         
         // Create a DID manager
         let manager = DidManager::new(
-            IcnDidResolver::default(),
             DidManagerConfig {
                 default_federation_id: "test-federation".to_string(),
-            },
-            federation_client,
+            }
         ).await.unwrap();
         
         // Create a DID
