@@ -1,6 +1,7 @@
 use crate::{
     error::{NetworkError, Result},
     tls::TlsConfig,
+    discovery::{DiscoveryService, FederationInfo},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -18,6 +19,7 @@ use std::{
 use serde::{Serialize, Deserialize};
 use tracing::{info, warn, error};
 use async_trait::async_trait;
+use std::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
@@ -106,6 +108,15 @@ pub struct Node {
     
     /// Channel for outgoing messages
     message_tx: Option<mpsc::Sender<Message>>,
+    
+    /// Discovery service
+    discovery_service: Option<DiscoveryService>,
+    
+    /// Node configuration
+    config: NodeConfig,
+    
+    /// Start time
+    start_time: std::time::Instant,
 }
 
 /// Information about a peer node
@@ -193,17 +204,35 @@ pub trait NetworkService: Send + Sync {
 
 impl Node {
     /// Create a new node
-    pub fn new(id: String, address: SocketAddr, tls_config: TlsConfig) -> Self {
+    pub fn new(id: String, address: SocketAddr, tls_config: TlsConfig, config: NodeConfig) -> Self {
         let (tx, rx) = mpsc::channel(100);
+        let peers = Arc::new(RwLock::new(HashMap::new()));
         
-        Self {
+        // Create initial node
+        let mut node = Self {
             id,
             address,
             tls_config,
-            peers: Arc::new(RwLock::new(HashMap::new())),
+            peers: peers.clone(),
             message_rx: Some(rx),
-            message_tx: Some(tx),
-        }
+            message_tx: Some(tx.clone()),
+            discovery_service: None,
+            config: config.clone(),
+            start_time: std::time::Instant::now(),
+        };
+        
+        // Initialize discovery service
+        let bootstrap_nodes = config.peers.clone();
+        let discovery_service = DiscoveryService::new(
+            config,
+            peers,
+            bootstrap_nodes,
+            tx,
+        );
+        
+        node.discovery_service = Some(discovery_service);
+        
+        node
     }
     
     /// Add a peer
@@ -225,51 +254,159 @@ impl Node {
         let peers = self.peers.read().map_err(|_| NetworkError::LockError)?;
         Ok(peers.get(peer_id).cloned())
     }
+    
+    /// Get known federations
+    pub fn get_federations(&self) -> Result<Vec<FederationInfo>> {
+        if let Some(discovery) = &self.discovery_service {
+            discovery.get_federations()
+        } else {
+            Ok(Vec::new())
+        }
+    }
+    
+    /// Find a federation by ID
+    pub fn find_federation(&self, federation_id: &str) -> Result<Option<FederationInfo>> {
+        if let Some(discovery) = &self.discovery_service {
+            discovery.find_federation(federation_id)
+        } else {
+            Ok(None)
+        }
+    }
+    
+    /// Announce a federation to the network
+    pub async fn announce_federation(
+        &self,
+        federation_id: String,
+        description: String,
+        bootstrap_nodes: Vec<SocketAddr>,
+        services: Vec<String>,
+    ) -> Result<()> {
+        if let Some(discovery) = &self.discovery_service {
+            discovery.announce_federation(federation_id, description, bootstrap_nodes, services).await
+        } else {
+            Err(NetworkError::Other("Discovery service not initialized".to_string()))
+        }
+    }
+    
+    /// Get node status
+    pub fn get_status(&self) -> NodeStatus {
+        let uptime = self.start_time.elapsed().as_secs();
+        let peers = self.peers.read().unwrap_or_else(|_| panic!("Lock poisoned"));
+        
+        // In a real implementation, we would collect actual CPU and memory usage
+        NodeStatus {
+            uptime,
+            connected_peers: peers.len(),
+            cpu_usage: 0.0,
+            memory_usage: 0.0,
+        }
+    }
 }
 
 #[async_trait]
 impl NetworkService for Node {
     async fn start(&mut self) -> Result<()> {
-        // Placeholder implementation
+        info!("Starting node {} at {}", self.id, self.address);
+        
+        // Start the discovery service
+        if let Some(discovery) = &self.discovery_service {
+            discovery.start().await?;
+        }
+        
         // In a real implementation, we would start a TCP listener
         // and handle connections in a separate task
+        // For simplicity, we'll just print that the node has started
+        
+        // Start a TCP listener
+        let listener = TcpListener::bind(self.address).await
+            .map_err(|e| NetworkError::Io(e))?;
+        
+        info!("Node {} listening on {}", self.id, self.address);
+        
+        // Clone references for the task
+        let id = self.id.clone();
+        let peers = Arc::clone(&self.peers);
+        let message_tx = self.message_tx.clone();
+        
+        // Spawn a task to handle incoming connections
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((socket, addr)) => {
+                        info!("Accepted connection from {}", addr);
+                        
+                        // Here we would handle the connection, authenticate the peer,
+                        // and add it to our peer list
+                        // For simplicity, we'll just log that a connection was accepted
+                        
+                        // If we have a message_tx, clone it for this connection
+                        if let Some(tx) = &message_tx {
+                            let tx = tx.clone();
+                            
+                            // Spawn a task to handle this connection
+                            tokio::spawn(async move {
+                                if let Err(e) = handle_connection(socket, addr, id.clone(), tx).await {
+                                    error!("Error handling connection from {}: {}", addr, e);
+                                }
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error accepting connection: {}", e);
+                    }
+                }
+            }
+        });
+        
         Ok(())
     }
     
     async fn stop(&mut self) -> Result<()> {
-        // Placeholder implementation
+        info!("Stopping node {}", self.id);
+        
+        // Stop the discovery service
+        if let Some(discovery) = &self.discovery_service {
+            discovery.stop().await?;
+        }
+        
         // In a real implementation, we would close all connections
         // and stop the listener
+        // For simplicity, we'll just print that the node has stopped
+        
         Ok(())
     }
     
     async fn connect(&mut self, address: SocketAddr) -> Result<()> {
-        // Placeholder implementation
+        info!("Connecting to peer at {}", address);
+        
         // In a real implementation, we would establish a TLS connection
         // and exchange node information
-        println!("Connecting to peer at {}", address);
+        // For simplicity, we'll just print that we're connecting
+        
         Ok(())
     }
     
     async fn disconnect(&mut self, peer_id: &str) -> Result<()> {
-        // Placeholder implementation
+        info!("Disconnecting from peer {}", peer_id);
+        
         // In a real implementation, we would close the connection
         // and update the peer's status
-        println!("Disconnecting from peer {}", peer_id);
         self.remove_peer(peer_id)?;
+        
         Ok(())
     }
     
     async fn send_message(&self, message: Message) -> Result<()> {
-        // Placeholder implementation
+        info!("Sending message to {}: {:?}", message.recipient, message.message_type);
+        
         // In a real implementation, we would serialize the message
         // and send it over the appropriate connection
-        println!("Sending message to {}: {:?}", message.recipient, message.message_type);
+        // For simplicity, we'll just print that we're sending a message
+        
         Ok(())
     }
     
     async fn receive_message(&mut self) -> Result<Message> {
-        // Placeholder implementation
         // In a real implementation, we would receive a message from
         // the message channel
         let rx = self.message_rx.as_mut().ok_or(NetworkError::ChannelClosed)?;
@@ -280,6 +417,52 @@ impl NetworkService for Node {
         let peers = self.peers.read().map_err(|_| NetworkError::LockError)?;
         Ok(peers.values().cloned().collect())
     }
+}
+
+/// Handle a new connection
+async fn handle_connection(
+    mut socket: TcpStream,
+    addr: SocketAddr,
+    node_id: String,
+    tx: mpsc::Sender<Message>,
+) -> Result<()> {
+    // In a real implementation, we would:
+    // 1. Perform TLS handshake
+    // 2. Read the initial Hello message
+    // 3. Verify the peer
+    // 4. Add the peer to our peer list
+    // 5. Handle messages from the peer
+    
+    // For simplicity, we'll just print that we're handling a connection
+    info!("Handling connection from {}", addr);
+    
+    // Let's simulate reading and responding to messages
+    loop {
+        // Buffer for incoming data
+        let mut buffer = [0u8; 1024];
+        
+        // Read data from the socket
+        let n = match socket.read(&mut buffer).await {
+            Ok(0) => {
+                // Connection closed
+                info!("Connection from {} closed", addr);
+                break;
+            }
+            Ok(n) => n,
+            Err(e) => {
+                error!("Error reading from socket: {}", e);
+                return Err(NetworkError::Io(e));
+            }
+        };
+        
+        // For simplicity, we'll just echo the data back
+        if let Err(e) = socket.write_all(&buffer[0..n]).await {
+            error!("Error writing to socket: {}", e);
+            return Err(NetworkError::Io(e));
+        }
+    }
+    
+    Ok(())
 }
 
 /// Node discovery service
@@ -338,10 +521,21 @@ mod tests {
     
     #[tokio::test]
     async fn test_add_peer() {
+        let config = NodeConfig {
+            listen_addr: "127.0.0.1:8000".parse().unwrap(),
+            peers: vec![],
+            node_id: "node1".to_string(),
+            coop_id: "coop1".to_string(),
+            node_type: NodeType::Primary,
+            discovery_interval: None,
+            health_check_interval: None,
+        };
+
         let node = Node::new(
             "node1".to_string(),
             "127.0.0.1:8000".parse().unwrap(),
             TlsConfig::default(),
+            config,
         );
         
         let peer = PeerInfo {

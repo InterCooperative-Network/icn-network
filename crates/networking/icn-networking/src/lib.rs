@@ -1,6 +1,7 @@
 pub mod error;
 pub mod tls;
 pub mod node;
+pub mod discovery;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod test_utils;

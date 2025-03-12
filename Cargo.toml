@@ -8,7 +8,10 @@ icn-common = { path = "crates/core/icn-common" }
 icn-crypto = { path = "crates/core/icn-crypto" }
 icn-mutual-credit = { path = "crates/economic/icn-mutual-credit" }
 icn-did = { path = "crates/identity/icn-did" }
+icn-networking = { path = "crates/networking/icn-networking" }
 tokio = { version = "1.36", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
 
 [workspace]
 members = [
@@ -18,6 +21,7 @@ members = [
     "crates/identity/icn-credentials",
     "crates/storage/icn-storage-system",
     "crates/economic/icn-mutual-credit",
+    "crates/networking/icn-networking",
 ]
 resolver = "2"
 
@@ -30,9 +34,19 @@ repository = "https://github.com/intercoin/icn"
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 tokio = { version = "1.36", features = ["full"] }
 async-trait = "0.1"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+futures = "0.3"
+tokio-test = "0.4"
 
 [[example]]
 name = "identity_and_credit"
 path = "examples/identity_and_credit.rs"
+
+[[example]]
+name = "identity_and_networking"
+path = "examples/identity_and_networking.rs"
