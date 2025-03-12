@@ -1,0 +1,13 @@
+[package]
+name = "icn-standalone-example"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+rand = "0.8.5"
+
+[[bin]]
+name = "identity_and_credit"
+path = "identity_and_credit.rs" 

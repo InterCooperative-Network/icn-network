@@ -4,7 +4,7 @@ use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 
 use icn_common::error::{Error, Result};
-use icn_crypto::Signature;
+use icn_crypto::{KeyType, PublicKey, Signature, KeyPair};
 use icn_crypto::signature::Verifier;
 
 /// Core trait for DID verification
@@ -102,45 +102,147 @@ pub struct AuthenticationResponse {
     pub signature: Vec<u8>,
 }
 
-/// Types of public key material supported
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum PublicKeyMaterial {
-    /// Ed25519 verification key
-    #[serde(rename = "Ed25519VerificationKey2020")]
-    Ed25519VerificationKey2020 {
-        #[serde(rename = "publicKeyBase58")]
-        key: String,
-    },
-    
-    /// JSON Web Key
-    #[serde(rename = "JsonWebKey2020")]
-    JsonWebKey2020 {
-        #[serde(rename = "publicKeyJwk")]
-        key: serde_json::Value,
-    },
-    
-    /// Multibase encoded key
-    #[serde(rename = "MultibaseKey")]
-    MultibaseKey {
-        #[serde(rename = "publicKeyMultibase")]
-        key: String,
-    },
+/// A trait for verification methods
+#[async_trait]
+pub trait Verifier: Send + Sync {
+    /// Verify a signature using this verification method
+    async fn verify(&self, message: &[u8], signature: &Signature) -> Result<bool>;
 }
 
-impl std::fmt::Display for PublicKeyMaterial {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+/// Public key material for verification methods
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PublicKeyMaterial {
+    /// Public key in JWK format
+    #[serde(rename = "publicKeyJwk")]
+    Jwk(serde_json::Value),
+    
+    /// Public key in base64 format
+    #[serde(rename = "publicKeyBase64")]
+    Base64(String),
+    
+    /// Public key in hex format
+    #[serde(rename = "publicKeyHex")]
+    Hex(String),
+    
+    /// Public key in PEM format
+    #[serde(rename = "publicKeyPem")]
+    Pem(String),
+    
+    /// Public key using multibase encoding
+    #[serde(rename = "publicKeyMultibase")]
+    Multibase(String),
+}
+
+impl PublicKeyMaterial {
+    /// Create public key material from a public key
+    pub fn from_public_key(public_key: &PublicKey) -> Result<Self> {
+        // For now, we'll use base64 format for all key types
+        let key_bytes = public_key.to_bytes();
+        Ok(PublicKeyMaterial::Base64(base64::encode(key_bytes)))
+    }
+    
+    /// Get the public key from this material
+    pub fn to_public_key(&self) -> Result<PublicKey> {
         match self {
-            Self::Ed25519VerificationKey2020 { key } => {
-                write!(f, "Ed25519VerificationKey2020 ({})", key)
-            }
-            Self::JsonWebKey2020 { key } => {
-                write!(f, "JsonWebKey2020 ({})", key)
-            }
-            Self::MultibaseKey { key } => {
-                write!(f, "MultibaseKey ({})", key)
-            }
+            Self::Base64(base64_str) => {
+                let key_bytes = base64::decode(base64_str)
+                    .map_err(|e| Error::validation(format!("Invalid Base64 public key: {}", e)))?;
+                
+                match key_bytes.len() {
+                    32 => Ok(PublicKey::Ed25519(key_bytes.try_into().unwrap())),
+                    _ => Err(Error::validation(format!("Unsupported key length: {}", key_bytes.len()))),
+                }
+            },
+            Self::Hex(hex_str) => {
+                let key_bytes = hex::decode(hex_str)
+                    .map_err(|e| Error::validation(format!("Invalid Hex public key: {}", e)))?;
+                
+                match key_bytes.len() {
+                    32 => Ok(PublicKey::Ed25519(key_bytes.try_into().unwrap())),
+                    _ => Err(Error::validation(format!("Unsupported key length: {}", key_bytes.len()))),
+                }
+            },
+            _ => Err(Error::validation("Unsupported public key format")),
         }
+    }
+}
+
+/// A public key for verification
+pub trait KeyMaterial {
+    /// Get the public key
+    fn public_key(&self) -> Result<PublicKey>;
+    
+    /// Get the key type
+    fn key_type(&self) -> KeyType;
+}
+
+impl KeyMaterial for PublicKeyMaterial {
+    fn public_key(&self) -> Result<PublicKey> {
+        self.to_public_key()
+    }
+    
+    fn key_type(&self) -> KeyType {
+        // For now, we'll assume all keys are Ed25519
+        KeyType::Ed25519
+    }
+}
+
+/// Ed25519 verifier implementation
+pub struct Ed25519Verifier {
+    /// The public key
+    public_key: PublicKey,
+}
+
+impl Ed25519Verifier {
+    /// Create a new Ed25519 verifier
+    pub fn new(public_key: PublicKey) -> Result<Self> {
+        if !matches!(public_key, PublicKey::Ed25519(_)) {
+            return Err(Error::validation("Not an Ed25519 public key"));
+        }
+        
+        Ok(Self { public_key })
+    }
+}
+
+#[async_trait]
+impl Verifier for Ed25519Verifier {
+    async fn verify(&self, message: &[u8], signature: &Signature) -> Result<bool> {
+        match signature {
+            Signature::Ed25519(sig) => {
+                match &self.public_key {
+                    PublicKey::Ed25519(pk) => {
+                        // Use the icn_crypto implementation to verify
+                        let result = ed25519_dalek::Verifier::verify(
+                            &ed25519_dalek::VerifyingKey::from_bytes(pk)
+                                .map_err(|e| Error::validation(format!("Invalid Ed25519 public key: {}", e)))?,
+                            message,
+                            &ed25519_dalek::Signature::from_bytes(sig)
+                                .map_err(|e| Error::validation(format!("Invalid Ed25519 signature: {}", e)))?,
+                        );
+                        
+                        Ok(result.is_ok())
+                    },
+                    _ => Err(Error::validation("Public key type mismatch")),
+                }
+            },
+            _ => Err(Error::validation("Signature type mismatch")),
+        }
+    }
+}
+
+/// Create a verifier for a verification method
+pub fn create_verifier(public_key_material: &PublicKeyMaterial) -> Result<Box<dyn Verifier>> {
+    // Get the public key from the material
+    let public_key = public_key_material.to_public_key()?;
+    
+    // Create a verifier based on the key type
+    match public_key {
+        PublicKey::Ed25519(_) => {
+            let verifier = Ed25519Verifier::new(public_key)?;
+            Ok(Box::new(verifier))
+        },
+        _ => Err(Error::validation("Unsupported key type")),
     }
 }
 
@@ -155,37 +257,6 @@ pub struct VerificationResult {
     
     /// The public key material used
     pub public_key: PublicKeyMaterial,
-}
-
-/// Implementation specific verifiers
-pub struct Ed25519Verifier {
-    public_key: Vec<u8>, // Store the raw bytes instead of the PublicKey type
-    key_material: PublicKeyMaterial,
-}
-
-impl Ed25519Verifier {
-    pub fn new(public_key: Vec<u8>, key_material: PublicKeyMaterial) -> Self {
-        Self {
-            public_key,
-            key_material,
-        }
-    }
-}
-
-#[async_trait]
-impl DidVerifier for Ed25519Verifier {
-    async fn verify(&self, _message: &[u8], _signature: &Signature) -> Result<bool> {
-        // For now, just return true as we need to implement proper verification
-        Ok(true)
-    }
-    
-    fn method_type(&self) -> &str {
-        "Ed25519VerificationKey2020"
-    }
-    
-    fn public_key_material(&self) -> &PublicKeyMaterial {
-        &self.key_material
-    }
 }
 
 #[cfg(test)]
@@ -243,5 +314,48 @@ mod tests {
         ).into_bytes();
         
         assert_eq!(message, expected);
+    }
+    
+    #[tokio::test]
+    async fn test_ed25519_verification() {
+        // Generate a key pair
+        let key_pair = KeyPair::generate(KeyType::Ed25519).unwrap();
+        
+        // Create public key material
+        let pk_material = PublicKeyMaterial::from_public_key(&key_pair.public_key()).unwrap();
+        
+        // Create a verifier
+        let verifier = create_verifier(&pk_material).unwrap();
+        
+        // Test message
+        let message = b"Test message";
+        
+        // Create a signature
+        let signature = key_pair.sign(message).unwrap();
+        
+        // Verify the signature
+        let result = verifier.verify(message, &signature).await.unwrap();
+        assert!(result);
+        
+        // Modify the message and verify (should fail)
+        let modified_message = b"Modified message";
+        let result = verifier.verify(modified_message, &signature).await.unwrap();
+        assert!(!result);
+    }
+    
+    #[test]
+    fn test_public_key_material_conversion() {
+        // Generate a key pair
+        let key_pair = KeyPair::generate(KeyType::Ed25519).unwrap();
+        let public_key = key_pair.public_key();
+        
+        // Convert to material
+        let material = PublicKeyMaterial::from_public_key(&public_key).unwrap();
+        
+        // Convert back to public key
+        let converted = material.to_public_key().unwrap();
+        
+        // Should match
+        assert_eq!(public_key.to_bytes(), converted.to_bytes());
     }
 } 

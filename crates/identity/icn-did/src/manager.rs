@@ -15,9 +15,11 @@ use crate::{
 use crate::federation::FederationClient;
 use rand::Rng;
 use chrono;
+use std::collections::HashMap;
+use uuid;
 
 /// DID manager configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DidManagerConfig {
     /// Storage options for the DID resolver
     pub storage_options: StorageOptions,
@@ -33,6 +35,9 @@ pub struct DidManagerConfig {
 
     /// Federation endpoints
     pub federation_endpoints: Vec<String>,
+
+    /// Whether to retain private keys in the manager
+    pub retain_private_keys: bool,
 }
 
 impl Default for DidManagerConfig {
@@ -43,29 +48,42 @@ impl Default for DidManagerConfig {
             challenge_ttl_seconds: 300, // 5 minutes
             federation_id: "local".to_string(),
             federation_endpoints: Vec::new(),
+            retain_private_keys: false,
         }
     }
 }
 
 /// DID creation options
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateDidOptions {
-    /// Key type to use (defaults to manager's default)
-    pub key_type: Option<KeyType>,
+    /// The subject identifier (optional, will be generated if not provided)
+    pub subject_id: Option<String>,
     
-    /// Additional verification methods to add
-    pub additional_verification_methods: Vec<VerificationMethod>,
+    /// DID controllers
+    pub controllers: Vec<String>,
     
-    /// Additional service endpoints to add
-    pub additional_services: Vec<crate::Service>,
+    /// Additional authentication keys
+    pub authentication_keys: Vec<KeyPair>,
+    
+    /// Additional assertion keys
+    pub assertion_keys: Vec<KeyPair>,
+    
+    /// Additional key agreement keys
+    pub key_agreement_keys: Vec<KeyPair>,
+    
+    /// Services to add to the DID document
+    pub services: Vec<crate::Service>,
 }
 
 impl Default for CreateDidOptions {
     fn default() -> Self {
         Self {
-            key_type: None,
-            additional_verification_methods: Vec::new(),
-            additional_services: Vec::new(),
+            subject_id: None,
+            controllers: Vec::new(),
+            authentication_keys: Vec::new(),
+            assertion_keys: Vec::new(),
+            key_agreement_keys: Vec::new(),
+            services: Vec::new(),
         }
     }
 }
@@ -80,6 +98,12 @@ pub struct DidManager {
 
     /// Federation client
     federation_client: Arc<FederationClient>,
+
+    /// Private keys stored by DID and key ID
+    private_keys: HashMap<String, HashMap<String, icn_crypto::SecretKey>>,
+    
+    /// Documents stored by DID
+    documents: HashMap<String, DidDocument>,
 }
 
 impl DidManager {
@@ -95,6 +119,8 @@ impl DidManager {
             resolver: Arc::new(resolver),
             config,
             federation_client: Arc::new(federation_client),
+            private_keys: HashMap::new(),
+            documents: HashMap::new(),
         })
     }
     
@@ -469,6 +495,63 @@ impl DidManager {
                 Ok(None)
             }
         }
+    }
+
+    /// Create a new DID manager with a local resolver
+    pub fn new(resolver: LocalDidResolver) -> Self {
+        Self {
+            resolver: Arc::new(IcnDidResolver::new(Arc::new(resolver))),
+            config: DidManagerConfig::default(),
+            federation_client: Arc::new(FederationClient::default()),
+            private_keys: HashMap::new(),
+            documents: HashMap::new(),
+        }
+    }
+
+    /// Create a new DID with a simple interface
+    pub fn create_did(
+        &self,
+        name: &str,
+        keypair: &KeyPair,
+        metadata: Option<HashMap<String, String>>,
+    ) -> Result<String> {
+        let subject_id = format!("{}:{}", name, uuid::Uuid::new_v4());
+        let did = format!("did:{}:{}", DID_METHOD, subject_id);
+        
+        let mut options = CreateDidOptions::default();
+        options.subject_id = Some(subject_id);
+        
+        // Create the document
+        let mut document = DidDocument::new(&did)?;
+        
+        // Add verification method
+        let vm_id = format!("{}#keys-1", did);
+        let verification_method = self.create_verification_method(
+            &did, 
+            &vm_id, 
+            &keypair.public_key()
+        )?;
+        
+        document.add_verification_method(verification_method.clone());
+        document.add_authentication(VerificationMethodReference::Reference(vm_id.clone()));
+        
+        // Add services if metadata is provided
+        if let Some(meta) = metadata {
+            for (service_type, endpoint) in meta {
+                let service_id = format!("{}#service-{}", did, service_type);
+                let service = crate::Service {
+                    id: service_id,
+                    type_: service_type,
+                    service_endpoint: endpoint,
+                };
+                document.add_service(service);
+            }
+        }
+        
+        // Store the document
+        self.resolver.store(&did, document)?;
+        
+        Ok(did)
     }
 }
 

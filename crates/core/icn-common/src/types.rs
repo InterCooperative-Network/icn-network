@@ -5,6 +5,9 @@ use std::fmt;
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
+/// Timestamp type alias for DateTime<Utc>
+pub type Timestamp = DateTime<Utc>;
+
 /// A unique identifier type
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Identifier(String);

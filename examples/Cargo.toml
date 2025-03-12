@@ -1,0 +1,16 @@
+[package]
+name = "icn-examples"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+icn-common = { path = "../crates/core/icn-common" }
+icn-crypto = { path = "../crates/core/icn-crypto" }
+icn-did = { path = "../crates/identity/icn-did" }
+icn-mutual-credit = { path = "../crates/economic/icn-mutual-credit" }
+tokio = { version = "1.36", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.6", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] } 

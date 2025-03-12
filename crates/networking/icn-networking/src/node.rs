@@ -17,6 +17,7 @@ use std::{
 };
 use serde::{Serialize, Deserialize};
 use tracing::{info, warn, error};
+use async_trait::async_trait;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
@@ -86,246 +87,275 @@ pub struct NodeStatus {
     pub memory_usage: f64,
 }
 
+/// Represents a node in the ICN network
 pub struct Node {
-    config: NodeConfig,
-    tls_config: TlsConfig,
-    message_tx: mpsc::Sender<(SocketAddr, Message)>,
-    message_rx: mpsc::Receiver<(SocketAddr, Message)>,
-    known_peers: HashMap<String, PeerInfo>,
-    start_time: std::time::Instant,
+    /// The node's identifier
+    pub id: String,
+    
+    /// The node's address
+    pub address: SocketAddr,
+    
+    /// The node's TLS configuration
+    pub tls_config: TlsConfig,
+    
+    /// Known peers
+    peers: Arc<RwLock<HashMap<String, PeerInfo>>>,
+    
+    /// Channel for incoming messages
+    message_rx: Option<mpsc::Receiver<Message>>,
+    
+    /// Channel for outgoing messages
+    message_tx: Option<mpsc::Sender<Message>>,
+}
+
+/// Information about a peer node
+#[derive(Clone, Debug)]
+pub struct PeerInfo {
+    /// The peer's identifier
+    pub id: String,
+    
+    /// The peer's address
+    pub address: SocketAddr,
+    
+    /// Connection status
+    pub status: ConnectionStatus,
+    
+    /// Last seen timestamp
+    pub last_seen: u64,
+}
+
+/// Connection status
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConnectionStatus {
+    /// Connected to the peer
+    Connected,
+    
+    /// Disconnected from the peer
+    Disconnected,
+    
+    /// Attempting to connect to the peer
+    Connecting,
+}
+
+/// A message in the ICN network
+#[derive(Clone, Debug)]
+pub struct Message {
+    /// The sender's identifier
+    pub sender: String,
+    
+    /// The recipient's identifier
+    pub recipient: String,
+    
+    /// The message payload
+    pub payload: Vec<u8>,
+    
+    /// Message type
+    pub message_type: MessageType,
+}
+
+/// Message types
+#[derive(Clone, Debug, PartialEq)]
+pub enum MessageType {
+    /// Node discovery
+    Discovery,
+    
+    /// Peer exchange
+    PeerExchange,
+    
+    /// Application data
+    Data,
+}
+
+/// Network service trait
+#[async_trait]
+pub trait NetworkService: Send + Sync {
+    /// Start the network service
+    async fn start(&mut self) -> Result<()>;
+    
+    /// Stop the network service
+    async fn stop(&mut self) -> Result<()>;
+    
+    /// Connect to a peer
+    async fn connect(&mut self, address: SocketAddr) -> Result<()>;
+    
+    /// Disconnect from a peer
+    async fn disconnect(&mut self, peer_id: &str) -> Result<()>;
+    
+    /// Send a message to a peer
+    async fn send_message(&self, message: Message) -> Result<()>;
+    
+    /// Receive a message
+    async fn receive_message(&mut self) -> Result<Message>;
+    
+    /// Get known peers
+    fn get_peers(&self) -> Result<Vec<PeerInfo>>;
 }
 
 impl Node {
-    pub fn new(config: NodeConfig, tls_config: TlsConfig) -> Self {
-        let (message_tx, message_rx) = mpsc::channel(100);
+    /// Create a new node
+    pub fn new(id: String, address: SocketAddr, tls_config: TlsConfig) -> Self {
+        let (tx, rx) = mpsc::channel(100);
+        
         Self {
-            config,
+            id,
+            address,
             tls_config,
-            message_tx,
-            message_rx,
-            known_peers: HashMap::new(),
-            start_time: std::time::Instant::now(),
+            peers: Arc::new(RwLock::new(HashMap::new())),
+            message_rx: Some(rx),
+            message_tx: Some(tx),
         }
     }
-
-    pub async fn start(&mut self) -> Result<()> {
-        info!("Starting node {} in cooperative {}", self.config.node_id, self.config.coop_id);
-        
-        // Start listening for incoming connections
-        let listener = TcpListener::bind(self.config.listen_addr).await
-            .map_err(|e| NetworkError::Connection(format!("Failed to bind: {}", e)))?;
-
-        info!("Node {} listening on {}", self.config.node_id, self.config.listen_addr);
-
-        // Connect to initial peers
-        for &peer_addr in &self.config.peers {
-            self.connect_to_peer(peer_addr).await?;
-        }
-
-        // Start periodic tasks
-        self.start_periodic_tasks();
-
-        // Accept incoming connections
-        let acceptor = self.tls_config.acceptor();
-        let message_tx = self.message_tx.clone();
-
-        tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((stream, addr)) => {
-                        let acceptor = acceptor.clone();
-                        let message_tx = message_tx.clone();
-                        
-                        tokio::spawn(async move {
-                            match acceptor.accept(stream).await {
-                                Ok(tls_stream) => {
-                                    if let Err(e) = handle_connection(tls_stream, addr, message_tx).await {
-                                        error!("Error handling connection from {}: {}", addr, e);
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("TLS handshake failed with {}: {}", addr, e);
-                                }
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        error!("Failed to accept connection: {}", e);
-                    }
-                }
-            }
-        });
-
-        // Process incoming messages
-        while let Some((peer_addr, message)) = self.message_rx.recv().await {
-            if let Err(e) = self.handle_message(peer_addr, message).await {
-                error!("Error handling message from {}: {}", peer_addr, e);
-            }
-        }
-
+    
+    /// Add a peer
+    pub fn add_peer(&self, peer: PeerInfo) -> Result<()> {
+        let mut peers = self.peers.write().map_err(|_| NetworkError::LockError)?;
+        peers.insert(peer.id.clone(), peer);
         Ok(())
     }
-
-    fn start_periodic_tasks(&self) {
-        // Start discovery task
-        if let Some(interval) = self.config.discovery_interval {
-            let tx = self.message_tx.clone();
-            let node_id = self.config.node_id.clone();
-            let coop_id = self.config.coop_id.clone();
-            let known_peers = self.known_peers.clone();
-            
-            tokio::spawn(async move {
-                let mut interval = time::interval(interval);
-                loop {
-                    interval.tick().await;
-                    let discovery_msg = Message::Discovery {
-                        requesting_node: node_id.clone(),
-                        requesting_coop: coop_id.clone(),
-                    };
-                    
-                    // Broadcast discovery message to all known peers
-                    for peer in known_peers.values() {
-                        if let Err(e) = tx.send((peer.addr, discovery_msg.clone())).await {
-                            error!("Failed to send discovery message to {}: {}", peer.addr, e);
-                        }
-                    }
-                }
-            });
-        }
-
-        // Start health check task
-        if let Some(interval) = self.config.health_check_interval {
-            let tx = self.message_tx.clone();
-            let known_peers = self.known_peers.clone();
-            let node_status = self.get_node_status();
-            
-            tokio::spawn(async move {
-                let mut interval = time::interval(interval);
-                loop {
-                    interval.tick().await;
-                    let health_msg = Message::HealthResponse {
-                        status: node_status.clone(),
-                        metrics: HashMap::new(), // TODO: Implement metrics collection
-                    };
-                    
-                    // Broadcast health status to all known peers
-                    for peer in known_peers.values() {
-                        if let Err(e) = tx.send((peer.addr, health_msg.clone())).await {
-                            error!("Failed to send health status to {}: {}", peer.addr, e);
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    async fn handle_message(&mut self, peer_addr: SocketAddr, message: Message) -> Result<()> {
-        match message {
-            Message::Hello { node_id, coop_id, node_type, supported_services: _ } => {
-                info!("Received hello from {} ({}) in cooperative {}", node_id, peer_addr, coop_id);
-                self.known_peers.insert(node_id.clone(), PeerInfo {
-                    node_id,
-                    coop_id,
-                    node_type,
-                    addr: peer_addr,
-                    last_seen: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                });
-            }
-            Message::Discovery { requesting_node, requesting_coop } => {
-                info!("Received discovery request from {} in cooperative {}", requesting_node, requesting_coop);
-                // Send discovery response with known peers
-                let response = Message::DiscoveryResponse {
-                    known_peers: self.known_peers.values().cloned().collect(),
-                };
-                self.message_tx.send((peer_addr, response)).await
-                    .map_err(|e| NetworkError::Other(e.to_string()))?;
-            }
-            Message::DiscoveryResponse { known_peers } => {
-                for peer in known_peers {
-                    if !self.known_peers.contains_key(&peer.node_id) {
-                        self.known_peers.insert(peer.node_id.clone(), peer);
-                    }
-                }
-            }
-            Message::HealthCheck => {
-                // Respond with current node status
-                let response = Message::HealthResponse {
-                    status: self.get_node_status(),
-                    metrics: HashMap::new(), // TODO: Implement metrics collection
-                };
-                self.message_tx.send((peer_addr, response)).await
-                    .map_err(|e| NetworkError::Other(e.to_string()))?;
-            }
-            Message::HealthResponse { status, metrics: _ } => {
-                info!("Received health status from {}: {:?}", peer_addr, status);
-            }
-            Message::Data(data) => {
-                info!("Received {} bytes from {}", data.len(), peer_addr);
-            }
-        }
+    
+    /// Remove a peer
+    pub fn remove_peer(&self, peer_id: &str) -> Result<()> {
+        let mut peers = self.peers.write().map_err(|_| NetworkError::LockError)?;
+        peers.remove(peer_id);
         Ok(())
     }
+    
+    /// Get a peer by ID
+    pub fn get_peer(&self, peer_id: &str) -> Result<Option<PeerInfo>> {
+        let peers = self.peers.read().map_err(|_| NetworkError::LockError)?;
+        Ok(peers.get(peer_id).cloned())
+    }
+}
 
-    fn get_node_status(&self) -> NodeStatus {
-        NodeStatus {
-            uptime: self.start_time.elapsed().as_secs(),
-            connected_peers: self.known_peers.len(),
-            cpu_usage: 0.0, // TODO: Implement actual metrics
-            memory_usage: 0.0, // TODO: Implement actual metrics
+#[async_trait]
+impl NetworkService for Node {
+    async fn start(&mut self) -> Result<()> {
+        // Placeholder implementation
+        // In a real implementation, we would start a TCP listener
+        // and handle connections in a separate task
+        Ok(())
+    }
+    
+    async fn stop(&mut self) -> Result<()> {
+        // Placeholder implementation
+        // In a real implementation, we would close all connections
+        // and stop the listener
+        Ok(())
+    }
+    
+    async fn connect(&mut self, address: SocketAddr) -> Result<()> {
+        // Placeholder implementation
+        // In a real implementation, we would establish a TLS connection
+        // and exchange node information
+        println!("Connecting to peer at {}", address);
+        Ok(())
+    }
+    
+    async fn disconnect(&mut self, peer_id: &str) -> Result<()> {
+        // Placeholder implementation
+        // In a real implementation, we would close the connection
+        // and update the peer's status
+        println!("Disconnecting from peer {}", peer_id);
+        self.remove_peer(peer_id)?;
+        Ok(())
+    }
+    
+    async fn send_message(&self, message: Message) -> Result<()> {
+        // Placeholder implementation
+        // In a real implementation, we would serialize the message
+        // and send it over the appropriate connection
+        println!("Sending message to {}: {:?}", message.recipient, message.message_type);
+        Ok(())
+    }
+    
+    async fn receive_message(&mut self) -> Result<Message> {
+        // Placeholder implementation
+        // In a real implementation, we would receive a message from
+        // the message channel
+        let rx = self.message_rx.as_mut().ok_or(NetworkError::ChannelClosed)?;
+        rx.recv().await.ok_or(NetworkError::ChannelClosed.into())
+    }
+    
+    fn get_peers(&self) -> Result<Vec<PeerInfo>> {
+        let peers = self.peers.read().map_err(|_| NetworkError::LockError)?;
+        Ok(peers.values().cloned().collect())
+    }
+}
+
+/// Node discovery service
+pub struct DiscoveryService {
+    /// The node
+    pub node: Arc<Node>,
+    
+    /// Known bootstrap nodes
+    pub bootstrap_nodes: Vec<SocketAddr>,
+    
+    /// Discovery interval in seconds
+    pub discovery_interval: u64,
+}
+
+impl DiscoveryService {
+    /// Create a new discovery service
+    pub fn new(node: Arc<Node>, bootstrap_nodes: Vec<SocketAddr>, discovery_interval: u64) -> Self {
+        Self {
+            node,
+            bootstrap_nodes,
+            discovery_interval,
         }
     }
-
-    async fn connect_to_peer(&self, peer_addr: SocketAddr) -> Result<()> {
-        let stream = TcpStream::connect(peer_addr).await
-            .map_err(|e| NetworkError::Connection(format!("Failed to connect to {}: {}", peer_addr, e)))?;
-
-        let connector = tokio_rustls::TlsConnector::from(self.tls_config.client_config());
-        let domain = rustls::pki_types::ServerName::try_from("localhost")
-            .map_err(|e| NetworkError::Connection(format!("Invalid server name: {}", e)))?;
-            
-        let tls_stream = connector
-            .connect(domain, stream)
-            .await
-            .map_err(|e| NetworkError::Connection(format!("TLS handshake failed: {}", e)))?;
-
-        let message_tx = self.message_tx.clone();
+    
+    /// Start the discovery service
+    pub async fn start(&self) -> Result<()> {
+        // Placeholder implementation
+        // In a real implementation, we would periodically send discovery
+        // messages to bootstrap nodes and process responses
+        for &addr in &self.bootstrap_nodes {
+            println!("Discovering nodes through bootstrap node at {}", addr);
+        }
         
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(tls_stream, peer_addr, message_tx).await {
-                eprintln!("Error handling connection to {}: {}", peer_addr, e);
-            }
-        });
-
+        Ok(())
+    }
+    
+    /// Stop the discovery service
+    pub async fn stop(&self) -> Result<()> {
+        // Placeholder implementation
+        Ok(())
+    }
+    
+    /// Process a discovery message
+    pub async fn process_discovery_message(&self, message: Message) -> Result<()> {
+        // Placeholder implementation
+        // In a real implementation, we would extract peer information
+        // from the message and add the peers to our known peers
+        println!("Processing discovery message from {}", message.sender);
         Ok(())
     }
 }
 
-async fn handle_connection<S>(
-    mut stream: S,
-    peer_addr: SocketAddr,
-    message_tx: mpsc::Sender<(SocketAddr, Message)>,
-) -> Result<()>
-where
-    S: AsyncReadExt + AsyncWriteExt + Unpin,
-{
-    let mut buf = [0u8; 1024];
+#[cfg(test)]
+mod tests {
+    use super::*;
     
-    loop {
-        let n = stream.read(&mut buf).await
-            .map_err(|e| NetworkError::Io(e))?;
+    #[tokio::test]
+    async fn test_add_peer() {
+        let node = Node::new(
+            "node1".to_string(),
+            "127.0.0.1:8000".parse().unwrap(),
+            TlsConfig::default(),
+        );
         
-        if n == 0 {
-            // Connection closed
-            return Ok(());
-        }
+        let peer = PeerInfo {
+            id: "peer1".to_string(),
+            address: "127.0.0.1:8001".parse().unwrap(),
+            status: ConnectionStatus::Disconnected,
+            last_seen: 0,
+        };
         
-        let message: Message = serde_json::from_slice(&buf[..n])
-            .map_err(|e| NetworkError::Serialization(e))?;
+        node.add_peer(peer.clone()).unwrap();
         
-        message_tx.send((peer_addr, message)).await
-            .map_err(|e| NetworkError::Other(e.to_string()))?;
+        let retrieved_peer = node.get_peer(&peer.id).unwrap().unwrap();
+        assert_eq!(retrieved_peer.id, peer.id);
+        assert_eq!(retrieved_peer.address, peer.address);
+        assert_eq!(retrieved_peer.status, peer.status);
     }
 } 

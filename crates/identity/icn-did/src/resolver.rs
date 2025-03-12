@@ -5,25 +5,27 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use icn_storage_system::{Storage, StorageOptions, StorageExt};
 use crate::{DidDocument, DID_METHOD};
+use crate::federation::FederationClient;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
-/// Resolution metadata according to the DID Resolution spec
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ResolutionMetadata {
-    /// Content type of the resolved document
+/// Result of a DID resolution operation
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResolutionResult {
+    /// The resolved DID document, if successful
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_type: Option<String>,
+    pub document: Option<DidDocument>,
     
-    /// Error during resolution
+    /// Metadata about the DID document
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-
-    /// Source federation ID
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_federation: Option<String>,
+    pub document_metadata: Option<DocumentMetadata>,
+    
+    /// Metadata about the resolution process
+    pub resolution_metadata: ResolutionMetadata,
 }
 
-/// DID document metadata according to the DID Core spec
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Metadata about a DID document
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DocumentMetadata {
     /// When the DID document was created
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -33,41 +35,231 @@ pub struct DocumentMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated: Option<String>,
     
-    /// Whether the DID has been deactivated
+    /// Whether the DID document is deactivated
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deactivated: Option<bool>,
     
-    /// Version ID of the DID document
+    /// The version ID of the DID document
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version_id: Option<String>,
     
-    /// Next version ID of the DID document
+    /// The next update commitment for the DID document
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_version_id: Option<String>,
+    pub next_update: Option<String>,
+    
+    /// Additional metadata
+    #[serde(flatten)]
+    pub additional: HashMap<String, serde_json::Value>,
 }
 
-/// Result of resolving a DID
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResolutionResult {
-    /// The resolved DID document
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub did_document: Option<DidDocument>,
-    
-    /// Metadata about the resolution process
-    pub resolution_metadata: ResolutionMetadata,
-    
-    /// Metadata about the DID document
-    pub document_metadata: DocumentMetadata,
+impl Default for DocumentMetadata {
+    fn default() -> Self {
+        Self {
+            created: None,
+            updated: None,
+            deactivated: None,
+            version_id: None,
+            next_update: None,
+            additional: HashMap::new(),
+        }
+    }
 }
 
-/// Interface for DID resolution
+/// Metadata about the resolution process
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResolutionMetadata {
+    /// The error code if resolution failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    
+    /// A human-readable message describing the error
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    
+    /// The content type of the resolved DID document
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    
+    /// Additional metadata
+    #[serde(flatten)]
+    pub additional: HashMap<String, serde_json::Value>,
+}
+
+impl Default for ResolutionMetadata {
+    fn default() -> Self {
+        Self {
+            error: None,
+            error_message: None,
+            content_type: Some("application/did+json".to_string()),
+            additional: HashMap::new(),
+        }
+    }
+}
+
+impl ResolutionResult {
+    /// Create a successful resolution result
+    pub fn success(document: DidDocument, document_metadata: DocumentMetadata) -> Self {
+        Self {
+            document: Some(document),
+            document_metadata: Some(document_metadata),
+            resolution_metadata: ResolutionMetadata::default(),
+        }
+    }
+    
+    /// Create a failed resolution result
+    pub fn error(error: &str, error_message: &str) -> Self {
+        Self {
+            document: None,
+            document_metadata: None,
+            resolution_metadata: ResolutionMetadata {
+                error: Some(error.to_string()),
+                error_message: Some(error_message.to_string()),
+                ..Default::default()
+            },
+        }
+    }
+}
+
+/// DID resolver trait
 #[async_trait]
 pub trait DidResolver: Send + Sync {
     /// Resolve a DID to a DID document
     async fn resolve(&self, did: &str) -> Result<ResolutionResult>;
     
-    /// Check if this resolver supports a given DID method
-    fn supports_method(&self, method: &str) -> bool;
+    /// Resolve a DID to a DID document with additional parameters
+    async fn resolve_with_params(&self, did: &str, params: &DidResolutionParams) -> Result<ResolutionResult>;
+}
+
+/// Parameters for DID resolution
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DidResolutionParams {
+    /// Whether to accept a cached result
+    pub accept_cached: bool,
+    
+    /// The version ID to resolve
+    pub version_id: Option<String>,
+    
+    /// The version time to resolve
+    pub version_time: Option<String>,
+    
+    /// Whether to resolve service endpoints
+    pub resolve_services: bool,
+}
+
+impl Default for DidResolutionParams {
+    fn default() -> Self {
+        Self {
+            accept_cached: true,
+            version_id: None,
+            version_time: None,
+            resolve_services: true,
+        }
+    }
+}
+
+/// Local DID resolver implementation
+#[derive(Debug)]
+pub struct LocalDidResolver {
+    /// Local DID document cache
+    documents: RwLock<HashMap<String, DidDocument>>,
+    
+    /// Federation client for resolving remote DIDs
+    federation_client: Arc<FederationClient>,
+}
+
+impl LocalDidResolver {
+    /// Create a new local DID resolver without a federation client
+    pub fn new() -> Self {
+        Self {
+            documents: RwLock::new(HashMap::new()),
+            federation_client: Arc::new(FederationClient::default()),
+        }
+    }
+
+    /// Create a clone of this resolver
+    pub fn clone(&self) -> Self {
+        let documents = self.documents.read().unwrap().clone();
+        Self {
+            documents: RwLock::new(documents),
+            federation_client: self.federation_client.clone(),
+        }
+    }
+    
+    /// Store a DID document in the local cache
+    pub fn store(&self, did: &str, document: DidDocument) -> Result<()> {
+        let mut documents = self.documents.write().map_err(|_| Error::internal("Failed to acquire write lock on documents"))?;
+        documents.insert(did.to_string(), document);
+        Ok(())
+    }
+    
+    /// Validate a DID
+    fn validate_did(&self, did: &str) -> Result<(String, String, String)> {
+        // Parse DID
+        let parts: Vec<&str> = did.split(':').collect();
+        
+        // Validate DID format
+        if parts.len() < 4 {
+            return Err(Error::validation(format!("Invalid DID format: {}", did)));
+        }
+        
+        if parts[0] != "did" {
+            return Err(Error::validation(format!("Invalid DID scheme: {}", parts[0])));
+        }
+        
+        if parts[1] != DID_METHOD {
+            return Err(Error::validation(format!("Unsupported DID method: {}", parts[1])));
+        }
+        
+        let federation_id = parts[2].to_string();
+        let id = parts[3].to_string();
+        
+        Ok((did.to_string(), federation_id, id))
+    }
+}
+
+#[async_trait]
+impl DidResolver for LocalDidResolver {
+    async fn resolve(&self, did: &str) -> Result<ResolutionResult> {
+        self.resolve_with_params(did, &DidResolutionParams::default()).await
+    }
+    
+    async fn resolve_with_params(&self, did: &str, params: &DidResolutionParams) -> Result<ResolutionResult> {
+        // Validate DID format
+        let (did, federation_id, _) = self.validate_did(did)?;
+        
+        // Check local cache first
+        {
+            let documents = self.documents.read().map_err(|_| Error::internal("Failed to acquire read lock on documents"))?;
+            if let Some(document) = documents.get(&did) {
+                // If we're allowed to return cached results, do so
+                if params.accept_cached {
+                    return Ok(ResolutionResult::success(
+                        document.clone(),
+                        DocumentMetadata::default(),
+                    ));
+                }
+            }
+        }
+        
+        // If not in local cache, try to resolve through the federation
+        match self.federation_client.resolve_did(&did, &federation_id).await {
+            Ok(document) => {
+                // Store in local cache
+                self.store(&did, document.clone())?;
+                
+                Ok(ResolutionResult::success(
+                    document,
+                    DocumentMetadata::default(),
+                ))
+            }
+            Err(e) => {
+                Ok(ResolutionResult::error(
+                    "notFound",
+                    &format!("Could not resolve DID: {}", e),
+                ))
+            }
+        }
+    }
 }
 
 /// Stored DID document with metadata
@@ -117,7 +309,8 @@ impl IcnDidResolver {
                     .parse::<u64>()
                     .unwrap_or(0) + 1)
                     .to_string()),
-                next_version_id: None,
+                next_update: None,
+                additional: HashMap::new(),
             }
         } else {
             // Create new metadata
@@ -126,7 +319,8 @@ impl IcnDidResolver {
                 updated: Some(chrono::Utc::now().to_rfc3339()),
                 deactivated: None,
                 version_id: Some("1".to_string()),
-                next_version_id: None,
+                next_update: None,
+                additional: HashMap::new(),
             }
         };
         
@@ -233,18 +427,13 @@ impl IcnDidResolver {
         let parts: Vec<&str> = did.split(':').collect();
         if parts.len() != 4 || parts[0] != "did" || parts[1] != "icn" {
             return Ok(ResolutionResult {
-                did_document: None,
+                document: None,
+                document_metadata: None,
                 resolution_metadata: ResolutionMetadata {
                     error: Some("Invalid DID format".to_string()),
+                    error_message: None,
                     content_type: None,
-                    source_federation: Some(federation_id.to_string()),
-                },
-                document_metadata: DocumentMetadata {
-                    created: None,
-                    updated: None,
-                    deactivated: None,
-                    version_id: None,
-                    next_version_id: None,
+                    additional: HashMap::new(),
                 },
             });
         }
@@ -253,18 +442,13 @@ impl IcnDidResolver {
         let did_federation = parts[2];
         if did_federation != federation_id {
             return Ok(ResolutionResult {
-                did_document: None,
+                document: None,
+                document_metadata: None,
                 resolution_metadata: ResolutionMetadata {
                     error: Some("DID not found in this federation".to_string()),
+                    error_message: None,
                     content_type: None,
-                    source_federation: Some(federation_id.to_string()),
-                },
-                document_metadata: DocumentMetadata {
-                    created: None,
-                    updated: None,
-                    deactivated: None,
-                    version_id: None,
-                    next_version_id: None,
+                    additional: HashMap::new(),
                 },
             });
         }
@@ -283,12 +467,14 @@ impl DidResolver for IcnDidResolver {
         if !did.starts_with("did:icn:") {
             println!("Resolver: Invalid DID format");
             return Ok(ResolutionResult {
-                did_document: None,
+                document: None,
+                document_metadata: None,
                 resolution_metadata: ResolutionMetadata {
                     error: Some("invalidDid".to_string()),
-                    ..Default::default()
+                    error_message: None,
+                    content_type: None,
+                    additional: HashMap::new(),
                 },
-                document_metadata: DocumentMetadata::default(),
             });
         }
         
@@ -302,20 +488,19 @@ impl DidResolver for IcnDidResolver {
         
         match stored_doc {
             Some(stored) => Ok(ResolutionResult {
-                did_document: Some(stored.document),
-                resolution_metadata: ResolutionMetadata {
-                    content_type: Some("application/did+json".to_string()),
-                    ..Default::default()
-                },
-                document_metadata: stored.metadata,
+                document: Some(stored.document),
+                document_metadata: Some(stored.metadata),
+                resolution_metadata: ResolutionMetadata::default(),
             }),
             None => Ok(ResolutionResult {
-                did_document: None,
+                document: None,
+                document_metadata: None,
                 resolution_metadata: ResolutionMetadata {
                     error: Some("notFound".to_string()),
-                    ..Default::default()
+                    error_message: None,
+                    content_type: None,
+                    additional: HashMap::new(),
                 },
-                document_metadata: DocumentMetadata::default(),
             }),
         }
     }
@@ -352,6 +537,7 @@ fn normalize_did(did: &str) -> String {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use crate::federation::MockFederationClient;
     
     #[tokio::test]
     async fn test_resolver_basic_operations() {
@@ -371,8 +557,8 @@ mod tests {
         
         // Resolve the document
         let result = resolver.resolve(did).await.unwrap();
-        assert!(result.did_document.is_some());
-        assert_eq!(result.did_document.unwrap().id, did);
+        assert!(result.document.is_some());
+        assert_eq!(result.document.unwrap().id, did);
         
         // Update the document
         document.add_verification_method(crate::VerificationMethod {
@@ -388,12 +574,12 @@ mod tests {
         
         // Resolve updated document
         let updated = resolver.resolve(did).await.unwrap();
-        assert!(updated.did_document.is_some());
-        assert_eq!(updated.did_document.unwrap().verification_method.len(), 1);
+        assert!(updated.document.is_some());
+        assert_eq!(updated.document.unwrap().verification_method.len(), 1);
         
         // Test non-existent DID
         let not_found = resolver.resolve("did:icn:nonexistent").await.unwrap();
-        assert!(not_found.did_document.is_none());
+        assert!(not_found.document.is_none());
         assert_eq!(not_found.resolution_metadata.error.unwrap(), "notFound");
     }
     
@@ -410,7 +596,7 @@ mod tests {
         
         // Test invalid DID format
         let result = resolver.resolve("invalid:did").await.unwrap();
-        assert!(result.did_document.is_none());
+        assert!(result.document.is_none());
         assert_eq!(
             result.resolution_metadata.error.unwrap(),
             "invalidDid"
@@ -418,7 +604,7 @@ mod tests {
         
         // Test non-existent DID
         let result = resolver.resolve("did:icn:nonexistent").await.unwrap();
-        assert!(result.did_document.is_none());
+        assert!(result.document.is_none());
         assert_eq!(
             result.resolution_metadata.error.unwrap(),
             "notFound"
@@ -443,8 +629,8 @@ mod tests {
 
         // Resolve the document
         let result = resolver.resolve(did).await.unwrap();
-        assert!(result.did_document.is_some());
-        assert_eq!(result.did_document.unwrap().id, doc.id);
+        assert!(result.document.is_some());
+        assert_eq!(result.document.unwrap().id, doc.id);
 
         // Update the document
         let mut updated_doc = doc.clone();
@@ -458,8 +644,8 @@ mod tests {
 
         // Resolve updated document
         let result = resolver.resolve(did).await.unwrap();
-        assert!(result.did_document.is_some());
-        let resolved_doc = result.did_document.unwrap();
+        assert!(result.document.is_some());
+        let resolved_doc = result.document.unwrap();
         assert_eq!(resolved_doc.service.len(), 1);
         assert_eq!(resolved_doc.service[0].type_, "TestService");
 
@@ -468,8 +654,8 @@ mod tests {
 
         // Resolve deactivated document
         let result = resolver.resolve(did).await.unwrap();
-        assert!(result.did_document.is_some());
-        assert!(result.document_metadata.deactivated.unwrap());
+        assert!(result.document.is_some());
+        assert!(result.document_metadata.as_ref().unwrap().deactivated.unwrap());
     }
 
     #[tokio::test]
@@ -528,7 +714,7 @@ mod tests {
             .await
             .unwrap();
             
-        assert!(resolution.did_document.is_none());
+        assert!(resolution.document.is_none());
         assert!(resolution.resolution_metadata.error.is_some());
         
         // Test with different federation DID
@@ -538,7 +724,7 @@ mod tests {
             .await
             .unwrap();
             
-        assert!(resolution.did_document.is_none());
+        assert!(resolution.document.is_none());
         assert_eq!(
             resolution.resolution_metadata.error.unwrap(),
             "DID not found in this federation"
@@ -551,10 +737,57 @@ mod tests {
             .await
             .unwrap();
             
-        assert!(resolution.did_document.is_none());
+        assert!(resolution.document.is_none());
         assert_eq!(
             resolution.resolution_metadata.error.unwrap(),
             "Invalid DID format"
         );
+    }
+
+    #[tokio::test]
+    async fn test_local_resolution() {
+        // Create a mock federation client
+        let federation_client = Arc::new(MockFederationClient::new());
+        
+        // Create resolver
+        let resolver = LocalDidResolver::new();
+        
+        // Create a test DID document
+        let did = "did:icn:test:123";
+        let document = DidDocument::new(did).unwrap();
+        
+        // Store it
+        resolver.store(did, document.clone()).unwrap();
+        
+        // Resolve it
+        let result = resolver.resolve(did).await.unwrap();
+        
+        // Should succeed
+        assert!(result.document.is_some());
+        assert_eq!(result.document.unwrap().id, did);
+    }
+    
+    #[test]
+    fn test_validate_did() {
+        // Create a mock federation client
+        let federation_client = Arc::new(MockFederationClient::new());
+        
+        // Create resolver
+        let resolver = LocalDidResolver::new();
+        
+        // Valid DID
+        let (did, federation_id, id) = resolver.validate_did("did:icn:test:123").unwrap();
+        assert_eq!(did, "did:icn:test:123");
+        assert_eq!(federation_id, "test");
+        assert_eq!(id, "123");
+        
+        // Invalid scheme
+        assert!(resolver.validate_did("foo:icn:test:123").is_err());
+        
+        // Invalid method
+        assert!(resolver.validate_did("did:foo:test:123").is_err());
+        
+        // Too few parts
+        assert!(resolver.validate_did("did:icn").is_err());
     }
 }

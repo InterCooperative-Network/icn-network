@@ -1,70 +1,94 @@
-# ICN Network
+# Intercooperative Network (ICN)
 
-The Intercooperative Network (ICN) is a comprehensive technical infrastructure designed to enable a cooperative-based dual power system. By integrating democratic governance, non-extractive economics, and cutting-edge privacy tools, ICN reimagines how communities, cooperatives, and federations organize economic, social, and political life.
+The Intercooperative Network (ICN) is a decentralized platform designed to enable cooperation and economic interactions between cooperatives and solidarity economy organizations.
 
 ## Project Overview
 
-ICN is built as a modular, component-based system with a focus on:
-- **Decentralized Identity**: DIDs and verifiable credentials
-- **Federation-First Design**: Local autonomy with collaborative capabilities  
-- **Democratic Governance**: Liquid democracy with multiple voting methods
-- **Non-Extractive Economics**: Mutual credit systems that keep value within networks
-- **Privacy and Security**: Zero-knowledge proofs, ring signatures, and secure multi-party computation
+The ICN project aims to create a decentralized infrastructure that supports:
 
-## Architecture
+1. **Decentralized Identity (DID)**: Allowing cooperatives to establish and manage their digital identities
+2. **Mutual Credit Systems**: Enabling economic exchanges between cooperatives without relying on traditional currencies
+3. **Resource Sharing**: Facilitating the sharing of resources between cooperatives
+4. **Governance**: Supporting democratic decision-making processes
 
-The project is organized into a modular architecture:
+## Repository Structure
 
-- **Core Layer**: Consensus, state management, cryptography, and common utilities
-- **Service Layer**: Identity, governance, economic, and resource coordination systems
-- **Application Layer**: User interfaces, APIs, and developer tools
+The project is organized into modular components:
+
+```
+crates/
+├── core/
+│   ├── icn-common/       # Common utilities and types
+│   ├── icn-crypto/       # Cryptographic primitives
+├── identity/
+│   ├── icn-did/          # Decentralized Identity implementation
+│   ├── icn-credentials/  # Verifiable Credentials
+├── economic/
+│   ├── icn-mutual-credit/ # Mutual Credit implementation
+├── storage/
+│   ├── icn-storage-system/ # Storage system
+examples/                  # Integration examples
+standalone/               # Standalone example implementation
+```
+
+## Current Status
+
+The project is in early development, with the following components implemented:
+
+- **Core Utilities**: Basic cryptographic primitives and common types
+- **Identity System**: DID implementation with local resolution
+- **Mutual Credit**: Basic mutual credit system with account management and transactions
+- **Integration Example**: Demonstrating the interaction between identity and mutual credit systems
 
 ## Getting Started
 
-### Prerequisites
+### Running the Standalone Example
 
-- Rust (latest stable version)
-- Docker and Docker Compose (for development environment)
-
-### Building from Source
+For a quick demonstration of the core concepts:
 
 ```bash
-# Clone the repository
-git clone https://github.com/intercoin/icn.git
-cd icn
-
-# Build the project
-cargo build
-
-# Run tests
-cargo test
+cd standalone
+cargo run
 ```
 
-### Using Docker
+This example demonstrates the integration between the identity system and mutual credit system in a simplified manner.
+
+### Running the Integration Example
+
+To run the full integration example (requires all dependencies):
 
 ```bash
-# Start the development environment
-docker-compose up -d
-
-# Access the development shell
-docker-compose exec icn-dev bash
+cargo run --example identity_and_credit
 ```
 
-## Project Status
+## Development Roadmap
 
-This project is currently in early development, following the phased implementation approach outlined in the whitepaper:
+The project is following a phased development approach:
 
-- **Phase 1**: Foundation Layer (Core Infrastructure)
-- **Phase 2**: Pilot-Ready System
-- **Phase 3**: Cooperative Network
-- **Phase 4**: Revolutionary Platform
+1. **Phase 1 (Current)**: Core infrastructure and basic implementations
+   - Identity system with DIDs
+   - Basic mutual credit implementation
+   - Integration between components
 
-See the [implementation roadmap](dev-docs/implementation-phases.mermaid) for more details.
+2. **Phase 2 (Planned)**: Enhanced functionality
+   - Federation of DIDs across networks
+   - Advanced credit policies and governance
+   - Resource sharing mechanisms
+
+3. **Phase 3 (Future)**: Network deployment
+   - Decentralized network deployment
+   - Integration with existing cooperative networks
+   - User-friendly interfaces
 
 ## Contributing
 
-We welcome contributions from developers, cooperatives, researchers, and community leaders. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+The project is open for contributions. Key areas where help is needed:
+
+- Implementing missing components
+- Enhancing existing implementations
+- Documentation and examples
+- Testing and security reviews
 
 ## License
 
-This project is licensed under the MIT License or Apache License 2.0, at your option - see the LICENSE files for details.
+This project is licensed under the MIT OR Apache-2.0 license.
