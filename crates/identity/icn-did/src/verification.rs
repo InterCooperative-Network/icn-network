@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use std::time::{SystemTime, UNIX_EPOCH};
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use icn_common::error::{Error, Result};
 use icn_crypto::{KeyType, PublicKey, Signature, KeyPair};
@@ -102,68 +103,103 @@ pub struct AuthenticationResponse {
     pub signature: Vec<u8>,
 }
 
-/// A trait for verification methods
+/// Verification interface for verification methods
 #[async_trait]
-pub trait Verifier: Send + Sync {
+pub trait DidVerifierTrait: Send + Sync {
     /// Verify a signature using this verification method
     async fn verify(&self, message: &[u8], signature: &Signature) -> Result<bool>;
 }
 
 /// Public key material for verification methods
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
 pub enum PublicKeyMaterial {
-    /// Public key in JWK format
-    #[serde(rename = "publicKeyJwk")]
-    Jwk(serde_json::Value),
+    /// Raw public key bytes
+    #[serde(rename = "Raw")]
+    Raw(Vec<u8>),
     
-    /// Public key in base64 format
-    #[serde(rename = "publicKeyBase64")]
+    /// Base64-encoded public key
+    #[serde(rename = "Base64")]
     Base64(String),
     
-    /// Public key in hex format
-    #[serde(rename = "publicKeyHex")]
+    /// Hex-encoded public key
+    #[serde(rename = "Hex")]
     Hex(String),
     
-    /// Public key in PEM format
-    #[serde(rename = "publicKeyPem")]
-    Pem(String),
+    /// Multibase-encoded public key
+    #[serde(rename = "Multibase")]
+    Multibase {
+        /// The multibase-encoded key
+        key: String,
+    },
     
-    /// Public key using multibase encoding
-    #[serde(rename = "publicKeyMultibase")]
-    Multibase(String),
+    /// Ed25519 verification key 2020
+    #[serde(rename = "Ed25519VerificationKey2020")]
+    Ed25519VerificationKey2020 {
+        /// The base58-encoded key
+        key: String,
+    },
+    
+    /// Multibase-encoded key with additional properties
+    #[serde(rename = "MultibaseKey")]
+    MultibaseKey {
+        /// The multibase-encoded key
+        key: String,
+        /// Additional properties
+        #[serde(flatten)]
+        properties: HashMap<String, serde_json::Value>,
+    },
 }
 
 impl PublicKeyMaterial {
     /// Create public key material from a public key
     pub fn from_public_key(public_key: &PublicKey) -> Result<Self> {
-        // For now, we'll use base64 format for all key types
-        let key_bytes = public_key.to_bytes();
-        Ok(PublicKeyMaterial::Base64(base64::encode(key_bytes)))
+        match public_key {
+            PublicKey::Ed25519(pk) => {
+                let key = bs58::encode(pk.as_bytes()).into_string();
+                Ok(Self::Ed25519VerificationKey2020 { key })
+            },
+            _ => Err(Error::validation("Unsupported public key type")),
+        }
     }
     
-    /// Get the public key from this material
+    /// Convert to a public key
     pub fn to_public_key(&self) -> Result<PublicKey> {
         match self {
+            Self::Raw(bytes) => {
+                parse_key_bytes(bytes.clone(), None)
+            },
             Self::Base64(base64_str) => {
                 let key_bytes = base64::decode(base64_str)
                     .map_err(|e| Error::validation(format!("Invalid Base64 public key: {}", e)))?;
                 
-                match key_bytes.len() {
-                    32 => Ok(PublicKey::Ed25519(key_bytes.try_into().unwrap())),
-                    _ => Err(Error::validation(format!("Unsupported key length: {}", key_bytes.len()))),
-                }
+                parse_key_bytes(key_bytes, None)
             },
             Self::Hex(hex_str) => {
                 let key_bytes = hex::decode(hex_str)
                     .map_err(|e| Error::validation(format!("Invalid Hex public key: {}", e)))?;
                 
-                match key_bytes.len() {
-                    32 => Ok(PublicKey::Ed25519(key_bytes.try_into().unwrap())),
-                    _ => Err(Error::validation(format!("Unsupported key length: {}", key_bytes.len()))),
-                }
+                parse_key_bytes(key_bytes, None)
             },
-            _ => Err(Error::validation("Unsupported public key format")),
+            Self::Multibase { key } => {
+                let (_, data) = multibase::decode(key)
+                    .map_err(|e| Error::validation(format!("Invalid Multibase public key: {}", e)))?;
+                
+                parse_key_bytes(data, None)
+            },
+            Self::Ed25519VerificationKey2020 { key } => {
+                let key_bytes = bs58::decode(key)
+                    .into_vec()
+                    .map_err(|e| Error::validation(format!("Invalid Base58 public key: {}", e)))?;
+                
+                parse_key_bytes(key_bytes, Some(KeyType::Ed25519))
+            },
+            Self::MultibaseKey { key, .. } => {
+                let (_, data) = multibase::decode(key)
+                    .map_err(|e| Error::validation(format!("Invalid Multibase public key: {}", e)))?;
+                
+                parse_key_bytes(data, None)
+            },
         }
     }
 }
@@ -206,22 +242,15 @@ impl Ed25519Verifier {
 }
 
 #[async_trait]
-impl Verifier for Ed25519Verifier {
+impl DidVerifierTrait for Ed25519Verifier {
     async fn verify(&self, message: &[u8], signature: &Signature) -> Result<bool> {
         match signature {
             Signature::Ed25519(sig) => {
                 match &self.public_key {
                     PublicKey::Ed25519(pk) => {
-                        // Use the icn_crypto implementation to verify
-                        let result = ed25519_dalek::Verifier::verify(
-                            &ed25519_dalek::VerifyingKey::from_bytes(pk)
-                                .map_err(|e| Error::validation(format!("Invalid Ed25519 public key: {}", e)))?,
-                            message,
-                            &ed25519_dalek::Signature::from_bytes(sig)
-                                .map_err(|e| Error::validation(format!("Invalid Ed25519 signature: {}", e)))?,
-                        );
-                        
-                        Ok(result.is_ok())
+                        // Use the icn_crypto implementation directly
+                        let result = self.public_key.verify(message, signature)?;
+                        Ok(result)
                     },
                     _ => Err(Error::validation("Public key type mismatch")),
                 }
@@ -232,7 +261,7 @@ impl Verifier for Ed25519Verifier {
 }
 
 /// Create a verifier for a verification method
-pub fn create_verifier(public_key_material: &PublicKeyMaterial) -> Result<Box<dyn Verifier>> {
+pub fn create_verifier(public_key_material: &PublicKeyMaterial) -> Result<Box<dyn DidVerifierTrait>> {
     // Get the public key from the material
     let public_key = public_key_material.to_public_key()?;
     
@@ -257,6 +286,33 @@ pub struct VerificationResult {
     
     /// The public key material used
     pub public_key: PublicKeyMaterial,
+}
+
+fn parse_key_bytes(key_bytes: Vec<u8>, key_type: Option<KeyType>) -> Result<PublicKey> {
+    // If we know the key type, use it
+    if let Some(key_type) = key_type {
+        match key_type {
+            KeyType::Ed25519 => {
+                if key_bytes.len() != 32 {
+                    return Err(Error::validation("Invalid Ed25519 key length"));
+                }
+                let key_array: [u8; 32] = key_bytes.try_into()
+                    .map_err(|_| Error::validation("Failed to convert key bytes to array"))?;
+                Ok(PublicKey::Ed25519(icn_crypto::ed25519::public_key_from_bytes(&key_array)?))
+            },
+            _ => Err(Error::validation("Unsupported key type")),
+        }
+    } else {
+        // Try to guess the key type from the length
+        match key_bytes.len() {
+            32 => {
+                let key_array: [u8; 32] = key_bytes.try_into()
+                    .map_err(|_| Error::validation("Failed to convert key bytes to array"))?;
+                Ok(PublicKey::Ed25519(icn_crypto::ed25519::public_key_from_bytes(&key_array)?))
+            },
+            _ => Err(Error::validation("Unsupported or unknown key length")),
+        }
+    }
 }
 
 #[cfg(test)]

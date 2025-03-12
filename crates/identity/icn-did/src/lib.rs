@@ -9,8 +9,7 @@ pub mod verification;
 pub mod federation;
 
 use icn_common::error::{Error, Result};
-use icn_crypto::{Signature, PublicKey, KeyType};
-use icn_crypto::signature::Verifier;
+use icn_crypto::{Signature, PublicKey, KeyType, PrivateKey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -175,7 +174,7 @@ impl DidDocument {
     }
     
     /// Create a verifier for a verification method
-    fn create_verifier(&self, method: &VerificationMethod) -> Result<Box<dyn Verifier>> {
+    fn create_verifier(&self, method: &VerificationMethod) -> Result<Box<dyn DidVerifierTrait>> {
         // For now, we'll just return an error as we need to implement proper verification
         // In a real implementation, we would create a verifier based on the method's type
         Err(Error::internal("Verifier creation not implemented"))

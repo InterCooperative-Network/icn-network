@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use icn_storage_system::{Storage, StorageOptions, StorageExt};
 use crate::{DidDocument, DID_METHOD};
-use crate::federation::FederationClient;
+use crate::federation::{FederationClient, MockFederationClient};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 
 /// Result of a DID resolution operation
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -164,7 +164,7 @@ pub struct LocalDidResolver {
     documents: RwLock<HashMap<String, DidDocument>>,
     
     /// Federation client for resolving remote DIDs
-    federation_client: Arc<FederationClient>,
+    federation_client: Arc<dyn FederationClient>,
 }
 
 impl LocalDidResolver {
@@ -172,7 +172,7 @@ impl LocalDidResolver {
     pub fn new() -> Self {
         Self {
             documents: RwLock::new(HashMap::new()),
-            federation_client: Arc::new(FederationClient::default()),
+            federation_client: Arc::new(MockFederationClient::default()),
         }
     }
 
@@ -282,6 +282,18 @@ impl IcnDidResolver {
     pub async fn new(storage_options: StorageOptions) -> Result<Self> {
         let storage = icn_storage_system::create_storage(storage_options).await?;
         Ok(Self { storage })
+    }
+    
+    /// Get a DID document by DID
+    pub async fn get_document(&self, did: &str) -> Result<Option<DidDocument>> {
+        // Ensure we have a consistent storage key format
+        let storage_key = normalize_did(did);
+        
+        // Get the document from storage
+        let stored_doc = self.storage.get::<StoredDidDocument>(&storage_key).await?;
+        
+        // Return the document if found
+        Ok(stored_doc.map(|doc| doc.document))
     }
     
     /// Store a DID document
@@ -456,6 +468,17 @@ impl IcnDidResolver {
         // Resolve locally
         self.resolve(did).await
     }
+
+    /// Delete a DID document
+    pub async fn delete_document(&self, did: &str) -> Result<()> {
+        // Ensure we have a consistent storage key format
+        let storage_key = normalize_did(did);
+        
+        // Delete the document from storage
+        self.storage.delete(&storage_key).await?;
+        
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -505,8 +528,10 @@ impl DidResolver for IcnDidResolver {
         }
     }
     
-    fn supports_method(&self, method: &str) -> bool {
-        method == DID_METHOD
+    async fn resolve_with_params(&self, did: &str, _params: &DidResolutionParams) -> Result<ResolutionResult> {
+        // For now, we ignore the params and just call the regular resolve
+        // In a more complete implementation, we would handle version_id, version_time, etc.
+        self.resolve(did).await
     }
 }
 
@@ -530,6 +555,51 @@ fn normalize_did(did: &str) -> String {
         let normalized = format!("did:{}:local:{}", DID_METHOD, did);
         println!("Normalized DID: {}", normalized);
         normalized
+    }
+}
+
+impl Default for IcnDidResolver {
+    fn default() -> Self {
+        // This is just a placeholder implementation for testing
+        // In a real application, you would want to use a proper storage system
+        Self {
+            storage: Arc::new(MockStorage::default()),
+        }
+    }
+}
+
+struct MockStorage {}
+
+impl Default for MockStorage {
+    fn default() -> Self {
+        MockStorage {}
+    }
+}
+
+#[async_trait::async_trait]
+impl icn_storage_system::Storage for MockStorage {
+    async fn put_bytes(&self, _key: &str, _value: &[u8]) -> icn_common::Result<()> {
+        Ok(())
+    }
+    
+    async fn get_bytes(&self, _key: &str) -> icn_common::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    
+    async fn delete(&self, _key: &str) -> icn_common::Result<()> {
+        Ok(())
+    }
+    
+    async fn list_keys(&self, _prefix: &str) -> icn_common::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+    
+    async fn exists(&self, _key: &str) -> icn_common::Result<bool> {
+        Ok(false)
+    }
+    
+    async fn clear(&self) -> icn_common::Result<()> {
+        Ok(())
     }
 }
 

@@ -1083,6 +1083,7 @@ name = "icn-did"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.13.1",
  "bs58",
  "chrono",
  "hex",
