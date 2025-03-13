@@ -35,6 +35,7 @@ impl Error for ResourceSharingError {}
 // Resource types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResourceType {
+<<<<<<< HEAD
     Computing {
         cpu_cores: u32,
         ram_gb: u32,
@@ -173,6 +174,14 @@ pub enum PhysicalCondition {
     Good,
     Fair,
     Poor,
+=======
+    Computing,
+    Storage,
+    Network,
+    Data,
+    Service,
+    Physical,
+>>>>>>> 965a8715e9793bf18eac8678cc0772718529bbfa
 }
 
 // Resource status
@@ -220,9 +229,12 @@ pub struct ResourceAllocation {
     pub end_time: u64,
     pub status: AllocationStatus,
     pub metadata: serde_json::Value,
+<<<<<<< HEAD
     pub priority: AllocationPriority,
     pub constraints: Option<AllocationConstraints>,
     pub usage_limits: Option<UsageLimits>,
+=======
+>>>>>>> 965a8715e9793bf18eac8678cc0772718529bbfa
 }
 
 // Allocation status
@@ -235,6 +247,7 @@ pub enum AllocationStatus {
     Failed,
 }
 
+<<<<<<< HEAD
 // Allocation priority
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AllocationPriority {
@@ -292,6 +305,8 @@ pub struct UsageLimits {
     pub cooldown_period: Option<u64>,
 }
 
+=======
+>>>>>>> 965a8715e9793bf18eac8678cc0772718529bbfa
 // Resource sharing system
 pub struct ResourceSharingSystem {
     identity: Identity,
@@ -383,9 +398,12 @@ impl ResourceSharingSystem {
             end_time: now + duration,
             status: AllocationStatus::Pending,
             metadata,
+<<<<<<< HEAD
             priority: AllocationPriority::Normal,
             constraints: None,
             usage_limits: None,
+=======
+>>>>>>> 965a8715e9793bf18eac8678cc0772718529bbfa
         };
 
         // Store the allocation request
@@ -586,6 +604,7 @@ impl ResourceSharingSystem {
 
         Ok(metrics)
     }
+<<<<<<< HEAD
 
     // Enhanced resource registration with type-specific details
     pub fn register_resource_with_details(
@@ -787,4 +806,6 @@ impl ResourceSharingSystem {
 
         Ok(metrics)
     }
+=======
+>>>>>>> 965a8715e9793bf18eac8678cc0772718529bbfa
 } 
