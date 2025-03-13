@@ -19,9 +19,9 @@ log_level: "${ICN_LOG_LEVEL:-info}"
 
 # TLS Configuration
 tls:
-  cert_file: "${ICN_CERT_FILE:-${ICN_CERT_DIR}/node.crt}"
-  key_file: "${ICN_KEY_FILE:-${ICN_CERT_DIR}/node.key}"
-  ca_file: "${ICN_CA_FILE:-${ICN_CERT_DIR}/ca.crt}"
+  cert_file: "/etc/icn/certs/node.crt"
+  key_file: "/etc/icn/certs/node.key"
+  ca_file: "/etc/icn/certs/ca.crt"
   verify_client: ${ICN_VERIFY_CLIENT:-true}
   verify_hostname: ${ICN_VERIFY_HOSTNAME:-true}
 

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: icn-network-20250313013635
+  labels:
+    app: icn-network
+    environment: production 

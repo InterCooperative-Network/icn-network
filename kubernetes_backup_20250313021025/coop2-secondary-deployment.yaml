@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coop2-secondary
+  namespace: icn-system
+  labels:
+    app: icn
+    component: node
+    coop: coop-2
+    role: secondary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: icn
+      component: node
+      coop: coop-2
+      role: secondary
+  template:
+    metadata:
+      labels:
+        app: icn
+        component: node
+        coop: coop-2
+        role: secondary
+    spec:
+      containers:
+      - name: icn-node
+        image: icn-network:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 9003
+          name: p2p
+        env:
+        - name: ICN_NODE_ID
+          value: "coop2-secondary"
+        - name: ICN_COOP_ID
+          value: "coop-2"
+        - name: ICN_NODE_TYPE
+          value: "secondary"
+        - name: ICN_LISTEN_ADDR
+          value: "0.0.0.0:9003"
+        - name: ICN_PEERS
+          value: "coop2-primary:9002"
+        - name: ICN_LOG_LEVEL
+          value: "info"
+        - name: ICN_DATA_DIR
+          value: "/var/lib/icn"
+        - name: ICN_CERT_DIR
+          value: "/etc/icn/certs"
+        - name: ICN_LOG_DIR
+          value: "/var/log/icn"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          exec:
+            command:
+            - /usr/local/bin/icn/healthcheck.sh
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          exec:
+            command:
+            - /usr/local/bin/icn/healthcheck.sh
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/icn
+        - name: certs
+          mountPath: /etc/icn/certs
+        - name: logs
+          mountPath: /var/log/icn
+        - name: config
+          mountPath: /etc/icn/node.yaml.template
+          subPath: node.yaml.template
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: coop2-secondary-data
+      - name: certs
+        persistentVolumeClaim:
+          claimName: coop2-secondary-certs
+      - name: logs
+        persistentVolumeClaim:
+          claimName: coop2-secondary-logs
+      - name: config
+        configMap:
+          name: icn-config 
