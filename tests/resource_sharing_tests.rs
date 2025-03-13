@@ -1,9 +1,9 @@
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
-use crate::resource_sharing::*;
-use crate::identity::Identity;
-use crate::storage::Storage;
-use crate::crypto::CryptoUtils;
+use icn_node::storage::Storage;
+use icn_node::identity::Identity;
+use icn_node::resource_sharing::*;
 
 fn setup_test() -> (ResourceSharingSystem, tempfile::TempDir) {
     let temp_dir = tempdir().unwrap();
@@ -339,7 +339,6 @@ fn test_get_resource_metrics() {
     assert_eq!(metrics["active_allocations"], 1);
     assert_eq!(metrics["total_allocated"], 300);
     assert_eq!(metrics["status"], "Reserved");
-<<<<<<< HEAD
 }
 
 #[test]
@@ -636,6 +635,4 @@ fn test_get_resource_utilization_by_period() {
     assert_eq!(metrics["total_usage"], 300);
     assert_eq!(metrics["allocation_count"], 2);
     assert!(metrics["average_usage"].as_f64().unwrap() > 0.0);
-=======
->>>>>>> 965a8715e9793bf18eac8678cc0772718529bbfa
 } 

@@ -9,15 +9,25 @@ use std::fs;
 use std::path::Path;
 use tracing::{info, error};
 
-pub use icn_common as common;
-pub use icn_crypto as crypto;
-pub use icn_mutual_credit as economic;
-
+// Public modules
+pub mod identity;
+pub mod storage;
+pub mod crypto;
+pub mod resource_sharing;
+pub mod cross_federation_governance;
+pub mod federation_governance;
+pub mod federation;
 pub mod networking;
 pub mod error;
 pub mod economics;
 pub mod governance;
 pub mod integration;
+
+// Public re-exports from external crates 
+// (commented out as they may not be available in this project)
+// pub use icn_common as common;
+// pub use icn_crypto as crypto;
+// pub use icn_mutual_credit as economic;
 
 /// Module version information
 pub mod version {

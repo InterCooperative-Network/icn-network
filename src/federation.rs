@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
-use crate::crypto::{CryptoUtils, Keypair, PublicKey};
+use crate::crypto::{CryptoUtils, Keypair, PublicKey, Signature};
 use crate::identity::Identity;
 use crate::economic::{Transaction, MemberAccount};
 

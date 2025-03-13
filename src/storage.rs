@@ -63,19 +63,21 @@ pub struct Storage {
 
 impl Storage {
     // Create a new storage instance
-    pub fn new(base_path: &str) -> Result<Self, Box<dyn Error>> {
-        let path = PathBuf::from(base_path);
+    pub fn new(base_path: PathBuf) -> Self {
+        let options = StorageOptions::default();
         
         // Create the base directory if it doesn't exist
-        if !path.exists() {
-            fs::create_dir_all(&path)?;
+        if options.create_dirs && !base_path.exists() {
+            fs::create_dir_all(&base_path).unwrap_or_else(|_| {
+                panic!("Failed to create storage directory: {:?}", base_path);
+            });
         }
         
-        Ok(Storage {
-            base_path: path,
-            options: StorageOptions::default(),
+        Storage {
+            base_path,
+            options,
             cache: Arc::new(Mutex::new(HashMap::new())),
-        })
+        }
     }
     
     // Set storage options
@@ -242,5 +244,17 @@ impl Storage {
         }
         
         Ok(())
+    }
+
+    // Add a clone method for our tests
+    pub fn clone(&self) -> Self {
+        Storage {
+            base_path: self.base_path.clone(),
+            options: StorageOptions {
+                sync_write: self.options.sync_write,
+                create_dirs: self.options.create_dirs,
+            },
+            cache: self.cache.clone(),
+        }
     }
 } 

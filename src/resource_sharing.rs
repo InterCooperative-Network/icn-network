@@ -33,9 +33,8 @@ impl fmt::Display for ResourceSharingError {
 impl Error for ResourceSharingError {}
 
 // Resource types
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ResourceType {
-<<<<<<< HEAD
     Computing {
         cpu_cores: u32,
         ram_gb: u32,
@@ -74,7 +73,7 @@ pub enum ResourceType {
 }
 
 // Storage types
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum StorageType {
     SSD,
     HDD,
@@ -84,7 +83,7 @@ pub enum StorageType {
 }
 
 // Network types
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum NetworkType {
     Ethernet,
     Fiber,
@@ -94,7 +93,7 @@ pub enum NetworkType {
 }
 
 // Data types
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DataType {
     Structured,
     Unstructured,
@@ -104,7 +103,7 @@ pub enum DataType {
 }
 
 // Retention policy
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum RetentionPolicy {
     Temporary(u64), // Duration in seconds
     Permanent,
@@ -112,7 +111,7 @@ pub enum RetentionPolicy {
 }
 
 // Service types
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ServiceType {
     API,
     Database,
@@ -123,7 +122,7 @@ pub enum ServiceType {
 }
 
 // Service Level Agreement
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServiceLevelAgreement {
     pub availability: f64, // Percentage
     pub response_time_ms: u32,
@@ -132,7 +131,7 @@ pub struct ServiceLevelAgreement {
 }
 
 // Support level
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SupportLevel {
     Basic,
     Standard,
@@ -141,7 +140,7 @@ pub enum SupportLevel {
 }
 
 // Maintenance window
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MaintenanceWindow {
     pub start_time: u64,
     pub duration_seconds: u64,
@@ -149,7 +148,7 @@ pub struct MaintenanceWindow {
 }
 
 // Maintenance frequency
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum MaintenanceFrequency {
     Daily,
     Weekly,
@@ -159,7 +158,7 @@ pub enum MaintenanceFrequency {
 }
 
 // Physical dimensions
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Dimensions {
     pub length_cm: f64,
     pub width_cm: f64,
@@ -167,25 +166,17 @@ pub struct Dimensions {
 }
 
 // Physical condition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PhysicalCondition {
     New,
     LikeNew,
     Good,
     Fair,
     Poor,
-=======
-    Computing,
-    Storage,
-    Network,
-    Data,
-    Service,
-    Physical,
->>>>>>> 965a8715e9793bf18eac8678cc0772718529bbfa
 }
 
 // Resource status
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ResourceStatus {
     Available,
     Allocated,
@@ -229,16 +220,13 @@ pub struct ResourceAllocation {
     pub end_time: u64,
     pub status: AllocationStatus,
     pub metadata: serde_json::Value,
-<<<<<<< HEAD
     pub priority: AllocationPriority,
     pub constraints: Option<AllocationConstraints>,
     pub usage_limits: Option<UsageLimits>,
-=======
->>>>>>> 965a8715e9793bf18eac8678cc0772718529bbfa
 }
 
 // Allocation status
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AllocationStatus {
     Pending,
     Active,
@@ -247,9 +235,8 @@ pub enum AllocationStatus {
     Failed,
 }
 
-<<<<<<< HEAD
 // Allocation priority
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AllocationPriority {
     Low,
     Normal,
@@ -305,8 +292,6 @@ pub struct UsageLimits {
     pub cooldown_period: Option<u64>,
 }
 
-=======
->>>>>>> 965a8715e9793bf18eac8678cc0772718529bbfa
 // Resource sharing system
 pub struct ResourceSharingSystem {
     identity: Identity,
@@ -398,12 +383,9 @@ impl ResourceSharingSystem {
             end_time: now + duration,
             status: AllocationStatus::Pending,
             metadata,
-<<<<<<< HEAD
             priority: AllocationPriority::Normal,
             constraints: None,
             usage_limits: None,
-=======
->>>>>>> 965a8715e9793bf18eac8678cc0772718529bbfa
         };
 
         // Store the allocation request
@@ -520,7 +502,7 @@ impl ResourceSharingSystem {
             
             // Filter by type if specified
             if let Some(rtype) = &resource_type {
-                if resource.resource_type != *rtype {
+                if !self.match_resource_type(&resource.resource_type, rtype) {
                     continue;
                 }
             }
@@ -532,6 +514,20 @@ impl ResourceSharingSystem {
         }
         
         Ok(resources)
+    }
+
+    // Helper method to match resource types
+    fn match_resource_type(&self, a: &ResourceType, b: &ResourceType) -> bool {
+        // Compare general resource type categories
+        match (a, b) {
+            (ResourceType::Computing { .. }, ResourceType::Computing { .. }) => true,
+            (ResourceType::Storage { .. }, ResourceType::Storage { .. }) => true,
+            (ResourceType::Network { .. }, ResourceType::Network { .. }) => true,
+            (ResourceType::Data { .. }, ResourceType::Data { .. }) => true,
+            (ResourceType::Service { .. }, ResourceType::Service { .. }) => true,
+            (ResourceType::Physical { .. }, ResourceType::Physical { .. }) => true,
+            _ => false,
+        }
     }
 
     // Get federation's resource allocations
@@ -604,7 +600,6 @@ impl ResourceSharingSystem {
 
         Ok(metrics)
     }
-<<<<<<< HEAD
 
     // Enhanced resource registration with type-specific details
     pub fn register_resource_with_details(
@@ -806,6 +801,4 @@ impl ResourceSharingSystem {
 
         Ok(metrics)
     }
-=======
->>>>>>> 965a8715e9793bf18eac8678cc0772718529bbfa
 } 

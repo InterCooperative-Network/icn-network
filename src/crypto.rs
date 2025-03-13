@@ -7,6 +7,9 @@ use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use chacha20poly1305::aead::{Aead, NewAead};
 use serde::{Deserialize, Serialize};
 
+// Re-export the types we use
+pub use ed25519_dalek::{Keypair, PublicKey, Signature};
+
 // Crypto error types
 #[derive(Debug)]
 pub enum CryptoError {
@@ -55,7 +58,7 @@ pub struct CryptoUtils;
 impl CryptoUtils {
     // Generate a new keypair
     pub fn generate_keypair() -> Result<Keypair, Box<dyn Error>> {
-        let mut csprng = OsRng;
+        let mut csprng = OsRng{};
         let keypair = Keypair::generate(&mut csprng);
         Ok(keypair)
     }
@@ -73,63 +76,74 @@ impl CryptoUtils {
         }
     }
     
-    // ECDH key exchange
-    pub fn key_exchange(private_key: &StaticSecret, public_key: &X25519PublicKey) -> SharedSecret {
-        let shared_secret = private_key.diffie_hellman(public_key);
-        SharedSecret(shared_secret.to_bytes())
+    // Generate a key exchange keypair
+    pub fn generate_x25519_keypair() -> Result<(StaticSecret, X25519PublicKey), Box<dyn Error>> {
+        let mut csprng = OsRng{};
+        let secret = StaticSecret::new(&mut csprng);
+        let public = X25519PublicKey::from(&secret);
+        Ok((secret, public))
     }
     
-    // Encrypt a message using ChaCha20Poly1305
-    pub fn encrypt(recipient_public_key: &X25519PublicKey, message: &[u8]) -> Result<EncryptedMessage, Box<dyn Error>> {
-        // Generate ephemeral keypair
-        let mut csprng = OsRng;
-        let ephemeral_secret = StaticSecret::new(&mut csprng);
-        let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
-        
-        // Perform ECDH key exchange
-        let shared_secret = Self::key_exchange(&ephemeral_secret, recipient_public_key);
-        
-        // Create cipher
-        let key = Key::from_slice(shared_secret.as_bytes());
-        let cipher = ChaCha20Poly1305::new(key);
-        
-        // Generate random nonce
-        let mut nonce_bytes = [0u8; 12];
-        csprng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        
-        // Encrypt the message
-        let ciphertext = cipher.encrypt(nonce, message)
-            .map_err(|e| CryptoError::Encryption(e.to_string()))?;
-            
-        Ok(EncryptedMessage {
-            ephemeral_public_key: ephemeral_public.as_bytes().to_vec(),
-            nonce: nonce_bytes.to_vec(),
-            ciphertext,
-        })
+    // Perform Diffie-Hellman key exchange
+    pub fn key_exchange(secret: &StaticSecret, peer_public: &X25519PublicKey) -> Result<[u8; 32], Box<dyn Error>> {
+        let shared_secret = secret.diffie_hellman(peer_public);
+        Ok(shared_secret.to_bytes())
     }
     
-    // Decrypt a message using ChaCha20Poly1305
-    pub fn decrypt(private_key: &StaticSecret, encrypted_message: &EncryptedMessage) -> Result<Vec<u8>, Box<dyn Error>> {
-        // Recreate the ephemeral public key
-        let ephemeral_public = X25519PublicKey::from(<[u8; 32]>::try_from(&encrypted_message.ephemeral_public_key[..])
-            .map_err(|_| CryptoError::Decryption("Invalid ephemeral public key".to_string()))?);
-            
-        // Perform ECDH key exchange
-        let shared_secret = Self::key_exchange(private_key, &ephemeral_public);
-        
-        // Create cipher
-        let key = Key::from_slice(shared_secret.as_bytes());
+    // Encrypt data using ChaCha20Poly1305
+    pub fn encrypt(key: &[u8; 32], nonce: &[u8; 12], plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+        let key = Key::from_slice(key);
+        let nonce = Nonce::from_slice(nonce);
         let cipher = ChaCha20Poly1305::new(key);
         
-        // Create nonce
-        let nonce = Nonce::from_slice(&encrypted_message.nonce);
+        match cipher.encrypt(nonce, plaintext) {
+            Ok(ciphertext) => Ok(ciphertext),
+            Err(_) => Err(Box::new(CryptoError::Encryption("Failed to encrypt data".to_string()))),
+        }
+    }
+    
+    // Decrypt data using ChaCha20Poly1305
+    pub fn decrypt(key: &[u8; 32], nonce: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+        let key = Key::from_slice(key);
+        let nonce = Nonce::from_slice(nonce);
+        let cipher = ChaCha20Poly1305::new(key);
         
-        // Decrypt the message
-        let plaintext = cipher.decrypt(nonce, encrypted_message.ciphertext.as_ref())
-            .map_err(|e| CryptoError::Decryption(e.to_string()))?;
-            
-        Ok(plaintext)
+        match cipher.decrypt(nonce, ciphertext) {
+            Ok(plaintext) => Ok(plaintext),
+            Err(_) => Err(Box::new(CryptoError::Decryption("Failed to decrypt data".to_string()))),
+        }
+    }
+    
+    // Generate a random nonce
+    pub fn generate_nonce() -> Result<[u8; 12], Box<dyn Error>> {
+        let mut nonce = [0u8; 12];
+        let mut csprng = OsRng{};
+        rand::RngCore::fill_bytes(&mut csprng, &mut nonce);
+        Ok(nonce)
+    }
+    
+    // Hash a message using SHA-256
+    pub fn hash_sha256(message: &[u8]) -> Result<[u8; 32], Box<dyn Error>> {
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(message);
+        let result = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+        Ok(hash)
+    }
+    
+    // Encode bytes to base58
+    pub fn encode_base58(bytes: &[u8]) -> String {
+        bs58::encode(bytes).into_string()
+    }
+    
+    // Decode base58 to bytes
+    pub fn decode_base58(encoded: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+        match bs58::decode(encoded).into_vec() {
+            Ok(bytes) => Ok(bytes),
+            Err(_) => Err(Box::new(CryptoError::Decryption("Failed to decode base58".to_string()))),
+        }
     }
 }
 

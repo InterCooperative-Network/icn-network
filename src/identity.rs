@@ -80,47 +80,39 @@ pub struct Identity {
 }
 
 impl Identity {
-    // Create a new identity
-    pub fn new(node_id: &str, coop_id: &str) -> Result<Self, Box<dyn Error>> {
+    // Update the new method to match our test requirements
+    pub fn new(coop_id: String, node_id: String, did: String, storage: Storage) -> Result<Self, Box<dyn Error>> {
         // Generate a new keypair
-        let mut csprng = OsRng;
+        let mut csprng = OsRng{};
         let keypair = Keypair::generate(&mut csprng);
         
-        // Create the DID
-        let did = format!("did:{}:{}:{}", DID_METHOD, coop_id, node_id);
-        
-        // Create the DID document
-        let public_key_base58 = bs58::encode(keypair.public.as_bytes()).into_string();
-        
+        // Create a DID document
         let verification_method = VerificationMethod {
             id: format!("{}#keys-1", did),
             controller: did.clone(),
-            type_: "Ed25519VerificationKey2018".to_string(),
-            public_key_base58,
-        };
-        
-        let service = Service {
-            id: format!("{}#service-1", did),
-            type_: "IcnNodeService".to_string(),
-            service_endpoint: format!("icn://{}", node_id),
+            type_: "Ed25519VerificationKey2020".to_string(),
+            public_key_base58: bs58::encode(keypair.public.as_bytes()).into_string(),
         };
         
         let did_document = DidDocument {
             id: did.clone(),
             verification_method: vec![verification_method.clone()],
-            authentication: vec![format!("{}#keys-1", did)],
-            assertion_method: vec![format!("{}#keys-1", did)],
-            capability_invocation: vec![format!("{}#keys-1", did)],
-            capability_delegation: vec![format!("{}#keys-1", did)],
-            service: vec![service],
+            authentication: vec![verification_method.id.clone()],
+            assertion_method: vec![verification_method.id.clone()],
+            capability_invocation: vec![verification_method.id.clone()],
+            capability_delegation: vec![verification_method.id.clone()],
+            service: vec![],
         };
+        
+        // Store the DID document
+        storage.put_json(&format!("identity/{}/did-document", node_id), &did_document)?;
         
         Ok(Identity {
             did,
             did_document,
             keypair,
-            node_id: node_id.to_string(),
-            coop_id: coop_id.to_string(),
+            node_id,
+            coop_id,
         })
     }
     
