@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: icn-service
+  namespace: icn-system
+  labels:
+    app: icn
+spec:
+  selector:
+    app: icn
+    component: node
+  ports:
+  - name: p2p
+    port: 9000
+    targetPort: 9000
+  type: ClusterIP 

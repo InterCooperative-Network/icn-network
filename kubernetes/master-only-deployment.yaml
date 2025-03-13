@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: icn-master-only
+  namespace: icn-system
+  labels:
+    app: icn
+    component: node
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: icn
+      component: node
+  template:
+    metadata:
+      labels:
+        app: icn
+        component: node
+      annotations:
+        kubectl.kubernetes.io/insecure-skip-tls-verify: "true"
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: k8s-master
+      containers:
+      - name: icn-node
+        image: localhost:30500/icn-test-node:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9000
+          name: p2p
+        env:
+        - name: ICN_NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: ICN_COOP_ID
+          value: "coop-1"
+        - name: ICN_NODE_TYPE
+          value: "primary"
+        - name: ICN_LISTEN_ADDR
+          value: "0.0.0.0:9000"
+        - name: ICN_LOG_LEVEL
+          value: "info"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/icn
+        - name: config
+          mountPath: /etc/icn
+      volumes:
+      - name: data
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: icn-config 

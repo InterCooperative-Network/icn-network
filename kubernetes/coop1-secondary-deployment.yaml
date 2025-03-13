@@ -17,21 +17,21 @@ spec:
       coop: coop-1
       role: secondary
   template:
-    annotations:
-      kubectl.kubernetes.io/insecure-skip-tls-verify: "true"
     metadata:
       labels:
         app: icn
         component: node
         coop: coop-1
         role: secondary
+      annotations:
+        kubectl.kubernetes.io/insecure-skip-tls-verify: "true"
     spec:
       containers:
       - name: icn-node
         image: 10.10.100.102:30500/icn-test-node:latest
         imagePullPolicy: IfNotPresent
         ports:
-        - containerPort: 9001
+        - containerPort: 9000
           name: p2p
         env:
         - name: ICN_NODE_ID
@@ -41,8 +41,8 @@ spec:
         - name: ICN_NODE_TYPE
           value: "secondary"
         - name: ICN_LISTEN_ADDR
-          value: "0.0.0.0:9001"
-        - name: ICN_PEERS
+          value: "0.0.0.0:9000"
+        - name: ICN_PRIMARY_ADDR
           value: "coop1-primary:9000"
         - name: ICN_LOG_LEVEL
           value: "info"

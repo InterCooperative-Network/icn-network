@@ -17,14 +17,14 @@ spec:
       coop: coop-1
       role: primary
   template:
-    annotations:
-      kubectl.kubernetes.io/insecure-skip-tls-verify: "true"
     metadata:
       labels:
         app: icn
         component: node
         coop: coop-1
         role: primary
+      annotations:
+        kubectl.kubernetes.io/insecure-skip-tls-verify: "true"
     spec:
       containers:
       - name: icn-node

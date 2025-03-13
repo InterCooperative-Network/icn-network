@@ -1,71 +1,34 @@
 [package]
-name = "icn-network"
+name = "icn-node"
 version = "0.1.0"
 edition = "2021"
-
-[features]
-default = []
-testing = ["icn-networking/testing"]
+description = "Implementation of an Intercooperative Network (ICN) node"
+authors = ["ICN Developers"]
+license = "MIT OR Apache-2.0"
 
 [dependencies]
-# Core crates
-icn-common = { path = "crates/core/icn-common" }
-icn-crypto = { path = "crates/core/icn-crypto" }
-
-# Identity crates
-icn-did = { path = "crates/identity/icn-did" }
-
-# Economic crates
-icn-mutual-credit = { path = "crates/economic/icn-mutual-credit" }
-
-# Networking crates
-icn-networking = { path = "crates/networking/icn-networking" }
-
-# Storage crates
-icn-storage-system = { path = "crates/storage/icn-storage-system" }
-
-# External dependencies
-tokio = { version = "1.32", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-
-[workspace]
-members = [
-    "crates/core/icn-common",
-    "crates/core/icn-crypto",
-    "crates/identity/icn-did",
-    "crates/storage/icn-storage-system",
-    "crates/economic/icn-mutual-credit",
-    "crates/networking/icn-networking",
-]
-resolver = "2"
-
-[workspace.package]
-version = "0.1.0"
-authors = ["ICN Contributors"]
-edition = "2021"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/intercoin/icn"
-
-[workspace.dependencies]
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.36", features = ["full"] }
-async-trait = "0.1"
-thiserror = "1.0"
+serde_yaml = "0.9"
+bs58 = "0.4"
+
+# Cryptography
+ed25519-dalek = "1.0"
+x25519-dalek = "1.2"
+chacha20poly1305 = "0.10"
+rand = "0.7"
+
+# Networking and async
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# Logging and utilities
 tracing = "0.1"
 tracing-subscriber = "0.3"
-futures = "0.3"
+thiserror = "1.0"
+anyhow = "1.0"
+
+[dev-dependencies]
+tempfile = "3.3"
 tokio-test = "0.4"
-
-[[example]]
-name = "identity_and_credit"
-path = "examples/identity_and_credit.rs"
-
-[[example]]
-name = "identity_and_networking"
-path = "examples/identity_and_networking.rs"
-
-[[example]]
-name = "icn_testnet"
-path = "examples/icn_testnet.rs"

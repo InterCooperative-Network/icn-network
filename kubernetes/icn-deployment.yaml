@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: icn-node
+  namespace: icn-system
+  labels:
+    app: icn
+    component: node
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: icn
+      component: node
+  template:
+    metadata:
+      labels:
+        app: icn
+        component: node
+      annotations:
+        kubectl.kubernetes.io/insecure-skip-tls-verify: "true"
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: k8s-master
+      containers:
+      - name: icn-node
+        image: localhost:30500/icn-node:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9000
+          name: p2p
+        env:
+        - name: ICN_NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: ICN_COOP_ID
+          value: "coop-1"
+        - name: ICN_NODE_TYPE
+          value: "primary"
+        - name: ICN_LISTEN_ADDR
+          value: "0.0.0.0:9000"
+        - name: ICN_LOG_LEVEL
+          value: "info"
+        - name: ICN_DATA_DIR
+          value: "/var/lib/icn"
+        - name: ICN_CERT_DIR
+          value: "/etc/icn/certs"
+        - name: ICN_LOG_DIR
+          value: "/var/log/icn"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 9000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/icn
+        - name: certs
+          mountPath: /etc/icn/certs
+        - name: logs
+          mountPath: /var/log/icn
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: icn-data
+      - name: certs
+        persistentVolumeClaim:
+          claimName: icn-certs
+      - name: logs
+        persistentVolumeClaim:
+          claimName: icn-logs 

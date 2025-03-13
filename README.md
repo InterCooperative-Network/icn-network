@@ -92,3 +92,80 @@ The project is open for contributions. Key areas where help is needed:
 ## License
 
 This project is licensed under the MIT OR Apache-2.0 license.
+
+# ICN Network Deployment
+
+This repository contains scripts and configuration files for deploying the ICN (Inter-Cooperative Network) on a Kubernetes cluster.
+
+## Prerequisites
+
+- A Kubernetes cluster with at least one master node
+- Docker installed on the local machine
+- SSH access to the Kubernetes master node
+
+## Directory Structure
+
+- `kubernetes/`: Contains Kubernetes YAML files for deployment
+- `scripts/`: Contains shell scripts for deployment and management
+- `config/`: Contains configuration templates for the ICN nodes
+- `Dockerfile.simple`: Dockerfile for building the ICN node image
+
+## Deployment Process
+
+1. **Configure Registry**
+
+   ```bash
+   ./scripts/configure-registry.sh
+   ```
+
+   This script configures the HTTP registry on the Kubernetes cluster.
+
+2. **Build and Push Docker Image**
+
+   ```bash
+   ./scripts/push-to-all-nodes.sh
+   ```
+
+   This script builds the Docker image, saves it to a tar file, transfers it to the remote server, loads it on the master node, tags it for the local registry, and pushes it to the registry.
+
+3. **Deploy ICN Network**
+
+   ```bash
+   ./scripts/deploy-master-only.sh
+   ```
+
+   This script deploys the ICN network on the master node only.
+
+4. **Check Deployment Status**
+
+   ```bash
+   ssh -t -i /home/matt/.ssh/id_rsa_new matt@10.10.100.102 "sudo kubectl get all -n icn-system"
+   ```
+
+   This command checks the status of all resources in the icn-system namespace.
+
+## Cleanup
+
+To clean up old deployments:
+
+```bash
+./scripts/cleanup-old-deployments.sh
+```
+
+This script deletes old deployments and services in the icn-system namespace.
+
+## Troubleshooting
+
+If you encounter issues with the deployment, check the logs of the pods:
+
+```bash
+ssh -t -i /home/matt/.ssh/id_rsa_new matt@10.10.100.102 "sudo kubectl logs -n icn-system <pod-name>"
+```
+
+Replace `<pod-name>` with the name of the pod you want to check.
+
+## Notes
+
+- The ICN network is currently deployed only on the master node due to issues with image pulling on worker nodes.
+- The deployment uses a simplified Docker image that simulates the ICN node behavior.
+- The configuration is mounted as a ConfigMap in the deployment.
