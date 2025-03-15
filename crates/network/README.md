@@ -98,6 +98,72 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+## Testing and Demos
+
+### Using the Makefile
+
+This crate includes a Makefile to simplify common tasks:
+
+```bash
+# Build the crate
+make build
+
+# Run unit tests
+make unit-tests
+
+# Run integration tests
+make integration-tests
+
+# Run all tests
+make test
+
+# Run the metrics demo
+make metrics
+
+# Run the reputation demo
+make reputation
+
+# Run the priority messaging demo
+make priority
+
+# Run the circuit relay demo
+make relay
+
+# Run the integrated demo with all features
+make integrated
+
+# Run the interactive demo script
+make demo
+```
+
+### Automated Testing
+
+To run comprehensive tests of all features:
+
+```bash
+./scripts/test_all_features.sh
+```
+
+This script automatically tests:
+1. Metrics and monitoring system
+2. Peer reputation management
+3. Priority-based message processing
+4. Circuit relay for NAT traversal
+5. The integrated demo combining all features
+
+### Interactive Demos
+
+For a guided exploration of the network features:
+
+```bash
+./scripts/run_demos.sh
+```
+
+This interactive script allows you to:
+- Run individual feature demos
+- Run the integrated demo with various configurations
+- Try out the circuit relay demo with different node types
+
 ### Enabling Metrics
 
 To enable metrics collection and exposure:
@@ -122,65 +188,6 @@ Available metrics include:
 - `network_message_processing_time` - Time to process messages
 - `network_peers_discovered` - Number of peers discovered
 - And many more
-
-## CLI Tool
-
-The crate includes a command-line interface for testing and demonstration purposes. You can run it using:
-
-```bash
-# Start a listening node
-cargo run --example network_cli -- -p 8000 listen
-
-# Connect to another node
-cargo run --example network_cli -- -p 8001 connect -p /ip4/127.0.0.1/tcp/8000/p2p/<PEER_ID>
-
-# Broadcast messages
-cargo run --example network_cli -- -p 8002 broadcast -p /ip4/127.0.0.1/tcp/8000/p2p/<PEER_ID> -i 2 -c 10
-```
-
-## Metrics Demo
-
-Try out the metrics functionality with the provided demo:
-
-```bash
-# Run the metrics demo
-cargo run --example metrics_demo
-
-# Visit http://127.0.0.1:9091 in your browser to see the metrics
-```
-
-## Benchmarks
-
-Performance benchmarks are included to measure the network's efficiency:
-
-```bash
-# Run all benchmarks
-cargo bench
-
-# Run a specific benchmark
-cargo bench -- network_broadcast
-```
-
-## Testing
-
-The crate includes comprehensive unit tests for all components:
-
-```bash
-# Run all tests
-cargo test
-
-# Run tests with logging
-RUST_LOG=debug cargo test -- --nocapture
-```
-
-## License
-
-Licensed under either of:
-
-- Apache License, Version 2.0
-- MIT License
-
-at your option.
 
 ## Peer Reputation System
 
@@ -248,29 +255,6 @@ async fn manage_peer_reputation(network: &P2pNetwork, peer_id: &PeerId) -> Resul
 }
 ```
 
-### Reputation Change Types
-
-The system tracks multiple types of reputation changes:
-
-- **ConnectionEstablished** (+10): Successful connection
-- **ConnectionLost** (-5): Connection dropped unexpectedly
-- **MessageSuccess** (+5): Successful message exchange
-- **MessageFailure** (-10): Failed message exchange
-- **InvalidMessage** (-20): Malformed or invalid message
-- **VerifiedMessage** (+15): Successfully validated message
-- **DiscoveryHelp** (+5): Helped with peer discovery
-- **SlowResponse** (-2): Slow to respond
-- **FastResponse** (+1): Quick to respond
-- **ExplicitBan** (-100): Manually banned by administrator
-
-### Reputation Demo
-
-Run the reputation system demo to see it in action:
-
-```
-cargo run --example reputation_demo
-```
-
 ## Priority Message Processing
 
 The network includes a priority-based message processing system that allows messages from trusted peers and high-priority message types to be processed before others. This is especially useful during high load situations or when dealing with critical transactions.
@@ -301,86 +285,6 @@ let priority_config = PriorityConfig {
     // ...other options
 };
 config.priority_config = Some(priority_config);
-```
-
-### Available Priority Modes
-
-- **`PriorityMode::FIFO`**: Traditional first-in, first-out processing
-- **`PriorityMode::MessageTypeOnly`**: Prioritize based on message types only
-- **`PriorityMode::ReputationOnly`**: Prioritize based on sender reputation only
-- **`PriorityMode::TypeAndReputation`**: Combine both type and reputation factors
-
-### Priority Processing Benefits
-
-- **Improved Network Efficiency**: Critical messages processed first during congestion
-- **Enhanced Attack Resistance**: Deprioritizes messages from unproven or malicious peers
-- **Better Resource Utilization**: Ensures important operations are not delayed
-- **Configurable Strategy**: Adapts to different network deployments and priorities
-
-### Priority Messaging Demo
-
-Run the priority-based message processing demo to see it in action:
-
-```
-cargo run --example priority_messaging
-```
-
-## CLI Tool
-
-A command-line tool is included for testing and debugging network functionality:
-
-```
-USAGE:
-    icn-net [OPTIONS] [SUBCOMMAND]
-
-OPTIONS:
-    -h, --help       Print help information
-    -v, --verbose    Verbose output
-
-SUBCOMMANDS:
-    help           Print help information
-    listen         Start a listening node
-    connect        Connect to another node
-    broadcast      Broadcast a message
-    metrics        Start a node with metrics enabled
-    reputation     Run the reputation system demo
-    priority       Run the priority messaging demo
-```
-
-### Listen Example:
-
-```
-icn-net listen --port 10001
-```
-
-### Connect Example:
-
-```
-icn-net connect --target /ip4/127.0.0.1/tcp/10001/p2p/QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N
-```
-
-### Broadcast Example:
-
-```
-icn-net broadcast --type "ledger.transaction" --content "Hello World"
-```
-
-### Run Metrics Demo:
-
-```
-icn-net metrics
-```
-
-### Run Reputation Demo:
-
-```
-icn-net reputation
-```
-
-### Run Priority Messaging Demo:
-
-```
-icn-net priority 
 ```
 
 ## Circuit Relay for NAT Traversal
@@ -440,23 +344,8 @@ async fn connect_to_peer(network: &P2pNetwork, peer_id: &PeerId) -> anyhow::Resu
 }
 ```
 
-### Circuit Relay Demo
+## License
 
-The crate includes a comprehensive circuit relay demo that shows how to run a relay server and connect nodes through it:
-
-```bash
-# Run a relay server
-cargo run --example circuit_relay_demo relay-server --port 9000
-
-# Run a public node that will connect to the relay
-cargo run --example circuit_relay_demo public-node --port 9001 --relay /ip4/127.0.0.1/tcp/9000/p2p/QmRelayId
-
-# Run a private node (NAT'd) that will connect to the public node through the relay
-cargo run --example circuit_relay_demo private-node --relay /ip4/127.0.0.1/tcp/9000/p2p/QmRelayId --target QmPublicNodeId
-```
-
-This demo demonstrates how nodes can communicate even when direct connections are not possible.
-
-## CLI Tool
-
-// ... rest of existing content ...
+This project is dual-licensed under:
+- MIT License
+- Apache License, Version 2.0

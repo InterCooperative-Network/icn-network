@@ -7,6 +7,7 @@ members = [
     "crates/apps",
     "bin/node",
     "bin/cli",
+    "crates/network",
 ]
 
 [workspace.dependencies]
@@ -36,11 +37,10 @@ rand_core = "0.6"
 sha2 = "0.10"
 
 # Networking and async
-futures = "0.3"
 
 # Logging and utilities
 env_logger = "0.10"
 
-[dev-dependencies]
+# Testing
 tempfile = "3.3"
 tokio-test = "0.4"
