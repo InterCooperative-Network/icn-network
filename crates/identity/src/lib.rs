@@ -35,250 +35,260 @@ pub enum IdentityError {
     #[error("Identity not found: {0}")]
     IdentityNotFound(String),
     
-    /// IO error
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
+    /// No current identity
+    #[error("No current identity")]
+    NoIdentity,
     
-    /// Serialization error
-    #[error("Serialization error: {0}")]
-    SerializationError(String),
+    /// Invalid identity data
+    #[error("Invalid identity data: {0}")]
+    InvalidIdentityData(String),
+    
+    /// Permission denied
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
 }
 
 /// Result type for identity operations
 pub type IdentityResult<T> = Result<T, IdentityError>;
 
-/// A trait for identity providers
+/// An identity in the network
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Identity {
+    /// Unique identifier for this identity
+    pub id: String,
+    
+    /// Human-readable name
+    pub name: String,
+    
+    /// Public key for this identity
+    pub public_key: Vec<u8>,
+    
+    /// Additional metadata for this identity
+    pub metadata: HashMap<String, String>,
+    
+    /// When the identity was created
+    pub created_at: u64,
+    
+    /// When the identity was last updated
+    pub updated_at: u64,
+}
+
+impl fmt::Debug for Identity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Identity")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
+/// The identity provider interface
 #[async_trait]
-pub trait IdentityProvider: Send + Sync {
+pub trait IdentityProvider: Send + Sync + 'static {
     /// Get the current identity
     async fn get_identity(&self) -> IdentityResult<Identity>;
     
-    /// Get a list of known identities
-    async fn get_known_identities(&self) -> IdentityResult<Vec<Identity>>;
+    /// Create a new identity
+    async fn create_identity(&self, name: &str, metadata: HashMap<String, String>) -> IdentityResult<Identity>;
     
-    /// Get an identity by ID
-    async fn get_identity_by_id(&self, id: &NodeId) -> IdentityResult<Option<Identity>>;
+    /// Load an existing identity
+    async fn load_identity(&self, id: &str) -> IdentityResult<Identity>;
     
-    /// Add a new known identity
-    async fn add_identity(&self, identity: Identity) -> IdentityResult<()>;
+    /// Get all identities
+    async fn get_all_identities(&self) -> IdentityResult<Vec<Identity>>;
     
-    /// Create a signature for data
+    /// Update an identity's metadata
+    async fn update_identity(&self, identity: &Identity) -> IdentityResult<Identity>;
+    
+    /// Delete an identity
+    async fn delete_identity(&self, id: &str) -> IdentityResult<()>;
+    
+    /// Sign data with the current identity
     async fn sign(&self, data: &[u8]) -> IdentityResult<Signature>;
     
     /// Verify a signature against an identity
-    async fn verify(&self, identity_id: &NodeId, data: &[u8], signature: &Signature) -> IdentityResult<bool>;
+    async fn verify(&self, identity_id: &str, data: &[u8], signature: &[u8]) -> IdentityResult<bool>;
 }
 
-/// An identity in the ICN network
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Identity {
-    /// The node ID
-    pub id: NodeId,
-    /// The public key
-    pub public_key: Vec<u8>,
-    /// The name or alias
-    pub name: String,
-    /// The creation timestamp
-    pub created_at: u64,
-    /// Last updated timestamp
-    pub updated_at: u64,
-    /// Metadata associated with this identity
-    pub metadata: HashMap<String, String>,
-    /// Current reputation score (optional)
-    pub reputation_score: Option<f64>,
-}
+/// Storage for identities
+pub mod storage;
 
-/// A local identity provider that manages the node's identity
-pub struct LocalIdentityProvider {
-    /// The key pair for the local identity
-    key_pair: Arc<RwLock<IdentityKeyPair>>,
-    /// Storage for identity information
+/// The main identity manager
+pub struct IdentityManager {
+    /// Storage for identities
     storage: Arc<dyn Storage>,
-    /// Known identities cache
-    known_identities: Arc<RwLock<HashMap<String, Identity>>>,
+    /// Current identity key pair
+    key_pair: Arc<RwLock<Option<IdentityKeyPair>>>,
+    /// Current identity
+    current_identity: Arc<RwLock<Option<Identity>>>,
 }
 
-impl LocalIdentityProvider {
-    /// Create a new local identity provider
-    pub async fn new(key_pair: IdentityKeyPair, storage: Arc<dyn Storage>) -> Self {
-        let provider = Self {
-            key_pair: Arc::new(RwLock::new(key_pair)),
-            storage,
-            known_identities: Arc::new(RwLock::new(HashMap::new())),
+impl IdentityManager {
+    /// Create a new identity manager
+    pub async fn new(
+        storage: Arc<dyn Storage>,
+        key_path: Option<PathBuf>,
+    ) -> IdentityResult<Self> {
+        let key_pair = if let Some(path) = key_path {
+            // Load existing key pair
+            match IdentityKeyPair::load_from_file(&path).await {
+                Ok(kp) => Some(kp),
+                Err(_) => {
+                    // Generate new key pair and save it
+                    let kp = IdentityKeyPair::generate()?;
+                    kp.save_to_file(&path).await?;
+                    Some(kp)
+                }
+            }
+        } else {
+            // Generate a temporary key pair
+            Some(IdentityKeyPair::generate()?)
         };
         
-        // Load known identities
-        let _ = provider.load_known_identities().await;
+        let manager = Self {
+            storage,
+            key_pair: Arc::new(RwLock::new(key_pair)),
+            current_identity: Arc::new(RwLock::new(None)),
+        };
         
-        provider
-    }
-    
-    /// Load known identities from storage
-    async fn load_known_identities(&self) -> IdentityResult<()> {
-        let ids_dir = "identities";
-        
-        // Check if the directory exists
-        if let Ok(keys) = self.storage.list(ids_dir).await {
-            let mut known_identities = self.known_identities.write().await;
+        // Try to load the identity from storage
+        if let Some(kp) = &*manager.key_pair.read().await {
+            let id = kp.public_key_hash().to_string();
+            let storage_key = format!("identity:{}", id);
             
-            for key in keys {
-                if key.ends_with(".json") {
-                    let identity_result: StorageResult<Identity> = self.storage.get_json(&key).await;
-                    
-                    if let Ok(identity) = identity_result {
-                        known_identities.insert(identity.id.as_str().to_string(), identity);
-                    }
+            match manager.storage.get_json::<Identity>(&storage_key).await {
+                Ok(identity) => {
+                    let mut current = manager.current_identity.write().await;
+                    *current = Some(identity);
+                },
+                Err(_) => {
+                    // No identity found, but that's ok
                 }
             }
         }
         
-        Ok(())
-    }
-    
-    /// Save a known identity to storage
-    async fn save_identity(&self, identity: &Identity) -> IdentityResult<()> {
-        let key = format!("identities/{}.json", identity.id.as_str());
-        self.storage.put_json(&key, identity).await?;
-        Ok(())
-    }
-    
-    /// Create a local identity provider from a key file
-    pub async fn from_key_file<P: AsRef<Path>>(key_path: P, storage_path: P) -> IdentityResult<Self> {
-        let key_pair = IdentityKeyPair::load_from_file(key_path).await
-            .map_err(|e| IdentityError::CryptoError(e))?;
-        
-        let storage = FileStorage::new(storage_path.as_ref()).await
-            .map_err(|e| IdentityError::StorageError(e))?;
-        
-        Ok(Self::new(key_pair, Arc::new(storage)).await)
-    }
-    
-    /// Create a new local identity
-    pub async fn create_new<P: AsRef<Path>>(name: &str, key_path: P, storage_path: P) -> IdentityResult<Self> {
-        let key_pair = IdentityKeyPair::generate()
-            .map_err(|e| IdentityError::CryptoError(e))?;
-        
-        // Save the key pair to file
-        key_pair.save_to_file(&key_path).await
-            .map_err(|e| IdentityError::CryptoError(e))?;
-        
-        let storage = FileStorage::new(storage_path.as_ref()).await
-            .map_err(|e| IdentityError::StorageError(e))?;
-        
-        let provider = Self::new(key_pair, Arc::new(storage)).await;
-        
-        // Create identity record
-        let key_pair = provider.key_pair.read().await;
-        let id = key_pair.node_id().clone();
-        let timestamp = icn_core::utils::timestamp_secs();
-        
-        let identity = Identity {
-            id: id.clone(),
-            public_key: key_pair.public_key_bytes().to_vec(),
-            name: name.to_string(),
-            created_at: timestamp,
-            updated_at: timestamp,
-            metadata: HashMap::new(),
-            reputation_score: Some(0.0),
-        };
-        
-        // Save the identity
-        provider.save_identity(&identity).await?;
-        
-        // Add to known identities
-        {
-            let mut known = provider.known_identities.write().await;
-            known.insert(id.as_str().to_string(), identity);
-        }
-        
-        Ok(provider)
+        Ok(manager)
     }
 }
 
 #[async_trait]
-impl IdentityProvider for LocalIdentityProvider {
+impl IdentityProvider for IdentityManager {
     async fn get_identity(&self) -> IdentityResult<Identity> {
-        let key_pair = self.key_pair.read().await;
-        let id = key_pair.node_id();
+        let current = self.current_identity.read().await;
         
-        let known = self.known_identities.read().await;
-        if let Some(identity) = known.get(id.as_str()) {
-            return Ok(identity.clone());
+        if let Some(identity) = current.clone() {
+            Ok(identity)
+        } else {
+            Err(IdentityError::NoIdentity)
         }
+    }
+    
+    async fn create_identity(&self, name: &str, metadata: HashMap<String, String>) -> IdentityResult<Identity> {
+        // Ensure we have a key pair
+        let key_pair = {
+            let key_pair = self.key_pair.read().await;
+            key_pair.clone().ok_or(IdentityError::CryptoError(CryptoError::KeyError("No key pair available".to_string())))?
+        };
         
-        // Identity not in cache, try to load from storage
-        let key = format!("identities/{}.json", id.as_str());
-        match self.storage.get_json::<Identity>(&key).await {
+        // Create the identity
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        let id = key_pair.public_key_hash().to_string();
+        
+        let identity = Identity {
+            id: id.clone(),
+            name: name.to_string(),
+            public_key: key_pair.public_key().to_vec(),
+            metadata,
+            created_at: now,
+            updated_at: now,
+        };
+        
+        // Store the identity
+        let storage_key = format!("identity:{}", id);
+        self.storage.put_json(&storage_key, &identity).await?;
+        
+        // Set as current identity
+        let mut current = self.current_identity.write().await;
+        *current = Some(identity.clone());
+        
+        Ok(identity)
+    }
+    
+    async fn load_identity(&self, id: &str) -> IdentityResult<Identity> {
+        let storage_key = format!("identity:{}", id);
+        match self.storage.get_json::<Identity>(&storage_key).await {
             Ok(identity) => Ok(identity),
-            Err(_) => {
-                // Create a default identity if it doesn't exist
-                let timestamp = icn_core::utils::timestamp_secs();
-                let identity = Identity {
-                    id: id.clone(),
-                    public_key: key_pair.public_key_bytes().to_vec(),
-                    name: format!("Node {}", id),
-                    created_at: timestamp,
-                    updated_at: timestamp,
-                    metadata: HashMap::new(),
-                    reputation_score: Some(0.0),
-                };
-                
-                // Save the identity
-                self.save_identity(&identity).await?;
-                
-                // Add to known identities
-                {
-                    let mut known = self.known_identities.write().await;
-                    known.insert(id.as_str().to_string(), identity.clone());
-                }
-                
-                Ok(identity)
+            Err(_) => Err(IdentityError::IdentityNotFound(id.to_string())),
+        }
+    }
+    
+    async fn get_all_identities(&self) -> IdentityResult<Vec<Identity>> {
+        let keys = self.storage.list("identity:").await?;
+        let mut identities = Vec::new();
+        
+        for key in keys {
+            match self.storage.get_json::<Identity>(&key).await {
+                Ok(identity) => identities.push(identity),
+                Err(_) => continue,
             }
         }
+        
+        Ok(identities)
     }
     
-    async fn get_known_identities(&self) -> IdentityResult<Vec<Identity>> {
-        let known = self.known_identities.read().await;
-        Ok(known.values().cloned().collect())
+    async fn update_identity(&self, identity: &Identity) -> IdentityResult<Identity> {
+        // Check if the identity exists
+        let storage_key = format!("identity:{}", identity.id);
+        let _ = self.storage.get_json::<Identity>(&storage_key).await
+            .map_err(|_| IdentityError::IdentityNotFound(identity.id.clone()))?;
+        
+        // Create updated identity
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        let mut updated = identity.clone();
+        updated.updated_at = now;
+        
+        // Store the updated identity
+        self.storage.put_json(&storage_key, &updated).await?;
+        
+        // Update current identity if needed
+        let current = self.current_identity.read().await;
+        if let Some(current_identity) = &*current {
+            if current_identity.id == identity.id {
+                let mut current = self.current_identity.write().await;
+                *current = Some(updated.clone());
+            }
+        }
+        
+        Ok(updated)
     }
     
-    async fn get_identity_by_id(&self, id: &NodeId) -> IdentityResult<Option<Identity>> {
-        let known = self.known_identities.read().await;
-        if let Some(identity) = known.get(id.as_str()) {
-            return Ok(Some(identity.clone()));
-        }
+    async fn delete_identity(&self, id: &str) -> IdentityResult<()> {
+        let storage_key = format!("identity:{}", id);
         
-        // Try to load from storage
-        let key = format!("identities/{}.json", id.as_str());
-        match self.storage.get_json::<Identity>(&key).await {
-            Ok(identity) => {
-                // Add to cache
-                {
-                    let mut known = self.known_identities.write().await;
-                    known.insert(id.as_str().to_string(), identity.clone());
-                }
-                Ok(Some(identity))
-            },
-            Err(_) => Ok(None),
-        }
-    }
-    
-    async fn add_identity(&self, identity: Identity) -> IdentityResult<()> {
-        // Validate the identity (check that the ID matches the public key)
-        let expected_id = NodeId::from_public_key(&identity.public_key);
-        if identity.id != expected_id {
-            return Err(IdentityError::VerificationError(
-                format!("Identity ID does not match public key: {} != {}", identity.id, expected_id)
-            ));
-        }
+        // Check if the identity exists
+        let _ = self.storage.get_json::<Identity>(&storage_key).await
+            .map_err(|_| IdentityError::IdentityNotFound(id.to_string()))?;
         
-        // Save to storage
-        self.save_identity(&identity).await?;
+        // Delete the identity
+        self.storage.delete(&storage_key).await?;
         
-        // Add to cache
-        {
-            let mut known = self.known_identities.write().await;
-            known.insert(identity.id.as_str().to_string(), identity);
+        // Update current identity if needed
+        let current = self.current_identity.read().await;
+        if let Some(current_identity) = &*current {
+            if current_identity.id == id {
+                let mut current = self.current_identity.write().await;
+                *current = None;
+            }
         }
         
         Ok(())
@@ -286,23 +296,35 @@ impl IdentityProvider for LocalIdentityProvider {
     
     async fn sign(&self, data: &[u8]) -> IdentityResult<Signature> {
         let key_pair = self.key_pair.read().await;
-        Ok(key_pair.sign(data))
+        let key_pair = key_pair.as_ref()
+            .ok_or(IdentityError::CryptoError(CryptoError::KeyError("No key pair available".to_string())))?;
+        
+        let signature = key_pair.sign(data)?;
+        Ok(signature)
     }
     
-    async fn verify(&self, identity_id: &NodeId, data: &[u8], signature: &Signature) -> IdentityResult<bool> {
-        // Get the identity
-        let identity = self.get_identity_by_id(identity_id).await?
-            .ok_or_else(|| IdentityError::IdentityNotFound(identity_id.to_string()))?;
+    async fn verify(&self, identity_id: &str, data: &[u8], signature: &[u8]) -> IdentityResult<bool> {
+        // Load the identity
+        let identity = self.load_identity(identity_id).await?;
         
         // Verify the signature
-        icn_core::crypto::verify_signature(&identity.public_key, data, signature)
-            .map(|_| true)
+        let signature = Signature::from_bytes(signature)
+            .map_err(|e| IdentityError::CryptoError(e))?;
+        
+        signature.verify(&identity.public_key, data)
+            .map_err(|e| IdentityError::CryptoError(e))
             .or_else(|_| Ok(false))
     }
 }
 
 pub mod reputation;
 pub mod attestation;
+
+// Mock implementation for testing
+#[cfg(any(test, feature = "testing"))]
+pub mod mock;
+#[cfg(any(test, feature = "testing"))]
+pub use mock::MockIdentityProvider;
 
 // Re-exports
 pub use reputation::{Reputation, ReputationScore, ReputationManager};
