@@ -88,6 +88,27 @@ async fn setup_test_environment() -> Result<(
     governance.set_reputation_system(reputation.clone());
     let governance = Arc::new(governance);
     
+    // Create a dummy attestation to prevent "No such file or directory" errors
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let dummy_attestation = json!({
+        "id": format!("att:{}:{}:{}", identity.did, identity.did, now),
+        "issuer_did": identity.did.clone(),
+        "subject_did": identity.did.clone(),
+        "attestation_type": "GovernanceQuality",
+        "score": 0.5,
+        "context": json!({"action": "test"}),
+        "claims": json!({}),
+        "evidence": [],
+        "signatures": [],
+        "quorum_threshold": 1,
+        "created_at": now,
+        "expires_at": now + 86400 * 30, // 30 days
+        "is_revoked": false
+    });
+    
+    // Store the dummy attestation
+    storage.put_json("attestations/dummy", &dummy_attestation)?;
+    
     Ok((identity, storage, crypto, reputation, governance))
 }
 

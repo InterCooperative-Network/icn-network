@@ -409,7 +409,33 @@ impl SybilResistance {
     
     // Check for potential Sybil attack patterns
     pub fn check_sybil_indicators(&self, did: &str) -> Result<SybilIndicators, Box<dyn Error>> {
-        let attestations = self.attestation_manager.get_attestations_for_subject(did)?;
+        println!("Checking Sybil indicators for: {}", did);
+        
+        // Create a default set of indicators if no attestations are found
+        let default_indicators = SybilIndicators {
+            unique_issuer_count: 0,
+            avg_attestation_age_seconds: 0.0,
+            quorum_attestation_count: 0,
+            attestation_count: 0,
+            risk_score: 0.5, // Neutral risk score
+        };
+        
+        // Try to get attestations, but don't fail if there are none
+        let attestations = match self.attestation_manager.get_attestations_for_subject(did) {
+            Ok(atts) => {
+                println!("Found {} attestations for Sybil check", atts.len());
+                atts
+            },
+            Err(e) => {
+                println!("Error getting attestations for Sybil check: {:?}", e);
+                return Ok(default_indicators);
+            }
+        };
+        
+        if attestations.is_empty() {
+            println!("No attestations found for Sybil check, using default indicators");
+            return Ok(default_indicators);
+        }
         
         // 1. Check for attestation diversity
         let unique_issuers: HashSet<String> = attestations.iter()
@@ -448,6 +474,7 @@ impl SybilResistance {
             ),
         };
         
+        println!("Sybil indicators: {:?}", indicators);
         Ok(indicators)
     }
     
@@ -542,12 +569,44 @@ impl ReputationSystem {
     }
     
     // Calculate comprehensive trust score for a DID
-    pub fn calculate_trust_score(&self, did: &str) -> Result<TrustScore, Box<dyn Error>> {
-        // Get direct attestations
-        let attestations = self.attestation_manager.get_attestations_for_subject(did)?;
+    pub fn calculate_trust_score(&self, member_did: &str) -> Result<TrustScore, Box<dyn Error>> {
+        println!("Calculating trust score for member: {}", member_did);
+        
+        // Get all attestations for this member
+        let attestations_path = "attestations";
+        println!("Looking for attestations in path: {}", attestations_path);
+        
+        let attestation_files = match self.storage.list(attestations_path) {
+            Ok(files) => {
+                println!("Found {} attestation files", files.len());
+                files
+            },
+            Err(e) => {
+                println!("Error listing attestation files: {:?}", e);
+                return Err(e);
+            }
+        };
+        
+        let mut attestations = Vec::new();
+        for file in attestation_files {
+            println!("Reading attestation file: {}", file);
+            match self.storage.get_json::<Attestation>(&file) {
+                Ok(attestation) => {
+                    if attestation.subject_did == member_did {
+                        attestations.push(attestation);
+                    }
+                },
+                Err(e) => {
+                    println!("Error reading attestation file {}: {:?}", file, e);
+                    // Continue with other files
+                }
+            }
+        }
+        
+        println!("Found {} attestations for member {}", attestations.len(), member_did);
         
         // Check for Sybil indicators
-        let sybil_indicators = self.sybil_resistance.check_sybil_indicators(did)?;
+        let sybil_indicators = self.sybil_resistance.check_sybil_indicators(member_did)?;
         
         // Initialize component scores
         let mut components = HashMap::new();

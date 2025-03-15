@@ -13,6 +13,7 @@ pub enum StorageError {
     IoError(std::io::Error),
     SerializationError(String),
     KeyNotFound(String),
+    NotADirectory(String),
 }
 
 impl From<std::io::Error> for StorageError {
@@ -33,6 +34,7 @@ impl std::fmt::Display for StorageError {
             StorageError::IoError(e) => write!(f, "IO error: {}", e),
             StorageError::SerializationError(e) => write!(f, "Serialization error: {}", e),
             StorageError::KeyNotFound(key) => write!(f, "Key not found: {}", key),
+            StorageError::NotADirectory(dir) => write!(f, "Not a directory: {}", dir),
         }
     }
 }
@@ -158,22 +160,17 @@ impl Storage {
     }
     
     // List all keys with a given prefix
-    pub fn list(&self, prefix: &str) -> Result<Vec<String>, Box<dyn Error>> {
-        let prefix_path = self.get_path(prefix);
-        let base_path_str = self.base_path.to_string_lossy().to_string();
+    pub fn list(&self, key: &str) -> Result<Vec<String>, Box<dyn Error>> {
+        let path = Path::new(&self.base_path).join(key);
+        println!("Listing files at path: {:?}", path);
         
-        let mut keys = Vec::new();
-        
-        if prefix_path.is_dir() {
-            self.list_directory(&prefix_path, &base_path_str, prefix, &mut keys)?;
-        } else if let Some(parent) = prefix_path.parent() {
-            if parent.exists() {
-                let file_name = prefix_path.file_name().unwrap().to_string_lossy();
-                self.list_directory_with_filter(parent, &base_path_str, &file_name.to_string(), &mut keys)?;
-            }
+        if path.is_dir() {
+            println!("Path is a directory, calling list_directory");
+            self.list_directory(&path)
+        } else {
+            println!("Path is not a directory: {:?}", path);
+            Err(Box::new(StorageError::NotADirectory(key.to_string())))
         }
-        
-        Ok(keys)
     }
     
     // List files for compatibility
@@ -182,48 +179,50 @@ impl Storage {
     }
     
     // List keys in a directory
-    fn list_directory(&self, dir: &Path, base_path: &str, prefix: &str, keys: &mut Vec<String>) -> Result<(), Box<dyn Error>> {
-        if !dir.is_dir() {
-            return Ok(());
-        }
+    fn list_directory(&self, dir_path: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+        println!("Listing directory: {:?}", dir_path);
+        let mut result = Vec::new();
         
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            
-            if path.is_file() {
-                let path_str = path.to_string_lossy().to_string();
-                let key = path_str.replace(base_path, "").replace("\\", "/");
-                let key = if key.starts_with('/') { key[1..].to_string() } else { key };
-                keys.push(key);
-            } else if path.is_dir() {
-                self.list_directory(&path, base_path, prefix, keys)?;
+        match fs::read_dir(dir_path) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => {
+                            let path = entry.path();
+                            println!("Found entry: {:?}", path);
+                            
+                            if path.is_file() {
+                                if let Some(rel_path) = path.strip_prefix(&self.base_path).ok() {
+                                    let rel_path_str = rel_path.to_string_lossy().to_string();
+                                    println!("Adding file to result: {}", rel_path_str);
+                                    result.push(rel_path_str);
+                                }
+                            } else if path.is_dir() {
+                                println!("Found subdirectory: {:?}", path);
+                                // Recursively list subdirectories
+                                if let Some(rel_path) = path.strip_prefix(&self.base_path).ok() {
+                                    let sub_results = self.list_directory(&path)?;
+                                    for sub_path in sub_results {
+                                        result.push(sub_path);
+                                    }
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            println!("Error reading directory entry: {:?}", e);
+                            // Continue with other entries
+                        }
+                    }
+                }
+                
+                println!("Found {} files in directory {:?}", result.len(), dir_path);
+                Ok(result)
+            },
+            Err(e) => {
+                println!("Error reading directory {:?}: {:?}", dir_path, e);
+                Err(Box::new(e))
             }
         }
-        
-        Ok(())
-    }
-    
-    // List keys in a directory with a filter
-    fn list_directory_with_filter(&self, dir: &Path, base_path: &str, filter: &str, keys: &mut Vec<String>) -> Result<(), Box<dyn Error>> {
-        if !dir.is_dir() {
-            return Ok(());
-        }
-        
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            let name = path.file_name().unwrap().to_string_lossy();
-            
-            if path.is_file() && name.to_string().contains(filter) {
-                let path_str = path.to_string_lossy().to_string();
-                let key = path_str.replace(base_path, "").replace("\\", "/");
-                let key = if key.starts_with('/') { key[1..].to_string() } else { key };
-                keys.push(key);
-            }
-        }
-        
-        Ok(())
     }
 
     // Add a clone method for our tests
