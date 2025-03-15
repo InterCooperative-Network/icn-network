@@ -19,7 +19,7 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 
 # Networking
-libp2p = { version = "0.53", features = ["tokio", "noise", "yamux", "kad", "identify", "gossipsub", "mdns", "ping", "request-response"] }
+libp2p = { version = "0.53", features = ["tokio", "noise", "yamux", "kad", "identify", "gossipsub", "mdns", "ping", "request-response", "tcp", "relay", "macros"] }
 multiaddr = "0.18.0"
 
 # Serialization
@@ -34,6 +34,8 @@ anyhow = { workspace = true }
 # Utilities
 uuid = { version = "1.4", features = ["v4", "serde"] }
 clap = { version = "4.4", features = ["derive"] }
+hex = { workspace = true }
+bs58 = { workspace = true }
 
 # Metrics
 prometheus = { version = "0.13", default-features = false }

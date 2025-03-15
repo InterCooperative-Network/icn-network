@@ -19,45 +19,70 @@ use thiserror::Error;
 use serde::{Serialize, Deserialize};
 use libp2p::PeerId;
 use libp2p::Multiaddr;
+use icn_core::storage::StorageError;
 
 /// Error types for network operations
 #[derive(Error, Debug)]
 pub enum NetworkError {
-    /// Error from libp2p networking
+    /// Error in the network protocol
+    #[error("Protocol error: {0}")]
+    ProtocolError(String),
+    
+    /// Internal error
+    #[error("Internal error: {0}")]
+    InternalError(String),
+    
+    /// Peer not found
+    #[error("Peer not found: {0}")]
+    PeerNotFound(String),
+    
+    /// Connection error
+    #[error("Connection error: {0}")]
+    ConnectionError(String),
+    
+    /// Connection failed
+    #[error("Connection failed")]
+    ConnectionFailed,
+    
+    /// Configuration error
+    #[error("Configuration error: {0}")]
+    ConfigurationError(String),
+    
+    /// Service stopped
+    #[error("Service is stopped")]
+    ServiceStopped,
+    
+    /// Service error
+    #[error("Service error: {0}")]
+    ServiceError(String),
+    
+    /// Service not enabled
+    #[error("Service not enabled: {0}")]
+    ServiceNotEnabled(String),
+    
+    /// Encoding error
+    #[error("Encoding error")]
+    EncodingError,
+    
+    /// Decoding error
+    #[error("Decoding error")]
+    DecodingError,
+    
+    /// Other error
+    #[error("Other error: {0}")]
+    Other(String),
+    
+    /// Storage error
+    #[error("Storage error: {0}")]
+    StorageError(#[from] StorageError),
+    
+    /// Libp2p error
     #[error("Libp2p error: {0}")]
     Libp2pError(String),
     
     /// Error from the identity layer
     #[error("Identity error: {0}")]
     IdentityError(String),
-    
-    /// Error from the storage layer
-    #[error("Storage error: {0}")]
-    StorageError(String),
-    
-    /// Serialization error
-    #[error("Serialization error: {0}")]
-    SerializationError(String),
-    
-    /// Deserialization error
-    #[error("Deserialization error: {0}")]
-    DeserializationError(String),
-    
-    /// Timeout error
-    #[error("Network timeout")]
-    Timeout,
-    
-    /// Peer not found
-    #[error("Peer not found: {0}")]
-    PeerNotFound(String),
-    
-    /// Protocol not supported
-    #[error("Protocol not supported: {0}")]
-    ProtocolNotSupported(String),
-    
-    /// Internal error
-    #[error("Internal error: {0}")]
-    InternalError(String),
     
     /// No relay servers available
     #[error("No relay servers available")]
@@ -83,22 +108,46 @@ pub enum NetworkError {
 /// Result type for network operations
 pub type NetworkResult<T> = Result<T, NetworkError>;
 
-/// Message types that can be exchanged between nodes
+/// Network message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "content")]
 pub enum NetworkMessage {
-    /// Identity announcement
-    IdentityAnnouncement(IdentityAnnouncement),
-    /// Transaction announcement
-    TransactionAnnouncement(TransactionAnnouncement),
     /// Ledger state update
+    #[serde(rename = "ledger.state")]
     LedgerStateUpdate(LedgerStateUpdate),
-    /// Proposal announcement
+    
+    /// Transaction announcement
+    #[serde(rename = "ledger.transaction")]
+    TransactionAnnouncement(TransactionAnnouncement),
+    
+    /// Identity announcement
+    #[serde(rename = "identity.announcement")]
+    IdentityAnnouncement(IdentityAnnouncement),
+    
+    /// Governance proposal announcement
+    #[serde(rename = "governance.proposal")]
     ProposalAnnouncement(ProposalAnnouncement),
-    /// Vote announcement
+    
+    /// Governance vote announcement
+    #[serde(rename = "governance.vote")]
     VoteAnnouncement(VoteAnnouncement),
-    /// Custom message
-    Custom(CustomMessage),
+    
+    /// Custom message type
+    #[serde(rename = "custom")]
+    CustomMessage(CustomMessage),
+}
+
+impl NetworkMessage {
+    /// Get the message type as a string
+    pub fn message_type(&self) -> String {
+        match self {
+            Self::LedgerStateUpdate(_) => "ledger.state".to_string(),
+            Self::TransactionAnnouncement(_) => "ledger.transaction".to_string(),
+            Self::IdentityAnnouncement(_) => "identity.announcement".to_string(),
+            Self::ProposalAnnouncement(_) => "governance.proposal".to_string(),
+            Self::VoteAnnouncement(_) => "governance.vote".to_string(),
+            Self::CustomMessage(m) => m.message_type.clone(),
+        }
+    }
 }
 
 /// Identity announcement message
@@ -176,27 +225,29 @@ pub struct VoteAnnouncement {
     pub data_hash: String,
 }
 
-/// Custom message with flexible content
+/// Custom message type for extensibility
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomMessage {
-    /// Type of the custom message
+    /// Message type
     pub message_type: String,
-    /// Custom data as a JSON object
+    /// Data for the message as JSON value
     pub data: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Information about a peer
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerInfo {
     /// Peer ID
-    pub peer_id: PeerId,
-    /// Addresses where the peer can be reached
-    pub addresses: Vec<Multiaddr>,
+    pub peer_id: String,
+    /// Legacy ID field for compatibility
+    pub id: String,
+    /// Addresses the peer is listening on
+    pub addresses: Vec<String>,
     /// Supported protocols
     pub protocols: Vec<String>,
     /// Whether the peer is currently connected
     pub connected: bool,
-    /// Last seen timestamp (unix timestamp in seconds)
+    /// Last seen timestamp
     pub last_seen: u64,
 }
 
@@ -266,14 +317,12 @@ pub mod circuit_relay;
 #[cfg(test)]
 mod tests;
 
-// Re-exports
-pub use p2p::{P2pNetwork, P2pConfig};
-pub use discovery::{PeerDiscovery, DiscoveryManager, DiscoveryConfig};
-pub use messaging::{MessageProcessor, MessageEnvelope, DefaultMessageHandler};
-pub use sync::{Synchronizer, SyncConfig, SyncState};
-pub use metrics::{NetworkMetrics, Timer, start_metrics_server};
-pub use reputation::{ReputationManager, ReputationConfig, ReputationChange, PeerReputation};
-pub use circuit_relay::{CircuitRelayConfig, CircuitRelayManager};
+// Public re-exports
+pub use crate::p2p::{P2pConfig, P2pNetwork};
+pub use crate::discovery::{DiscoveryConfig, DiscoveryService};
+pub use crate::messaging::{MessageProcessor, PriorityConfig};
+pub use crate::reputation::{ReputationConfig, ReputationManager};
+pub use crate::circuit_relay::{CircuitRelayConfig, CircuitRelayManager};
 
 // Re-export the messaging types for convenience
 pub mod messages {

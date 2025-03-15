@@ -13,8 +13,10 @@ use libp2p::{
     core::upgrade,
     identify, ping, relay,
     swarm::{SwarmEvent, NetworkBehaviour},
-    Multiaddr, PeerId, Transport,
+    Multiaddr, PeerId,
+    core::Transport,
 };
+use multiaddr::Protocol;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
@@ -311,31 +313,20 @@ impl CircuitRelayManager {
     }
 }
 
-/// Configure and build the relay transport
-pub fn configure_relay_transport<T>(
+/// Create a relay transport
+pub fn create_relay_transport<T>(
     transport: T,
-    local_peer_id: PeerId,
-    config: &CircuitRelayConfig,
-) -> NetworkResult<libp2p::core::transport::Boxed<(PeerId, libp2p::core::muxing::StreamMuxerBox)>>
+    relay_config: &CircuitRelayConfig,
+) -> NetworkResult<relay::client::Transport<T>> 
 where
-    T: Transport + Clone + Send + Sync + 'static,
-    T::Output: libp2p::core::transport::TransportOutput + Send + 'static,
-    T::Error: std::error::Error + Send + 'static,
-    T::Listener: Send + 'static,
-    T::ListenerUpgrade: Send + 'static,
-    T::Dial: Send + 'static,
+    T: Transport + Clone + Send + 'static,
+    T::Output: Send + 'static,
+    T::Error: std::error::Error + Send + Sync + 'static,
 {
-    let relay_config = relay::Config {
-        connection_idle_timeout: Some(config.connection_timeout),
-        max_circuit_duration: Some(config.ttl),
-        max_circuit_bytes: None,
-        ..Default::default()
-    };
+    // Create the relay transport
+    let relay_transport = relay::client::Transport::new(transport, relay_config.reservation_duration);
     
-    let relay_client_transport = relay::client::Transport::new(local_peer_id, transport);
-    
-    // Final relay transport
-    Ok(relay_client_transport.boxed())
+    Ok(relay_transport)
 }
 
 /// Extract peer ID from a multiaddress
@@ -349,7 +340,7 @@ fn extract_peer_id(addr: &Multiaddr) -> Option<PeerId> {
 /// Circuit relay behaviour that combines server and client capabilities
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "CircuitRelayEvent")]
-pub struct CircuitRelayBehaviour {
+struct CircuitRelayBehaviour {
     /// Ping protocol for measuring latency
     ping: ping::Behaviour,
     
@@ -407,18 +398,13 @@ impl From<relay::client::Event> for CircuitRelayEvent {
 
 impl CircuitRelayBehaviour {
     /// Create a new circuit relay behaviour
-    pub fn new(
-        local_peer_id: PeerId,
-        config: &CircuitRelayConfig,
-    ) -> Self {
-        // Ping configuration
+    fn new(local_peer_id: PeerId, config: &CircuitRelayConfig) -> Self {
         let ping_config = ping::Config::new()
             .with_interval(Duration::from_secs(30))
-            .with_timeout(Duration::from_secs(10));
-        
-        // Identify configuration
-        let identify_config = identify::Config::new("/icn/1.0.0".to_string(), local_peer_id)
-            .with_agent_version(format!("icn-network/{}", env!("CARGO_PKG_VERSION")));
+            .with_timeout(Duration::from_secs(10))
+            .with_keep_alive(true);
+            
+        let identify_config = identify::Config::new("/ipfs/relay/1.0.0".to_string(), local_peer_id.clone());
         
         let mut behaviour = Self {
             ping: ping::Behaviour::new(ping_config),

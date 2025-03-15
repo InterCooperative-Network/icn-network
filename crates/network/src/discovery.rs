@@ -95,18 +95,18 @@ impl DiscoveryManager {
         }
     }
     
-    /// Load saved peers from storage
-    async fn load_saved_peers(&self) -> NetworkResult<()> {
-        if !self.config.save_peers {
+    /// Load peers from storage
+    pub async fn load_peers(&self) -> NetworkResult<()> {
+        if !self.storage.exists(SAVED_PEERS_KEY).await
+            .map_err(|e| NetworkError::StorageError(e))? {
+            debug!("No saved peers found");
             return Ok(());
         }
         
-        if !self.storage.exists(SAVED_PEERS_KEY).await? {
-            return Ok(());
-        }
+        let data = self.storage.get(SAVED_PEERS_KEY).await
+            .map_err(|e| NetworkError::StorageError(e))?;
         
         // Load the saved peers
-        let data = self.storage.get(SAVED_PEERS_KEY).await?;
         let peers: Vec<(String, String)> = match serde_json::from_slice(&data) {
             Ok(peers) => peers,
             Err(e) => {
@@ -146,33 +146,31 @@ impl DiscoveryManager {
         Ok(())
     }
     
-    /// Save known peers to storage
-    async fn save_peers(&self) -> NetworkResult<()> {
+    /// Save peers to storage
+    pub async fn save_peers(&self) -> NetworkResult<()> {
         if !self.config.save_peers {
             return Ok(());
         }
         
-        let known_peers = self.known_peers.read().await;
+        let peers = self.known_peers.read().await;
+        let mut peer_data = Vec::new();
         
-        // Convert to a serializable format
-        let peers: Vec<(String, String)> = known_peers
-            .iter()
-            .map(|(peer_id, addr)| {
-                (
-                    hex::encode(peer_id.to_bytes()),
-                    addr.to_string(),
-                )
-            })
-            .collect();
+        for (peer_id_str, addresses) in peers.iter() {
+            if !addresses.is_empty() {
+                for addr in addresses {
+                    peer_data.push((peer_id_str.clone(), addr.to_string()));
+                }
+            }
+        }
         
         // Serialize and save
-        let data = serde_json::to_vec(&peers)
-            .map_err(|e| NetworkError::SerializationError(e.to_string()))?;
-        
-        self.storage.put(SAVED_PEERS_KEY, &data).await?;
-        
-        info!("Saved {} peers", peers.len());
-        
+        let data = serde_json::to_vec(&peer_data)
+            .map_err(|e| NetworkError::InternalError(format!("Failed to serialize peers: {}", e)))?;
+            
+        self.storage.put(SAVED_PEERS_KEY, &data).await
+            .map_err(|e| NetworkError::StorageError(e))?;
+            
+        debug!("Saved {} peer addresses", peer_data.len());
         Ok(())
     }
     
@@ -272,7 +270,7 @@ impl DiscoveryManager {
 impl PeerDiscovery for DiscoveryManager {
     async fn start(&self) -> NetworkResult<()> {
         // Load saved peers
-        self.load_saved_peers().await?;
+        self.load_peers().await?;
         
         // Connect to bootstrap peers
         if self.config.use_bootstrap {

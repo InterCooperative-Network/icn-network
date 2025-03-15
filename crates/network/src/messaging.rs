@@ -3,7 +3,7 @@
 //! This module handles message encoding, decoding, and processing 
 //! for communication between nodes in the InterCooperative Network.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, BinaryHeap};
 use std::sync::Arc;
 use std::cmp::Ordering;
 use std::time::{Duration, Instant};

@@ -12,9 +12,9 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
 use icn_core::storage::Storage;
-use icn_ledger::{Ledger, Account, Transaction};
-use icn_governance::{Proposal, Vote};
-use icn_identity::Identity;
+// use icn_ledger::{Ledger, Account, Transaction};
+// use icn_governance::{Proposal, Vote};
+// use icn_identity::Identity;
 
 use crate::{
     NetworkError, NetworkResult, NetworkService, NetworkMessage,
@@ -76,7 +76,7 @@ pub struct Synchronizer {
     /// Network service
     network: Arc<dyn NetworkService>,
     /// Ledger
-    ledger: Option<Arc<dyn Ledger>>,
+    ledger: Option<Arc<dyn Storage>>,
     /// Configuration
     config: SyncConfig,
     /// Current sync state
@@ -151,7 +151,7 @@ impl Synchronizer {
     }
     
     /// Set the ledger
-    pub fn set_ledger(&mut self, ledger: Arc<dyn Ledger>) {
+    pub fn set_ledger(&mut self, ledger: Arc<dyn Storage>) {
         self.ledger = Some(ledger);
     }
     

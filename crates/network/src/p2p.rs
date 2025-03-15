@@ -11,12 +11,14 @@ use std::time::Instant;
 use async_trait::async_trait;
 use futures::prelude::*;
 use libp2p::{
+    self,
     core::{muxing::StreamMuxerBox, transport::OrTransport, upgrade},
     gossipsub::{self, IdentTopic, MessageAuthenticity, MessageId, ValidationMode},
     identify, kad, mdns, noise, ping, swarm,
-    swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent},
+    swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId,
     identity::Keypair,
+    SwarmBuilder,
 };
 use tokio::sync::{mpsc, RwLock, Mutex};
 use tokio::task::JoinHandle;
@@ -28,10 +30,10 @@ use crate::{
     MessageHandler, NetworkError, NetworkMessage, NetworkResult, NetworkService,
     PeerInfo,
 };
-use crate::metrics::NetworkMetrics;
+use crate::metrics::{NetworkMetrics, self, start_metrics_server};
 use crate::reputation::{ReputationManager, ReputationConfig, ReputationChange};
 use crate::messaging;
-use crate::circuit_relay::{CircuitRelayConfig, CircuitRelayManager, configure_relay_transport};
+use crate::circuit_relay::{CircuitRelayConfig, CircuitRelayManager, create_relay_transport};
 
 // Topic names for gossipsub
 const TOPIC_IDENTITY: &str = "icn/identity/v1";
@@ -110,7 +112,8 @@ struct P2pBehaviour {
     /// Kademlia DHT for peer discovery
     kad: kad::Behaviour<kad::store::MemoryStore>,
     /// mDNS for local network discovery
-    mdns: mdns::async_io::Behaviour,
+    #[behaviour(ignore)]
+    mdns: mdns::Behaviour<libp2p::identify::Event>,
     /// GossipSub for efficient message propagation
     gossipsub: gossipsub::Behaviour,
 }
@@ -248,7 +251,11 @@ impl P2pNetwork {
         // Create reputation manager if enabled
         let reputation = if config.enable_reputation {
             let rep_config = config.reputation_config.clone().unwrap_or_default();
-            let manager = ReputationManager::new(rep_config, metrics.clone());
+            let manager = ReputationManager::new(
+                rep_config, 
+                Some(storage.clone()),
+                metrics.clone()
+            );
             
             // Start decay task
             manager.start_decay_task();
@@ -379,7 +386,7 @@ impl P2pNetwork {
         // Add circuit relay transport if enabled
         let transport = if config.enable_circuit_relay {
             let relay_config = config.circuit_relay_config.clone().unwrap_or_default();
-            configure_relay_transport(base_transport, local_peer_id, &relay_config)?
+            create_relay_transport(base_transport, local_peer_id, &relay_config)?
         } else {
             base_transport
         };
@@ -420,8 +427,7 @@ impl P2pNetwork {
         );
         
         // Set up mDNS
-        let mdns = mdns::async_io::Behaviour::new(mdns::Config::default(), key_pair.public().to_peer_id())
-            .map_err(|e| NetworkError::Libp2pError(e.to_string()))?;
+        let mdns = mdns::Behaviour::<libp2p::identify::Event>::new(mdns::Config::default(), key_pair.public().to_peer_id())?;
         
         // Build the swarm
         let behaviour = P2pBehaviour {

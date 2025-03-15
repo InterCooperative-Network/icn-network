@@ -9,14 +9,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use futures::StreamExt;
 use libp2p::PeerId;
-use log::{debug, info, warn};
+use tracing::{debug, info, warn, error};
 use serde::{Serialize, Deserialize};
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 
-use crate::error::{NetworkResult, NetworkError};
+use crate::{NetworkResult, NetworkError};
 use crate::metrics::NetworkMetrics;
-use crate::storage::Storage;
+use icn_core::storage::Storage;
 
 /// Maximum number of reputation history items to store per peer
 const MAX_HISTORY_ITEMS: usize = 100;
@@ -308,25 +308,56 @@ impl Default for ReputationConfig {
     }
 }
 
-/// Command for the reputation manager
+/// Commands that can be sent to the reputation manager
 #[derive(Debug)]
 enum ReputationCommand {
-    /// Record a change to a peer's reputation
-    RecordChange(PeerId, ReputationChange, tokio::sync::oneshot::Sender<NetworkResult<i32>>),
-    /// Record a response time for a peer
-    RecordResponseTime(PeerId, Duration, tokio::sync::oneshot::Sender<NetworkResult<()>>),
+    /// Record a reputation change for a peer
+    RecordChange {
+        peer_id: PeerId,
+        change_type: ReputationChange,
+        response_tx: Option<tokio::sync::oneshot::Sender<NetworkResult<i32>>>,
+    },
+    
+    /// Record response time for a peer's request
+    RecordResponseTime {
+        peer_id: PeerId,
+        duration: Duration,
+        response_tx: Option<tokio::sync::oneshot::Sender<NetworkResult<()>>>,
+    },
+    
     /// Check if a peer is banned
-    IsBanned(PeerId, tokio::sync::oneshot::Sender<bool>),
+    IsBanned {
+        peer_id: PeerId,
+        response_tx: Option<tokio::sync::oneshot::Sender<bool>>,
+    },
+    
     /// Ban a peer
-    BanPeer(PeerId, tokio::sync::oneshot::Sender<NetworkResult<()>>),
+    BanPeer {
+        peer_id: PeerId,
+        response_tx: Option<tokio::sync::oneshot::Sender<NetworkResult<()>>>,
+    },
+    
     /// Unban a peer
-    UnbanPeer(PeerId, tokio::sync::oneshot::Sender<NetworkResult<()>>),
-    /// Get a peer's reputation
-    GetReputation(PeerId, tokio::sync::oneshot::Sender<Option<PeerReputation>>),
-    /// Save reputation data to storage
-    Save(tokio::sync::oneshot::Sender<NetworkResult<()>>),
-    /// Stop the reputation manager
-    Stop(tokio::sync::oneshot::Sender<NetworkResult<()>>),
+    UnbanPeer {
+        peer_id: PeerId,
+        response_tx: Option<tokio::sync::oneshot::Sender<NetworkResult<()>>>,
+    },
+    
+    /// Get the reputation for a peer
+    GetReputation {
+        peer_id: PeerId,
+        response_tx: Option<tokio::sync::oneshot::Sender<Option<PeerReputation>>>,
+    },
+    
+    /// Save current reputations to storage
+    Save {
+        response_tx: Option<tokio::sync::oneshot::Sender<NetworkResult<()>>>,
+    },
+    
+    /// Stop the background task
+    Stop {
+        response_tx: Option<tokio::sync::oneshot::Sender<NetworkResult<()>>>,
+    },
 }
 
 /// Manager for peer reputations
@@ -402,81 +433,93 @@ impl ReputationManager {
         Ok(())
     }
     
-    // Start the background task for handling commands and periodic tasks
-    fn start_background_task(&self, mut command_rx: mpsc::Receiver<ReputationCommand>) -> JoinHandle<()> {
-        let reputations = self.reputations.clone();
-        let config = self.config.clone();
-        let storage = self.storage.clone();
-        let metrics = self.metrics.clone();
-        
+    /// Start the background task for reputation management
+    pub async fn start_background_task(&self, command_rx: mpsc::Receiver<ReputationCommand>) -> JoinHandle<()> {
+        let reputation = self.clone();
         tokio::spawn(async move {
-            let mut decay_interval = tokio::time::interval(Duration::from_secs(60));
-            let mut persistence_interval = tokio::time::interval(config.persistence_interval);
-            
-            loop {
-                tokio::select! {
-                    Some(cmd) = command_rx.recv() => {
-                        match cmd {
-                            ReputationCommand::RecordChange(peer_id, change, response_tx) => {
-                                let score = Self::handle_record_change(
-                                    &reputations, 
-                                    &metrics, 
-                                    &peer_id, 
-                                    change, 
-                                    &config
-                                ).await;
-                                
-                                let _ = response_tx.send(Ok(score));
-                            }
-                            ReputationCommand::RecordResponseTime(peer_id, time, response_tx) => {
-                                Self::handle_response_time(
-                                    &reputations, 
-                                    &metrics, 
-                                    &peer_id, 
-                                    time, 
-                                    &config
-                                ).await;
-                                
-                                let _ = response_tx.send(Ok(()));
-                            }
-                            ReputationCommand::IsBanned(peer_id, response_tx) => {
-                                let is_banned = Self::handle_is_banned(&reputations, &peer_id).await;
-                                let _ = response_tx.send(is_banned);
-                            }
-                            ReputationCommand::BanPeer(peer_id, response_tx) => {
-                                Self::handle_ban_peer(&reputations, &metrics, &peer_id).await;
-                                let _ = response_tx.send(Ok(()));
-                            }
-                            ReputationCommand::UnbanPeer(peer_id, response_tx) => {
-                                Self::handle_unban_peer(&reputations, &metrics, &peer_id).await;
-                                let _ = response_tx.send(Ok(()));
-                            }
-                            ReputationCommand::GetReputation(peer_id, response_tx) => {
-                                let rep = Self::handle_get_reputation(&reputations, &peer_id).await;
-                                let _ = response_tx.send(rep);
-                            }
-                            ReputationCommand::Save(response_tx) => {
-                                let result = Self::handle_save(&reputations, &storage, &config).await;
-                                let _ = response_tx.send(result);
-                            }
-                            ReputationCommand::Stop(response_tx) => {
-                                // Save before stopping
-                                let result = Self::handle_save(&reputations, &storage, &config).await;
-                                let _ = response_tx.send(result);
-                                break;
-                            }
-                        }
-                    }
-                    _ = decay_interval.tick() => {
-                        Self::handle_decay(&reputations, &metrics, &config).await;
-                    }
-                    _ = persistence_interval.tick() => {
-                        let _ = Self::handle_save(&reputations, &storage, &config).await;
-                    }
-                    else => break,
-                }
+            let task = reputation.run_background_task(command_rx).await;
+            if let Err(e) = task {
+                error!("Reputation background task error: {}", e);
             }
         })
+    }
+
+    /// Actual implementation of the background task
+    async fn run_background_task(&self, mut command_rx: mpsc::Receiver<ReputationCommand>) -> NetworkResult<()> {
+        debug!("Starting reputation background task");
+        let mut interval = tokio::time::interval(self.config.decay_interval);
+        
+        // Create a channel for manual decay triggering
+        let (decay_tx, mut decay_rx) = mpsc::channel::<()>(1);
+        let _decay_tx = decay_tx.clone(); // keep a copy for future use
+        
+        loop {
+            tokio::select! {
+                Some(cmd) = command_rx.recv() => {
+                    match cmd {
+                        ReputationCommand::RecordChange { peer_id, change_type, response_tx } => {
+                            let score = Self::handle_record_change(
+                                &reputations, 
+                                &metrics, 
+                                &peer_id, 
+                                change_type, 
+                                &config
+                            ).await;
+                            
+                            let _ = response_tx.send(Ok(score));
+                        }
+                        ReputationCommand::RecordResponseTime { peer_id, duration, response_tx } => {
+                            Self::handle_response_time(
+                                &reputations, 
+                                &metrics, 
+                                &peer_id, 
+                                duration, 
+                                &config
+                            ).await;
+                            
+                            let _ = response_tx.send(Ok(()));
+                        }
+                        ReputationCommand::IsBanned { peer_id, response_tx } => {
+                            let is_banned = Self::handle_is_banned(&reputations, &peer_id).await;
+                            let _ = response_tx.send(is_banned);
+                        }
+                        ReputationCommand::BanPeer { peer_id, response_tx } => {
+                            Self::handle_ban_peer(&reputations, &metrics, &peer_id).await;
+                            let _ = response_tx.send(Ok(()));
+                        }
+                        ReputationCommand::UnbanPeer { peer_id, response_tx } => {
+                            Self::handle_unban_peer(&reputations, &metrics, &peer_id).await;
+                            let _ = response_tx.send(Ok(()));
+                        }
+                        ReputationCommand::GetReputation { peer_id, response_tx } => {
+                            let rep = Self::handle_get_reputation(&reputations, &peer_id).await;
+                            let _ = response_tx.send(rep);
+                        }
+                        ReputationCommand::Save { response_tx } => {
+                            let result = Self::handle_save(&reputations, &storage, &config).await;
+                            let _ = response_tx.send(result);
+                        }
+                        ReputationCommand::Stop { response_tx } => {
+                            // Save before stopping
+                            let result = Self::handle_save(&reputations, &storage, &config).await;
+                            let _ = response_tx.send(result);
+                            break;
+                        }
+                    }
+                }
+                _ = interval.tick() => {
+                    if let Err(e) = Self::handle_decay(&reputations, &metrics, &config).await {
+                        error!("Error during reputation decay: {}", e);
+                    }
+                }
+                _ = decay_rx.recv() => {
+                    // This just consumes the notification, actual decay is handled in the command
+                }
+                else => break,
+            }
+        }
+        
+        Ok(())
     }
     
     // Handle recording a reputation change
@@ -655,7 +698,7 @@ impl ReputationManager {
         reputations: &RwLock<HashMap<PeerId, PeerReputation>>,
         metrics: &Option<NetworkMetrics>,
         config: &ReputationConfig,
-    ) {
+    ) -> NetworkResult<()> {
         let mut reputations = reputations.write().await;
         let decay_count = reputations.len();
         
@@ -673,131 +716,265 @@ impl ReputationManager {
         
         // Record decay processing in metrics
         if let Some(m) = metrics {
-            m.record_reputation_decay(decay_count);
+            m.record_reputation_decay(decay_count as u64);
         }
+        
+        Ok(())
     }
     
     /// Record a change to a peer's reputation
-    pub async fn record_change(&self, peer_id: &PeerId, change: ReputationChange) -> NetworkResult<i32> {
+    pub async fn record_change(&self, peer_id: PeerId, change: ReputationChange) -> NetworkResult<i32> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         
-        if let Err(e) = self.command_tx.send(ReputationCommand::RecordChange(
-            peer_id.clone(), 
-            change,
-            tx
-        )).await {
+        if let Err(e) = self.command_tx.send(ReputationCommand::RecordChange {
+            peer_id: peer_id.clone(), 
+            change_type: change,
+            response_tx: Some(tx),
+        }).await {
             return Err(NetworkError::Other(format!("Failed to send reputation command: {}", e)));
         }
         
-        rx.await.map_err(|_| NetworkError::Other("Failed to receive response".to_string()))?
+        rx.await.map_err(|_| NetworkError::Other("Reputation manager disconnected".to_string()))?
     }
     
-    /// Record a response time from a peer
-    pub async fn record_response_time(&self, peer_id: &PeerId, time: Duration) -> NetworkResult<()> {
+    /// Record the response time for a peer
+    pub async fn record_response_time(&self, peer_id: PeerId, time: Duration) -> NetworkResult<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         
-        if let Err(e) = self.command_tx.send(ReputationCommand::RecordResponseTime(
-            peer_id.clone(), 
-            time,
-            tx
-        )).await {
+        if let Err(e) = self.command_tx.send(ReputationCommand::RecordResponseTime {
+            peer_id: peer_id.clone(), 
+            duration: time,
+            response_tx: Some(tx),
+        }).await {
             return Err(NetworkError::Other(format!("Failed to send reputation command: {}", e)));
         }
         
-        rx.await.map_err(|_| NetworkError::Other("Failed to receive response".to_string()))?
+        rx.await.map_err(|_| NetworkError::Other("Reputation manager disconnected".to_string()))?
     }
     
     /// Check if a peer is banned
-    pub async fn is_banned(&self, peer_id: &PeerId) -> bool {
+    pub async fn is_banned(&self, peer_id: PeerId) -> bool {
         let (tx, rx) = tokio::sync::oneshot::channel();
         
-        if let Err(_) = self.command_tx.send(ReputationCommand::IsBanned(
-            peer_id.clone(), 
-            tx
-        )).await {
+        if let Err(_) = self.command_tx.send(ReputationCommand::IsBanned {
+            peer_id: peer_id.clone(), 
+            response_tx: Some(tx),
+        }).await {
             // If we can't send the command, assume not banned (safer default)
             return false;
         }
         
-        rx.await.unwrap_or(false)
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => false, // Safer default
+        }
     }
     
     /// Ban a peer
-    pub async fn ban_peer(&self, peer_id: &PeerId) -> NetworkResult<()> {
+    pub async fn ban_peer(&self, peer_id: PeerId) -> NetworkResult<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         
-        if let Err(e) = self.command_tx.send(ReputationCommand::BanPeer(
-            peer_id.clone(), 
-            tx
-        )).await {
+        if let Err(e) = self.command_tx.send(ReputationCommand::BanPeer {
+            peer_id: peer_id.clone(), 
+            response_tx: Some(tx),
+        }).await {
             return Err(NetworkError::Other(format!("Failed to send reputation command: {}", e)));
         }
         
-        rx.await.map_err(|_| NetworkError::Other("Failed to receive response".to_string()))?
+        rx.await.map_err(|_| NetworkError::Other("Reputation manager disconnected".to_string()))?
     }
     
     /// Unban a peer
-    pub async fn unban_peer(&self, peer_id: &PeerId) -> NetworkResult<()> {
+    pub async fn unban_peer(&self, peer_id: PeerId) -> NetworkResult<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         
-        if let Err(e) = self.command_tx.send(ReputationCommand::UnbanPeer(
-            peer_id.clone(), 
-            tx
-        )).await {
+        if let Err(e) = self.command_tx.send(ReputationCommand::UnbanPeer {
+            peer_id: peer_id.clone(), 
+            response_tx: Some(tx),
+        }).await {
             return Err(NetworkError::Other(format!("Failed to send reputation command: {}", e)));
         }
         
-        rx.await.map_err(|_| NetworkError::Other("Failed to receive response".to_string()))?
+        rx.await.map_err(|_| NetworkError::Other("Reputation manager disconnected".to_string()))?
     }
     
-    /// Get a peer's reputation
-    pub async fn get_reputation(&self, peer_id: &PeerId) -> Option<PeerReputation> {
+    /// Get the reputation for a peer
+    pub async fn get_reputation(&self, peer_id: PeerId) -> Option<PeerReputation> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         
-        if let Err(_) = self.command_tx.send(ReputationCommand::GetReputation(
-            peer_id.clone(), 
-            tx
-        )).await {
+        if let Err(_) = self.command_tx.send(ReputationCommand::GetReputation {
+            peer_id: peer_id.clone(), 
+            response_tx: Some(tx),
+        }).await {
             return None;
         }
         
-        rx.await.unwrap_or(None)
+        match rx.await {
+            Ok(rep) => rep,
+            Err(_) => None,
+        }
     }
     
-    /// Save reputation data
+    /// Save the current reputation state to storage
     pub async fn save(&self) -> NetworkResult<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         
-        if let Err(e) = self.command_tx.send(ReputationCommand::Save(tx)).await {
+        if let Err(e) = self.command_tx.send(ReputationCommand::Save {
+            response_tx: Some(tx),
+        }).await {
             return Err(NetworkError::Other(format!("Failed to send reputation command: {}", e)));
         }
         
-        rx.await.map_err(|_| NetworkError::Other("Failed to receive response".to_string()))?
+        rx.await.map_err(|_| NetworkError::Other("Reputation manager disconnected".to_string()))?
     }
     
     /// Stop the reputation manager
     pub async fn stop(&self) -> NetworkResult<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         
-        if let Err(e) = self.command_tx.send(ReputationCommand::Stop(tx)).await {
+        if let Err(e) = self.command_tx.send(ReputationCommand::Stop {
+            response_tx: Some(tx),
+        }).await {
             return Err(NetworkError::Other(format!("Failed to send reputation command: {}", e)));
         }
         
-        // Wait for the save to complete
-        let result = rx.await.map_err(|_| NetworkError::Other("Failed to receive response".to_string()))?;
-        
-        // Clear the task handle
-        let mut handle = self.task_handle.write().await;
-        if let Some(task) = handle.take() {
-            task.abort();
-        }
-        
-        result
+        rx.await.map_err(|_| NetworkError::Other("Reputation manager disconnected".to_string()))?
     }
     
     /// Get an immutable reference to the reputations
     pub async fn reputations(&self) -> tokio::sync::RwLockReadGuard<'_, HashMap<PeerId, PeerReputation>> {
         self.reputations.read().await
+    }
+    
+    /// Start the decay task
+    pub fn start_decay_task(&self) -> JoinHandle<()> {
+        let reputations = Arc::clone(&self.reputations);
+        let metrics = self.metrics.clone();
+        let storage = self.storage.clone();
+        let config = self.config.clone();
+        
+        // Create a channel for reputation commands
+        let (command_tx, command_rx) = mpsc::channel(32);
+        
+        // Store the sender in the list of command senders
+        {
+            let mut senders = self.command_senders.write();
+            senders.push(command_tx);
+        }
+        
+        // Spawn the background task
+        tokio::spawn(async move {
+            if let Err(e) = Self::run_background_task(command_rx, reputations, metrics, storage, config).await {
+                error!("Reputation decay task failed: {}", e);
+            }
+        })
+    }
+
+    // Run a background task that processes reputation commands
+    async fn run_background_task(
+        mut command_rx: mpsc::Receiver<ReputationCommand>,
+        reputations: Arc<RwLock<HashMap<PeerId, PeerReputation>>>,
+        metrics: Option<NetworkMetrics>,
+        storage: Option<Arc<dyn Storage>>,
+        config: ReputationConfig,
+    ) -> NetworkResult<()> {
+        let mut decay_interval = tokio::time::interval(Duration::from_secs(config.decay_interval));
+        
+        loop {
+            tokio::select! {
+                _ = decay_interval.tick() => {
+                    if let Err(e) = Self::handle_decay(&reputations, &metrics, &config).await {
+                        error!("Failed to decay reputations: {}", e);
+                    }
+                }
+                
+                cmd = command_rx.recv() => {
+                    match cmd {
+                        Some(ReputationCommand::RecordChange { peer_id, change_type, response_tx }) => {
+                            let score = Self::handle_record_change(
+                                &reputations, 
+                                &metrics, 
+                                &peer_id, 
+                                change_type, 
+                                &config
+                            ).await;
+                            
+                            if let Some(tx) = response_tx {
+                                let _ = tx.send(Ok(score));
+                            }
+                        }
+                        
+                        Some(ReputationCommand::RecordResponseTime { peer_id, duration, response_tx }) => {
+                            Self::handle_response_time(
+                                &reputations, 
+                                &metrics, 
+                                &peer_id, 
+                                duration, 
+                                &config
+                            ).await;
+                            
+                            if let Some(tx) = response_tx {
+                                let _ = tx.send(Ok(()));
+                            }
+                        }
+                        
+                        Some(ReputationCommand::IsBanned { peer_id, response_tx }) => {
+                            let is_banned = Self::handle_is_banned(&reputations, &peer_id).await;
+                            if let Some(tx) = response_tx {
+                                let _ = tx.send(is_banned);
+                            }
+                        }
+                        
+                        Some(ReputationCommand::BanPeer { peer_id, response_tx }) => {
+                            Self::handle_ban_peer(&reputations, &metrics, &peer_id).await;
+                            if let Some(tx) = response_tx {
+                                let _ = tx.send(Ok(()));
+                            }
+                        }
+                        
+                        Some(ReputationCommand::UnbanPeer { peer_id, response_tx }) => {
+                            Self::handle_unban_peer(&reputations, &metrics, &peer_id).await;
+                            if let Some(tx) = response_tx {
+                                let _ = tx.send(Ok(()));
+                            }
+                        }
+                        
+                        Some(ReputationCommand::GetReputation { peer_id, response_tx }) => {
+                            let rep = Self::handle_get_reputation(&reputations, &peer_id).await;
+                            if let Some(tx) = response_tx {
+                                let _ = tx.send(rep);
+                            }
+                        }
+                        
+                        Some(ReputationCommand::Save { response_tx }) => {
+                            let result = Self::handle_save(&reputations, &storage, &config).await;
+                            if let Some(tx) = response_tx {
+                                let _ = tx.send(result);
+                            }
+                        }
+                        
+                        Some(ReputationCommand::Stop { response_tx }) => {
+                            let result = Self::handle_save(&reputations, &storage, &config).await;
+                            if let Some(tx) = response_tx {
+                                let _ = tx.send(result);
+                            }
+                            break;
+                        }
+                        
+                        None => {
+                            debug!("All reputation command senders dropped, stopping background task");
+                            // Save reputations before exiting
+                            if let Err(e) = Self::handle_save(&reputations, &storage, &config).await {
+                                error!("Failed to save reputations during shutdown: {}", e);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(())
     }
 }
 
