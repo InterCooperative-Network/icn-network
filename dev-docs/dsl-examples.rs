@@ -17,6 +17,30 @@ voting_rule quadratic_voting {
         proposal_types: [governance_change, strategic_decision]
 }
 
+// Transaction Validation Rule
+transaction_rule cooperative_transaction {
+    applies_to:
+        transaction_types: [resource_exchange, credit_transfer, labor_compensation]
+    validation:
+        minimum_reputation: 10  # Sender must have at least 10 reputation
+        maximum_amount: 5000    # Max 5000 credits per transaction
+        daily_limit: 20000      # Max 20000 credits per day
+    conditions:
+        active_membership: true  # Sender must be active member
+        federation_authorized: true  # Transaction must be within authorized federations
+    actions_on_validation:
+        update_transaction:
+            method: add_metadata
+            metadata: { cooperative_approved: true, validation_time: current_time() }
+        notify_participants: true
+    exceptions:
+        emergency_override: {
+            requires: committee_approval
+            committee: emergency_response
+            retention: 7d  # Record exception for 7 days
+        }
+}
+
 // Automated Resource Allocation
 allocation compute_resources {
     resources: [cpu_hours, gpu_access]
@@ -25,6 +49,41 @@ allocation compute_resources {
     conditions:
         minimum_participation: 5  # Must have participated in at least 5 activities
         maximum_unutilized: 20%   # No more than 20% previously unused
+}
+
+// Bylaw Definition Contract
+bylaw membership_requirements {
+    title: "Membership Requirements"
+    version: "1.0"
+    effective_date: 2023-05-15
+    provisions: [
+        {
+            id: "min_participation"
+            description: "Minimum participation requirements"
+            rule: activity_count >= 5 per month
+            enforcement: automatic
+            consequence: status.set_inactive if rule.violated for 2 months
+        },
+        {
+            id: "ethics_compliance"
+            description: "Ethical standards compliance"
+            rule: no_violations of ethical_guidelines
+            enforcement: review_committee
+            consequence: membership_review if rule.violated
+        },
+        {
+            id: "contribution_requirement"
+            description: "Regular contribution requirements"
+            rule: resource_contribution >= 10 hours per month OR credit_contribution >= 100 per month
+            enforcement: automatic
+            consequence: status.reduce_benefits if rule.violated
+        }
+    ]
+    amendments: {
+        process: standard_voting
+        quorum: 40%
+        threshold: 66%
+    }
 }
 
 // Reputation Decay Implementation

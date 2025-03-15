@@ -16,6 +16,19 @@ pub struct ExecutionContext {
     parameters: HashMap<String, Value>,
 }
 
+// Operation types that can be performed
+pub enum Operation {
+    VoteProposal,
+    ExecuteProposal,
+    ValidateTransaction,
+    EnforceBylaw,
+    AllocateResource,
+    ResolveDispute,
+    UpdateReputation,
+    ApplyMembership,
+    // Other operations
+}
+
 // Execution result
 pub struct ExecutionResult {
     success: bool,
@@ -68,6 +81,214 @@ impl GovernanceVM {
         }
         
         Ok(execution_result)
+    }
+    
+    // Validate a transaction against transaction rules
+    pub fn validate_transaction(
+        &self,
+        transaction: &Transaction,
+        rules: &[CompiledPolicy],
+    ) -> Result<TransactionValidationResult, ExecutionError> {
+        let mut validation_results = Vec::new();
+        let mut is_valid = true;
+        let mut rejection_reason = None;
+        
+        // Execute each transaction rule
+        for rule in rules {
+            // Create context for transaction validation
+            let context = ExecutionContext {
+                caller: transaction.sender.clone(),
+                cooperative_id: transaction.cooperative_id.clone(),
+                federation_id: transaction.federation_id.clone(),
+                current_time: Timestamp::now(),
+                operation: Operation::ValidateTransaction,
+                parameters: self.transaction_to_parameters(transaction)?,
+            };
+            
+            // Execute the rule
+            let result = self.execute_policy(rule, context)?;
+            
+            // Collect validation results
+            validation_results.push(PolicyValidationResult {
+                policy_id: rule.metadata.name.clone(),
+                success: result.success,
+                logs: result.logs.clone(),
+            });
+            
+            // Transaction is valid only if all rules pass
+            if !result.success {
+                is_valid = false;
+                
+                // Get rejection reason from logs if available
+                for log in &result.logs {
+                    if log.level == LogLevel::Error {
+                        rejection_reason = Some(log.message.clone());
+                        break;
+                    }
+                }
+            }
+        }
+        
+        Ok(TransactionValidationResult {
+            is_valid,
+            validation_results,
+            rejection_reason,
+        })
+    }
+    
+    // Convert a transaction to parameters for rule execution
+    fn transaction_to_parameters(&self, transaction: &Transaction) -> Result<HashMap<String, Value>, ExecutionError> {
+        let mut parameters = HashMap::new();
+        
+        // Add transaction fields as parameters
+        parameters.insert("sender".to_string(), Value::DID(transaction.sender.clone()));
+        parameters.insert("receiver".to_string(), Value::DID(transaction.receiver.clone()));
+        parameters.insert("amount".to_string(), Value::Amount(transaction.amount.clone()));
+        parameters.insert("transaction_type".to_string(), Value::String(transaction.transaction_type.to_string()));
+        parameters.insert("timestamp".to_string(), Value::Timestamp(transaction.timestamp));
+        
+        // Add sender reputation
+        if let Ok(reputation) = self.state_manager.get_reputation(&transaction.sender) {
+            parameters.insert("sender_reputation".to_string(), Value::Integer(reputation as i64));
+        }
+        
+        // Add sender membership status
+        if let Ok(is_active) = self.state_manager.is_active_member(&transaction.sender) {
+            parameters.insert("sender_active_membership".to_string(), Value::Boolean(is_active));
+        }
+        
+        // Add daily transaction total
+        if let Ok(daily_total) = self.state_manager.get_daily_transaction_total(&transaction.sender) {
+            parameters.insert("sender_daily_total".to_string(), Value::Amount(daily_total));
+        }
+        
+        // Add federation authorization status
+        if let Ok(is_authorized) = self.state_manager.is_federation_authorized(
+            &transaction.federation_id,
+            &transaction.sender,
+            &transaction.receiver
+        ) {
+            parameters.insert("federation_authorized".to_string(), Value::Boolean(is_authorized));
+        }
+        
+        // Add transaction metadata
+        for (key, value) in &transaction.metadata {
+            parameters.insert(format!("metadata_{}", key), Value::String(value.clone()));
+        }
+        
+        Ok(parameters)
+    }
+    
+    // Apply a bylaw to an entity
+    pub fn enforce_bylaw(
+        &self,
+        bylaw: &CompiledPolicy,
+        entity_id: &DID,
+    ) -> Result<BylawEnforcementResult, ExecutionError> {
+        // Create context for bylaw enforcement
+        let context = ExecutionContext {
+            caller: DID::system(),  // System caller for bylaw enforcement
+            cooperative_id: self.state_manager.get_cooperative_for_entity(entity_id)?,
+            federation_id: self.state_manager.get_federation_for_entity(entity_id)?,
+            current_time: Timestamp::now(),
+            operation: Operation::EnforceBylaw,
+            parameters: self.entity_to_parameters(entity_id)?,
+        };
+        
+        // Execute the bylaw
+        let result = self.execute_policy(bylaw, context)?;
+        
+        Ok(BylawEnforcementResult {
+            entity_id: entity_id.clone(),
+            enforcement_actions: self.extract_enforcement_actions(&result)?,
+            success: result.success,
+            logs: result.logs.clone(),
+        })
+    }
+    
+    // Extract enforcement actions from execution result
+    fn extract_enforcement_actions(&self, result: &ExecutionResult) -> Result<Vec<EnforcementAction>, ExecutionError> {
+        let mut actions = Vec::new();
+        
+        for event in &result.events {
+            if event.event_type == "enforcement_action" {
+                if let Some(action_type) = event.data.get("action_type") {
+                    if let Value::String(action_str) = action_type {
+                        let action = match action_str.as_str() {
+                            "status_change" => {
+                                let status = event.data.get("new_status")
+                                    .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                                    .ok_or(ExecutionError::InvalidEventData("Missing new_status".to_string()))?;
+                                
+                                EnforcementAction::StatusChange(status)
+                            },
+                            "membership_review" => EnforcementAction::MembershipReview,
+                            "benefit_reduction" => {
+                                let percentage = event.data.get("reduction_percentage")
+                                    .and_then(|v| if let Value::Float(f) = v { Some(*f) } else { None })
+                                    .ok_or(ExecutionError::InvalidEventData("Missing reduction_percentage".to_string()))?;
+                                
+                                EnforcementAction::BenefitReduction(percentage)
+                            },
+                            "warning" => {
+                                let message = event.data.get("message")
+                                    .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                                    .ok_or(ExecutionError::InvalidEventData("Missing message".to_string()))?;
+                                
+                                EnforcementAction::Warning(message)
+                            },
+                            "suspension" => {
+                                let duration = event.data.get("duration")
+                                    .and_then(|v| if let Value::Duration(d) = v { Some(*d) } else { None })
+                                    .ok_or(ExecutionError::InvalidEventData("Missing duration".to_string()))?;
+                                
+                                EnforcementAction::Suspension(duration)
+                            },
+                            _ => EnforcementAction::Other(action_str.clone()),
+                        };
+                        
+                        actions.push(action);
+                    }
+                }
+            }
+        }
+        
+        Ok(actions)
+    }
+    
+    // Convert an entity to parameters for rule execution
+    fn entity_to_parameters(&self, entity_id: &DID) -> Result<HashMap<String, Value>, ExecutionError> {
+        let mut parameters = HashMap::new();
+        
+        // Add entity ID
+        parameters.insert("entity_id".to_string(), Value::DID(entity_id.clone()));
+        
+        // Add entity reputation
+        if let Ok(reputation) = self.state_manager.get_reputation(entity_id) {
+            parameters.insert("reputation".to_string(), Value::Integer(reputation as i64));
+        }
+        
+        // Add entity activity count
+        if let Ok(activity_count) = self.state_manager.get_activity_count(entity_id) {
+            parameters.insert("activity_count".to_string(), Value::Integer(activity_count as i64));
+        }
+        
+        // Add ethical violations
+        if let Ok(violations) = self.state_manager.get_ethical_violations(entity_id) {
+            parameters.insert("ethical_violations".to_string(), Value::Integer(violations as i64));
+        }
+        
+        // Add resource contribution
+        if let Ok(contribution) = self.state_manager.get_resource_contribution(entity_id) {
+            parameters.insert("resource_contribution".to_string(), Value::Integer(contribution as i64));
+        }
+        
+        // Add credit contribution
+        if let Ok(contribution) = self.state_manager.get_credit_contribution(entity_id) {
+            parameters.insert("credit_contribution".to_string(), Value::Amount(contribution));
+        }
+        
+        Ok(parameters)
     }
     
     // Verify a policy is valid and safe to execute
@@ -126,6 +347,38 @@ impl GovernanceVM {
         // Placeholder:
         Ok(())
     }
+}
+
+// Result of transaction validation
+pub struct TransactionValidationResult {
+    is_valid: bool,
+    validation_results: Vec<PolicyValidationResult>,
+    rejection_reason: Option<String>,
+}
+
+// Result of policy validation
+pub struct PolicyValidationResult {
+    policy_id: String,
+    success: bool,
+    logs: Vec<LogEntry>,
+}
+
+// Result of bylaw enforcement
+pub struct BylawEnforcementResult {
+    entity_id: DID,
+    enforcement_actions: Vec<EnforcementAction>,
+    success: bool,
+    logs: Vec<LogEntry>,
+}
+
+// Types of enforcement actions
+pub enum EnforcementAction {
+    StatusChange(String),
+    MembershipReview,
+    BenefitReduction(f64),
+    Warning(String),
+    Suspension(Duration),
+    Other(String),
 }
 
 // Execution engine that runs bytecode
