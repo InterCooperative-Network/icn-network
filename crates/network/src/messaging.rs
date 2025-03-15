@@ -5,239 +5,479 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::cmp::Ordering;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use serde::{Serialize, Deserialize};
 
 use crate::{NetworkError, NetworkResult, NetworkMessage, MessageHandler, PeerInfo};
+use crate::reputation::ReputationManager;
+use crate::metrics::NetworkMetrics;
 
-/// Message envelope containing the sender information and the actual message
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Message envelope containing the message and metadata
+#[derive(Debug, Clone)]
 pub struct MessageEnvelope {
-    /// The sender's peer ID as a string
-    pub sender: String,
-    /// The message type identifier
-    pub message_type: String,
-    /// The serialized message payload
-    pub payload: Vec<u8>,
-    /// Message timestamp (unix timestamp in milliseconds)
-    pub timestamp: u64,
-    /// Optional signature of the message payload
-    pub signature: Option<Vec<u8>>,
+    /// The message
+    pub message: NetworkMessage,
+    /// The peer that sent the message
+    pub peer: PeerInfo,
+    /// When the message was received
+    pub received_at: Instant,
+    /// Priority of the message (higher = more important)
+    pub priority: i32,
 }
 
-impl MessageEnvelope {
-    /// Create a new message envelope
-    pub fn new(
-        sender: String,
-        message_type: String,
-        payload: Vec<u8>,
-        timestamp: u64,
-        signature: Option<Vec<u8>>,
-    ) -> Self {
+impl PartialEq for MessageEnvelope {
+    fn eq(&self, other: &Self) -> bool {
+        self.priority == other.priority
+    }
+}
+
+impl Eq for MessageEnvelope {}
+
+impl PartialOrd for MessageEnvelope {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for MessageEnvelope {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Higher priority comes first (max-heap)
+        self.priority.cmp(&other.priority)
+    }
+}
+
+/// Priority calculation mode for messages
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriorityMode {
+    /// First in, first out (no prioritization)
+    Fifo,
+    /// Priority based on peer reputation (higher rep = higher priority)
+    ReputationBased,
+    /// Priority based on message type and peer reputation
+    TypeAndReputation,
+    /// Priority based on custom criteria
+    Custom,
+}
+
+impl Default for PriorityMode {
+    fn default() -> Self {
+        Self::Fifo
+    }
+}
+
+/// Configuration for priority-based message processing
+#[derive(Debug, Clone)]
+pub struct PriorityConfig {
+    /// Prioritization mode
+    pub mode: PriorityMode,
+    /// Base priority for each message type
+    pub type_priorities: HashMap<String, i32>,
+    /// Minimum reputation score needed for high priority
+    pub high_priority_reputation: i32,
+    /// Maximum queue size before applying backpressure
+    pub max_queue_size: usize,
+    /// Whether to drop low-priority messages when queue is full
+    pub drop_low_priority_when_full: bool,
+}
+
+impl Default for PriorityConfig {
+    fn default() -> Self {
+        let mut type_priorities = HashMap::new();
+        // Set default priorities for message types
+        type_priorities.insert("identity.announcement".to_string(), 80);
+        type_priorities.insert("ledger.transaction".to_string(), 60);
+        type_priorities.insert("ledger.state".to_string(), 70);
+        type_priorities.insert("governance.proposal".to_string(), 50);
+        type_priorities.insert("governance.vote".to_string(), 40);
+        
         Self {
-            sender,
-            message_type,
-            payload,
-            timestamp,
-            signature,
+            mode: PriorityMode::ReputationBased,
+            type_priorities,
+            high_priority_reputation: 20,
+            max_queue_size: 1000,
+            drop_low_priority_when_full: true,
         }
     }
-    
-    /// Serialize the envelope to bytes
-    pub fn to_bytes(&self) -> NetworkResult<Vec<u8>> {
-        serde_json::to_vec(self)
-            .map_err(|e| NetworkError::SerializationError(e.to_string()))
-    }
-    
-    /// Deserialize bytes to a message envelope
-    pub fn from_bytes(bytes: &[u8]) -> NetworkResult<Self> {
-        serde_json::from_slice(bytes)
-            .map_err(|e| NetworkError::DeserializationError(e.to_string()))
-    }
 }
 
-/// Message processor for handling incoming messages
+/// Message processor that handles messages with priority based on peer reputation
 pub struct MessageProcessor {
-    /// Registered message handlers
+    /// Handler registry
     handlers: Arc<RwLock<HashMap<String, Vec<Arc<dyn MessageHandler>>>>>,
+    /// Message queue for prioritized processing
+    queue: Arc<RwLock<BinaryHeap<MessageEnvelope>>>,
+    /// Configuration for priority processing
+    config: PriorityConfig,
+    /// Reputation manager reference
+    reputation: Option<Arc<ReputationManager>>,
+    /// Metrics for monitoring
+    metrics: Option<NetworkMetrics>,
+    /// Command sender for controlling the processor
+    command_tx: mpsc::Sender<ProcessorCommand>,
+    /// Background task handle
+    task_handle: RwLock<Option<JoinHandle<()>>>,
+    /// Whether the processor is running
+    running: RwLock<bool>,
+}
+
+/// Command for controlling the message processor
+enum ProcessorCommand {
+    /// Process a message
+    ProcessMessage(MessageEnvelope),
+    /// Stop the processor
+    Stop(mpsc::Sender<NetworkResult<()>>),
 }
 
 impl MessageProcessor {
     /// Create a new message processor
-    pub fn new() -> Self {
-        Self {
-            handlers: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-    
-    /// Register a handler for a specific message type
-    pub async fn register_handler(&self, message_type: &str, handler: Arc<dyn MessageHandler>) {
-        let mut handlers = self.handlers.write().await;
+    pub fn new(
+        handlers: Arc<RwLock<HashMap<String, Vec<Arc<dyn MessageHandler>>>>>,
+        config: PriorityConfig,
+        reputation: Option<Arc<ReputationManager>>,
+        metrics: Option<NetworkMetrics>,
+    ) -> Self {
+        let (command_tx, command_rx) = mpsc::channel(config.max_queue_size);
         
-        let type_handlers = handlers.entry(message_type.to_string()).or_insert_with(Vec::new);
-        type_handlers.push(handler);
-        
-        debug!("Registered handler for message type: {}", message_type);
-    }
-    
-    /// Unregister a handler
-    pub async fn unregister_handler(&self, message_type: &str, handler_id: usize) -> bool {
-        let mut handlers = self.handlers.write().await;
-        
-        if let Some(type_handlers) = handlers.get_mut(message_type) {
-            // Find the handler by its ID
-            if let Some(pos) = type_handlers.iter().position(|h| h.id() == handler_id) {
-                type_handlers.remove(pos);
-                debug!("Unregistered handler {} for message type: {}", handler_id, message_type);
-                return true;
-            }
-        }
-        
-        false
-    }
-    
-    /// Process an incoming message envelope
-    pub async fn process_message(&self, envelope: &MessageEnvelope, peer: &PeerInfo) -> NetworkResult<()> {
-        let message_type = &envelope.message_type;
-        
-        // Check if we have handlers for this message type
-        let handlers = {
-            let handlers_map = self.handlers.read().await;
-            if let Some(type_handlers) = handlers_map.get(message_type) {
-                type_handlers.clone()
-            } else {
-                debug!("No handlers registered for message type: {}", message_type);
-                return Ok(());
-            }
+        let processor = Self {
+            handlers,
+            queue: Arc::new(RwLock::new(BinaryHeap::new())),
+            config,
+            reputation,
+            metrics,
+            command_tx,
+            task_handle: RwLock::new(None),
+            running: RwLock::new(false),
         };
         
-        // Create the network message from the envelope
-        let message = self.decode_message(envelope).await?;
+        // Start the background processing task
+        processor.start_background_task(command_rx);
         
-        // Call each handler
-        for handler in handlers {
-            match handler.handle_message(&message, peer).await {
-                Ok(_) => {
-                    debug!("Handler {} processed message of type {}", handler.id(), message_type);
+        processor
+    }
+    
+    /// Start the background processing task
+    fn start_background_task(&self, mut command_rx: mpsc::Receiver<ProcessorCommand>) {
+        let handlers = self.handlers.clone();
+        let queue = self.queue.clone();
+        let config = self.config.clone();
+        let reputation = self.reputation.clone();
+        let metrics = self.metrics.clone();
+        let running = self.running.clone();
+        
+        let task = tokio::spawn(async move {
+            *running.write().await = true;
+            
+            while let Some(command) = command_rx.recv().await {
+                match command {
+                    ProcessorCommand::ProcessMessage(envelope) => {
+                        // Add the message to the priority queue
+                        queue.write().await.push(envelope);
+                        
+                        // Record queue size in metrics
+                        if let Some(m) = &metrics {
+                            let size = queue.read().await.len();
+                            m.record_queue_size(size);
+                        }
+                    },
+                    ProcessorCommand::Stop(response_tx) => {
+                        *running.write().await = false;
+                        let _ = response_tx.send(Ok(())).await;
+                        break;
+                    }
                 }
-                Err(e) => {
-                    warn!("Handler {} failed to process message of type {}: {}", 
-                         handler.id(), message_type, e);
-                }
+                
+                // Process messages from the queue while there are any
+                Self::process_queue(
+                    &handlers,
+                    &queue,
+                    &reputation,
+                    &metrics,
+                ).await;
             }
+            
+            debug!("Message processor background task stopped");
+        });
+        
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(50));
+            
+            while *running.read().await {
+                interval.tick().await;
+                
+                // Process messages from the queue periodically
+                Self::process_queue(
+                    &handlers,
+                    &queue,
+                    &reputation,
+                    &metrics,
+                ).await;
+            }
+        });
+        
+        let mut handle = futures::executor::block_on(self.task_handle.write());
+        *handle = Some(task);
+    }
+    
+    /// Process messages from the queue
+    async fn process_queue(
+        handlers: &Arc<RwLock<HashMap<String, Vec<Arc<dyn MessageHandler>>>>>,
+        queue: &Arc<RwLock<BinaryHeap<MessageEnvelope>>>,
+        reputation: &Option<Arc<ReputationManager>>,
+        metrics: &Option<NetworkMetrics>,
+    ) {
+        let mut processed = 0;
+        let start = Instant::now();
+        
+        // Process up to 10 messages at a time
+        while processed < 10 {
+            // Get the highest priority message
+            let envelope = {
+                let mut queue_lock = queue.write().await;
+                queue_lock.pop()
+            };
+            
+            if let Some(envelope) = envelope {
+                // Get the message type
+                let message_type = &envelope.message.message_type;
+                
+                // Start timing the message processing
+                let process_start = Instant::now();
+                
+                // Get handlers for this message type
+                let handlers_guard = handlers.read().await;
+                if let Some(type_handlers) = handlers_guard.get(message_type) {
+                    for handler in type_handlers {
+                        if let Err(e) = handler.handle_message(&envelope.message, &envelope.peer).await {
+                            error!("Handler error: {}", e);
+                            
+                            // Update reputation if available
+                            if let Some(rep) = reputation {
+                                // Convert PeerInfo to PeerId
+                                if let Ok(peer_id) = libp2p::PeerId::from_bytes(&envelope.peer.id) {
+                                    let _ = rep.record_change(&peer_id, crate::reputation::ReputationChange::MessageFailure).await;
+                                }
+                            }
+                        } else {
+                            // Update reputation for successful message handling
+                            if let Some(rep) = reputation {
+                                // Convert PeerInfo to PeerId
+                                if let Ok(peer_id) = libp2p::PeerId::from_bytes(&envelope.peer.id) {
+                                    let _ = rep.record_change(&peer_id, crate::reputation::ReputationChange::MessageSuccess).await;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Record message processing time
+                let elapsed = process_start.elapsed();
+                if let Some(m) = metrics {
+                    m.record_message_processing_time(elapsed);
+                }
+                
+                processed += 1;
+            } else {
+                // No more messages in the queue
+                break;
+            }
+        }
+        
+        // Record batch processing time
+        if processed > 0 {
+            let batch_time = start.elapsed();
+            if let Some(m) = metrics {
+                m.record_operation_duration("message_batch_processing", batch_time);
+            }
+            
+            debug!("Processed {} messages in {:?}", processed, batch_time);
+        }
+    }
+    
+    /// Calculate the priority of a message based on configuration and peer reputation
+    async fn calculate_priority(
+        &self,
+        message: &NetworkMessage,
+        peer: &PeerInfo,
+    ) -> i32 {
+        match self.config.mode {
+            PriorityMode::Fifo => {
+                // FIFO mode - all messages have the same priority
+                0
+            },
+            PriorityMode::ReputationBased => {
+                // Base priority on peer reputation
+                let reputation_score = if let Some(rep) = &self.reputation {
+                    if let Ok(peer_id) = libp2p::PeerId::from_bytes(&peer.id) {
+                        rep.get_reputation(&peer_id).await
+                            .map(|r| r.score())
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+                
+                // Scale reputation to a priority value
+                // Higher reputation = higher priority
+                reputation_score
+            },
+            PriorityMode::TypeAndReputation => {
+                // Base priority on message type
+                let type_priority = self.config.type_priorities
+                    .get(&message.message_type)
+                    .copied()
+                    .unwrap_or(0);
+                
+                // Get reputation score
+                let reputation_score = if let Some(rep) = &self.reputation {
+                    if let Ok(peer_id) = libp2p::PeerId::from_bytes(&peer.id) {
+                        rep.get_reputation(&peer_id).await
+                            .map(|r| r.score())
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+                
+                // Combine type priority and reputation
+                // If reputation is high enough, boost priority
+                let reputation_boost = if reputation_score >= self.config.high_priority_reputation {
+                    20
+                } else if reputation_score <= 0 {
+                    -10
+                } else {
+                    0
+                };
+                
+                type_priority + reputation_boost
+            },
+            PriorityMode::Custom => {
+                // Custom prioritization (placeholder)
+                // In a real implementation, this would be customizable
+                0
+            }
+        }
+    }
+    
+    /// Process a message with appropriate priority
+    pub async fn process_message(
+        &self,
+        message: NetworkMessage,
+        peer: PeerInfo,
+    ) -> NetworkResult<()> {
+        // Check if the processor is running
+        if !*self.running.read().await {
+            return Err(NetworkError::ServiceStopped);
+        }
+        
+        // Calculate the priority
+        let priority = self.calculate_priority(&message, &peer).await;
+        
+        // Create the message envelope
+        let envelope = MessageEnvelope {
+            message,
+            peer,
+            received_at: Instant::now(),
+            priority,
+        };
+        
+        // Check queue size before adding
+        let queue_size = self.queue.read().await.len();
+        if queue_size >= self.config.max_queue_size {
+            if self.config.drop_low_priority_when_full && priority < 0 {
+                // Drop low priority messages when queue is full
+                debug!("Dropping low priority message (priority: {}) due to full queue", priority);
+                
+                // Record dropped message in metrics
+                if let Some(m) = &self.metrics {
+                    m.record_dropped_message();
+                }
+                
+                return Ok(());
+            }
+            
+            // We're at capacity but this message isn't low priority, so apply backpressure
+            warn!("Message queue full, applying backpressure ({} messages waiting)", queue_size);
+            
+            // Record backpressure in metrics
+            if let Some(m) = &self.metrics {
+                m.record_backpressure();
+            }
+        }
+        
+        // Send the message to the background task for processing
+        if let Err(e) = self.command_tx.send(ProcessorCommand::ProcessMessage(envelope)).await {
+            error!("Failed to send message to processor: {}", e);
+            return Err(NetworkError::ServiceError(format!("Failed to send message to processor: {}", e)));
         }
         
         Ok(())
     }
     
-    /// Encode a network message into an envelope
-    pub async fn encode_message(&self, 
-                               sender: String,
-                               message: &NetworkMessage,
-                               signature: Option<Vec<u8>>) -> NetworkResult<MessageEnvelope> {
-        // Get the message type string
-        let message_type = match message {
-            NetworkMessage::IdentityAnnouncement(_) => "identity.announcement",
-            NetworkMessage::TransactionAnnouncement(_) => "ledger.transaction",
-            NetworkMessage::LedgerStateUpdate(_) => "ledger.state",
-            NetworkMessage::ProposalAnnouncement(_) => "governance.proposal",
-            NetworkMessage::VoteAnnouncement(_) => "governance.vote",
-            NetworkMessage::Custom(custom) => custom.message_type.as_str(),
-        };
+    /// Stop the message processor
+    pub async fn stop(&self) -> NetworkResult<()> {
+        let (tx, rx) = mpsc::channel(1);
         
-        // Serialize the message
-        let payload = serde_json::to_vec(message)
-            .map_err(|e| NetworkError::SerializationError(e.to_string()))?;
+        if let Err(e) = self.command_tx.send(ProcessorCommand::Stop(tx)).await {
+            return Err(NetworkError::ServiceError(format!("Failed to send stop command: {}", e)));
+        }
         
-        // Create the timestamp
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        
-        // Create the envelope
-        let envelope = MessageEnvelope::new(
-            sender,
-            message_type.to_string(),
-            payload,
-            timestamp,
-            signature,
-        );
-        
-        Ok(envelope)
+        match rx.await {
+            Ok(result) => result,
+            Err(e) => Err(NetworkError::ServiceError(format!("Failed to receive stop response: {}", e))),
+        }
     }
     
-    /// Decode a message envelope into a network message
-    pub async fn decode_message(&self, envelope: &MessageEnvelope) -> NetworkResult<NetworkMessage> {
-        let message_type = &envelope.message_type;
-        let payload = &envelope.payload;
+    /// Get the current queue size
+    pub async fn queue_size(&self) -> usize {
+        self.queue.read().await.len()
+    }
+    
+    /// Get queue statistics
+    pub async fn queue_stats(&self) -> (usize, Option<i32>, Option<i32>) {
+        let queue = self.queue.read().await;
+        let size = queue.len();
         
-        // Deserialize based on the message type
-        match message_type.as_str() {
-            "identity.announcement" => {
-                let msg = serde_json::from_slice(payload)
-                    .map_err(|e| NetworkError::DeserializationError(format!(
-                        "Failed to deserialize identity announcement: {}", e
-                    )))?;
-                Ok(NetworkMessage::IdentityAnnouncement(msg))
-            },
-            "ledger.transaction" => {
-                let msg = serde_json::from_slice(payload)
-                    .map_err(|e| NetworkError::DeserializationError(format!(
-                        "Failed to deserialize transaction announcement: {}", e
-                    )))?;
-                Ok(NetworkMessage::TransactionAnnouncement(msg))
-            },
-            "ledger.state" => {
-                let msg = serde_json::from_slice(payload)
-                    .map_err(|e| NetworkError::DeserializationError(format!(
-                        "Failed to deserialize ledger state update: {}", e
-                    )))?;
-                Ok(NetworkMessage::LedgerStateUpdate(msg))
-            },
-            "governance.proposal" => {
-                let msg = serde_json::from_slice(payload)
-                    .map_err(|e| NetworkError::DeserializationError(format!(
-                        "Failed to deserialize proposal announcement: {}", e
-                    )))?;
-                Ok(NetworkMessage::ProposalAnnouncement(msg))
-            },
-            "governance.vote" => {
-                let msg = serde_json::from_slice(payload)
-                    .map_err(|e| NetworkError::DeserializationError(format!(
-                        "Failed to deserialize vote announcement: {}", e
-                    )))?;
-                Ok(NetworkMessage::VoteAnnouncement(msg))
-            },
-            // For custom messages
-            _ => {
-                // Attempt to deserialize as a custom message
-                let custom = serde_json::from_slice(payload)
-                    .map_err(|e| NetworkError::DeserializationError(format!(
-                        "Failed to deserialize custom message of type {}: {}", message_type, e
-                    )))?;
-                Ok(NetworkMessage::Custom(custom))
-            }
-        }
+        // Get highest and lowest priorities if queue is not empty
+        let (highest_priority, lowest_priority) = if !queue.is_empty() {
+            // Convert the BinaryHeap to a Vec to access all elements
+            let vec: Vec<_> = queue.iter().collect();
+            
+            // Find highest and lowest priorities
+            let highest = vec.iter().map(|e| e.priority).max();
+            let lowest = vec.iter().map(|e| e.priority).min();
+            
+            (highest, lowest)
+        } else {
+            (None, None)
+        };
+        
+        (size, highest_priority, lowest_priority)
     }
 }
 
-/// Default implementation of a message handler that delegates to closures
+/// Default message handler implementation that uses a closure
 pub struct DefaultMessageHandler {
     /// Handler ID
     id: usize,
     /// Handler name
     name: String,
-    /// The actual handler function
+    /// Handler function
     handler: Box<dyn Fn(&NetworkMessage, &PeerInfo) -> NetworkResult<()> + Send + Sync>,
 }
 
 impl DefaultMessageHandler {
     /// Create a new default message handler
-    pub fn new<F>(id: usize, name: String, handler: F) -> Self 
+    pub fn new<F>(id: usize, name: String, handler: F) -> Self
     where
         F: Fn(&NetworkMessage, &PeerInfo) -> NetworkResult<()> + Send + Sync + 'static,
     {
@@ -251,17 +491,14 @@ impl DefaultMessageHandler {
 
 #[async_trait]
 impl MessageHandler for DefaultMessageHandler {
-    /// Get the handler ID
     fn id(&self) -> usize {
         self.id
     }
     
-    /// Get the handler name
     fn name(&self) -> &str {
         &self.name
     }
     
-    /// Handle a received message
     async fn handle_message(&self, message: &NetworkMessage, peer: &PeerInfo) -> NetworkResult<()> {
         (self.handler)(message, peer)
     }

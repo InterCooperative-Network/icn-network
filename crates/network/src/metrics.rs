@@ -54,6 +54,9 @@ pub struct NetworkMetrics {
     reputation_changes: IntCounterVec,
     banned_peers: IntGaugeVec,
     total_banned_peers: IntGauge,
+    
+    // Queue metrics
+    operation_durations: IntGaugeVec,
 }
 
 impl NetworkMetrics {
@@ -156,6 +159,12 @@ impl NetworkMetrics {
             "Total number of banned peers"
         ).unwrap();
         
+        // Queue metrics
+        let operation_durations = IntGaugeVec::new(
+            Opts::new("network_operation_durations", "Duration of operations in milliseconds"),
+            &["operation"],
+        ).unwrap();
+        
         // Register metrics
         registry.register(Box::new(peers_connected.clone())).unwrap();
         registry.register(Box::new(connection_attempts.clone())).unwrap();
@@ -180,6 +189,7 @@ impl NetworkMetrics {
         registry.register(Box::new(reputation_changes.clone())).unwrap();
         registry.register(Box::new(banned_peers.clone())).unwrap();
         registry.register(Box::new(total_banned_peers.clone())).unwrap();
+        registry.register(Box::new(operation_durations.clone())).unwrap();
         
         info!("Network metrics initialized");
         
@@ -209,6 +219,7 @@ impl NetworkMetrics {
             reputation_changes,
             banned_peers,
             total_banned_peers,
+            operation_durations,
         }
     }
     
@@ -393,6 +404,39 @@ impl NetworkMetrics {
     pub fn record_reputation_decay(&self, peers_processed: u64) {
         // No specific metric needed here, but we can log it
         debug!("Processed reputation decay for {} peers", peers_processed);
+    }
+    
+    /// Record queue size
+    pub fn record_queue_size(&self, size: usize) {
+        // Record current queue size
+        self.operation_durations.with_label_values(&["message_queue_size"]).set(size as f64);
+    }
+    
+    /// Record a dropped message
+    pub fn record_dropped_message(&self) {
+        // Count dropped messages
+        self.errors.with_label_values(&["dropped_message"]).inc();
+    }
+    
+    /// Record backpressure event
+    pub fn record_backpressure(&self) {
+        // Count backpressure events
+        self.errors.with_label_values(&["backpressure"]).inc();
+    }
+    
+    /// Record queue statistics
+    pub fn record_queue_stats(&self, size: usize, highest_priority: Option<i32>, lowest_priority: Option<i32>) {
+        // Record current queue size
+        self.operation_durations.with_label_values(&["message_queue_size"]).set(size as f64);
+        
+        // Record priority range if available
+        if let Some(highest) = highest_priority {
+            self.operation_durations.with_label_values(&["highest_message_priority"]).set(highest as f64);
+        }
+        
+        if let Some(lowest) = lowest_priority {
+            self.operation_durations.with_label_values(&["lowest_message_priority"]).set(lowest as f64);
+        }
     }
 }
 

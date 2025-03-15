@@ -10,6 +10,7 @@ The network communication layer for the InterCooperative Network (ICN). This cra
 - **State synchronization** - Keep the network state in sync across nodes
 - **Metrics and monitoring** - Collect and expose performance metrics
 - **Peer Reputation System** - Track and manage peer reliability and behavior
+- **Priority Message Processing** - Process messages based on reputation and message type priority
 
 ## Components
 
@@ -269,6 +270,60 @@ Run the reputation system demo to see it in action:
 cargo run --example reputation_demo
 ```
 
+## Priority Message Processing
+
+The network includes a priority-based message processing system that allows messages from trusted peers and high-priority message types to be processed before others. This is especially useful during high load situations or when dealing with critical transactions.
+
+### Key Features
+
+- **Message Prioritization**: Processes messages based on calculated priority rather than just order of receipt
+- **Multiple Priority Modes**: Offers several prioritization strategies:
+  - **Type-based**: Prioritize by message type (e.g., votes before transactions)
+  - **Reputation-based**: Prioritize messages from peers with higher reputation
+  - **Combined**: Use both type and sender reputation
+  - **FIFO**: Traditional first-in, first-out processing (default)
+- **Backpressure Handling**: Managed queue size with configurable drop strategies
+- **Performance Metrics**: Detailed metrics for monitoring queue sizes and processing times
+
+### Enabling Priority Processing
+
+```rust
+let mut config = P2pConfig::default();
+config.enable_message_prioritization = true;
+
+// Optional custom priority configuration
+let priority_config = PriorityConfig {
+    mode: PriorityMode::TypeAndReputation,
+    high_priority_message_types: vec!["consensus.vote".to_string(), "ledger.transaction".to_string()],
+    high_priority_reputation: 20,  // Reputation threshold for high priority
+    max_queue_size: 10000,         // Maximum message queue size
+    // ...other options
+};
+config.priority_config = Some(priority_config);
+```
+
+### Available Priority Modes
+
+- **`PriorityMode::FIFO`**: Traditional first-in, first-out processing
+- **`PriorityMode::MessageTypeOnly`**: Prioritize based on message types only
+- **`PriorityMode::ReputationOnly`**: Prioritize based on sender reputation only
+- **`PriorityMode::TypeAndReputation`**: Combine both type and reputation factors
+
+### Priority Processing Benefits
+
+- **Improved Network Efficiency**: Critical messages processed first during congestion
+- **Enhanced Attack Resistance**: Deprioritizes messages from unproven or malicious peers
+- **Better Resource Utilization**: Ensures important operations are not delayed
+- **Configurable Strategy**: Adapts to different network deployments and priorities
+
+### Priority Messaging Demo
+
+Run the priority-based message processing demo to see it in action:
+
+```
+cargo run --example priority_messaging
+```
+
 ## CLI Tool
 
 A command-line tool is included for testing and debugging network functionality:
@@ -288,6 +343,7 @@ SUBCOMMANDS:
     broadcast      Broadcast a message
     metrics        Start a node with metrics enabled
     reputation     Run the reputation system demo
+    priority       Run the priority messaging demo
 ```
 
 ### Listen Example:
@@ -318,4 +374,9 @@ icn-net metrics
 
 ```
 icn-net reputation
-``` 
+```
+
+### Run Priority Messaging Demo:
+
+```
+icn-net priority 

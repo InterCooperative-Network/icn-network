@@ -30,6 +30,7 @@ use crate::{
 };
 use crate::metrics::NetworkMetrics;
 use crate::reputation::{ReputationManager, ReputationConfig, ReputationChange};
+use crate::messaging;
 
 // Topic names for gossipsub
 const TOPIC_IDENTITY: &str = "icn/identity/v1";
@@ -64,6 +65,10 @@ pub struct P2pConfig {
     pub enable_reputation: bool,
     /// Configuration for the reputation system
     pub reputation_config: Option<ReputationConfig>,
+    /// Enable message prioritization
+    pub enable_message_prioritization: bool,
+    /// Priority configuration
+    pub priority_config: Option<messaging::PriorityConfig>,
 }
 
 impl Default for P2pConfig {
@@ -81,6 +86,8 @@ impl Default for P2pConfig {
             metrics_address: Some("127.0.0.1:9090".to_string()),
             enable_reputation: true,
             reputation_config: None,
+            enable_message_prioritization: true,
+            priority_config: None,
         }
     }
 }
@@ -190,6 +197,8 @@ pub struct P2pNetwork {
     metrics: Option<NetworkMetrics>,
     /// Reputation manager
     reputation: Option<Arc<ReputationManager>>,
+    /// Message processor for prioritized handling
+    message_processor: Option<Arc<messaging::MessageProcessor>>,
 }
 
 impl P2pNetwork {
@@ -236,6 +245,22 @@ impl P2pNetwork {
         } else {
             None
         };
+        
+        // Initialize the handlers collection
+        let handlers = Arc::new(RwLock::new(HashMap::new()));
+        
+        // Initialize message processor if enabled
+        let message_processor = if config.enable_message_prioritization {
+            let priority_config = config.priority_config.clone().unwrap_or_default();
+            Some(Arc::new(messaging::MessageProcessor::new(
+                handlers.clone(),
+                priority_config,
+                reputation.clone(),
+                metrics.clone(),
+            )))
+        } else {
+            None
+        };
 
         let network = Self {
             storage,
@@ -244,10 +269,11 @@ impl P2pNetwork {
             config,
             command_tx,
             task_handle: Arc::new(Mutex::new(None)),
-            handlers: Arc::new(RwLock::new(HashMap::new())),
+            handlers,
             peers: Arc::new(RwLock::new(HashMap::new())),
             metrics,
             reputation,
+            message_processor,
         };
         
         // Start the background task
@@ -440,6 +466,7 @@ impl P2pNetwork {
                             &peers,
                             self.metrics.as_ref(),
                             self.reputation.as_ref(),
+                            self.message_processor.as_ref(),
                         ).await;
                         
                         // Record event processing time
@@ -579,6 +606,7 @@ impl P2pNetwork {
         peers: &Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
         metrics: Option<&NetworkMetrics>,
         reputation: Option<&Arc<ReputationManager>>,
+        message_processor: Option<&Arc<messaging::MessageProcessor>>,
     ) {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
@@ -666,10 +694,7 @@ impl P2pNetwork {
                     m.record_message_received("gossipsub", message.data.len());
                 }
                 
-                debug!(
-                    "Received gossip message: {} from {}",
-                    message_id, propagation_source
-                );
+                debug!("Received gossip message: {} from {}", message_id, propagation_source);
                 
                 // Extract message type from the topic
                 let topic = &message.topic;
@@ -692,63 +717,106 @@ impl P2pNetwork {
                     }
                 };
                 
-                let start_time = Instant::now();
-                let mut handled_successfully = false;
-                
-                match serde_json::from_slice::<NetworkMessage>(&message.data) {
-                    Ok(network_message) => {
-                        // Get peer info
-                        let peer_info = Self::get_peer_info_from_id(peers, &propagation_source).await;
-                        
-                        // Call all handlers for this message type
-                        let handlers_guard = handlers.read().await;
-                        if let Some(type_handlers) = handlers_guard.get(message_type) {
-                            let mut success = true;
+                // First check if using message processor
+                if let Some(processor) = message_processor {
+                    // Get peer info
+                    let peer_info = Self::get_peer_info_from_id(peers, &propagation_source).await;
+                    
+                    // Deserialize the message
+                    match serde_json::from_slice::<NetworkMessage>(&message.data) {
+                        Ok(network_message) => {
+                            // Process with priority-based processor
+                            let mut net_message = network_message;
+                            // Ensure correct message type from topic
+                            net_message.message_type = message_type.to_string();
                             
-                            for handler in type_handlers {
-                                if let Err(e) = handler.handle_message(&network_message, &peer_info).await {
-                                    error!("Handler error: {}", e);
-                                    success = false;
-                                    
-                                    // Update reputation for message failure
+                            if let Err(e) = processor.process_message(net_message, peer_info).await {
+                                error!("Failed to process message: {}", e);
+                                
+                                // Record error and update reputation
+                                if let Some(m) = metrics {
+                                    m.record_error("message_processing");
+                                }
+                                
+                                if let Some(rep) = reputation {
+                                    let _ = rep.record_change(&propagation_source, ReputationChange::MessageFailure).await;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to deserialize gossip message: {}", e);
+                            
+                            // Record error
+                            if let Some(m) = metrics {
+                                m.record_error("message_deserialization");
+                            }
+                            
+                            // Update reputation for invalid message
+                            if let Some(rep) = reputation {
+                                let _ = rep.record_change(&propagation_source, ReputationChange::InvalidMessage).await;
+                            }
+                        }
+                    }
+                } else {
+                    // Fall back to direct handler calling if no message processor
+                    let start_time = Instant::now();
+                    let mut handled_successfully = false;
+                    
+                    match serde_json::from_slice::<NetworkMessage>(&message.data) {
+                        Ok(network_message) => {
+                            // Get peer info
+                            let peer_info = Self::get_peer_info_from_id(peers, &propagation_source).await;
+                            
+                            // Call all handlers for this message type
+                            let handlers_guard = handlers.read().await;
+                            if let Some(type_handlers) = handlers_guard.get(message_type) {
+                                let mut success = true;
+                                
+                                for handler in type_handlers {
+                                    if let Err(e) = handler.handle_message(&network_message, &peer_info).await {
+                                        error!("Handler error: {}", e);
+                                        success = false;
+                                        
+                                        // Update reputation for message failure
+                                        if let Some(rep) = reputation {
+                                            let _ = rep.record_change(&propagation_source, ReputationChange::MessageFailure).await;
+                                        }
+                                    }
+                                }
+                                
+                                // Update reputation for successful message handling
+                                if success {
+                                    handled_successfully = true;
                                     if let Some(rep) = reputation {
-                                        let _ = rep.record_change(&propagation_source, ReputationChange::MessageFailure).await;
+                                        let _ = rep.record_change(&propagation_source, ReputationChange::MessageSuccess).await;
                                     }
                                 }
                             }
+                        }
+                        Err(e) => {
+                            warn!("Failed to deserialize gossip message: {}", e);
                             
-                            // Update reputation for successful message handling
-                            if success {
-                                handled_successfully = true;
-                                if let Some(rep) = reputation {
-                                    let _ = rep.record_change(&propagation_source, ReputationChange::MessageSuccess).await;
-                                }
+                            // Update reputation for invalid message
+                            if let Some(rep) = reputation {
+                                let _ = rep.record_change(&propagation_source, ReputationChange::InvalidMessage).await;
                             }
                         }
                     }
-                    Err(e) => {
-                        warn!("Failed to deserialize gossip message: {}", e);
-                        
-                        // Update reputation for invalid message
-                        if let Some(rep) = reputation {
-                            let _ = rep.record_change(&propagation_source, ReputationChange::InvalidMessage).await;
-                        }
-                    }
-                }
-                
-                // Record message processing time
-                let elapsed = start_time.elapsed();
-                if let Some(m) = metrics {
-                    m.record_message_processing_time(elapsed);
-                }
-                
-                // Update reputation based on processing time
-                if let Some(rep) = reputation {
-                    let _ = rep.record_response_time(&propagation_source, elapsed).await;
                     
-                    // Record verification success/failure
-                    if handled_successfully {
-                        let _ = rep.record_change(&propagation_source, ReputationChange::VerifiedMessage).await;
+                    // Record message processing time
+                    let elapsed = start_time.elapsed();
+                    if let Some(m) = metrics {
+                        m.record_message_processing_time(elapsed);
+                    }
+                    
+                    // Update reputation based on processing time
+                    if let Some(rep) = reputation {
+                        let _ = rep.record_response_time(&propagation_source, elapsed).await;
+                        
+                        // Record verification success/failure
+                        if handled_successfully {
+                            let _ = rep.record_change(&propagation_source, ReputationChange::VerifiedMessage).await;
+                        }
                     }
                 }
             }
@@ -1111,6 +1179,23 @@ impl P2pNetwork {
         
         Ok(())
     }
+    
+    /// Get message queue statistics
+    pub async fn get_message_queue_stats(&self) -> NetworkResult<(usize, Option<i32>, Option<i32>)> {
+        if let Some(processor) = &self.message_processor {
+            let stats = processor.queue_stats().await;
+            
+            // Record metrics if available
+            if let Some(metrics) = &self.metrics {
+                metrics.record_queue_stats(stats.0, stats.1, stats.2);
+            }
+            
+            Ok(stats)
+        } else {
+            // Return zeros if message processor isn't enabled
+            Ok((0, None, None))
+        }
+    }
 }
 
 #[async_trait]
@@ -1122,12 +1207,32 @@ impl NetworkService for P2pNetwork {
     
     async fn stop(&self) -> NetworkResult<()> {
         let (tx, rx) = mpsc::channel(1);
-        self.command_tx.send(Command::Stop(tx)).await
-            .map_err(|_| NetworkError::InternalError("Failed to send stop command".to_string()))?;
-        
-        // Wait for the stop command to complete
-        rx.await
-            .map_err(|_| NetworkError::InternalError("Failed to receive stop response".to_string()))?
+
+        if let Err(e) = self.command_tx.send(Command::Stop(tx)).await {
+            return Err(NetworkError::ServiceError(format!("Failed to send stop command: {}", e)));
+        }
+
+        // Wait for the response
+        match rx.await {
+            Ok(result) => {
+                // Also stop the message processor if it exists
+                if let Some(processor) = &self.message_processor {
+                    if let Err(e) = processor.stop().await {
+                        warn!("Error stopping message processor: {}", e);
+                    }
+                }
+                
+                // Also stop the reputation manager if it exists
+                if let Some(rep) = &self.reputation {
+                    if let Err(e) = rep.stop().await {
+                        warn!("Error stopping reputation manager: {}", e);
+                    }
+                }
+                
+                result
+            },
+            Err(e) => Err(NetworkError::ServiceError(format!("Failed to receive stop response: {}", e))),
+        }
     }
     
     async fn broadcast(&self, message: NetworkMessage) -> NetworkResult<()> {
