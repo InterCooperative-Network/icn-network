@@ -11,6 +11,7 @@ The network communication layer for the InterCooperative Network (ICN). This cra
 - **Metrics and monitoring** - Collect and expose performance metrics
 - **Peer Reputation System** - Track and manage peer reliability and behavior
 - **Priority Message Processing** - Process messages based on reputation and message type priority
+- **Circuit Relay** - Enable NAT traversal for nodes behind firewalls
 
 ## Components
 
@@ -380,3 +381,82 @@ icn-net reputation
 
 ```
 icn-net priority 
+```
+
+## Circuit Relay for NAT Traversal
+
+The network includes a circuit relay protocol that allows nodes behind NATs or firewalls to connect to other nodes through publicly accessible relay nodes. This significantly improves connectivity in real-world deployments.
+
+### Key Features
+
+- **NAT Traversal**: Connect nodes that would otherwise be unreachable due to NAT or firewalls
+- **Relay Server**: Run a node as a relay server to facilitate connections between peers
+- **Relay Client**: Connect through relay servers to reach otherwise inaccessible peers
+- **Smart Connection**: Automatically attempt direct connection before falling back to relay
+- **Relay Prioritization**: Choose the best relay based on connection success rates
+- **Connection Monitoring**: Track and report statistics on relayed connections
+
+### Enabling Circuit Relay
+
+```rust
+let mut config = P2pConfig::default();
+config.enable_circuit_relay = true;
+
+// Optional custom relay configuration
+let mut relay_config = CircuitRelayConfig::default();
+relay_config.enable_relay_server = true;  // Act as a relay server (optional)
+relay_config.enable_relay_client = true;  // Connect through relays (default)
+relay_config.known_relay_servers = vec![
+    "/ip4/public-relay.example.com/tcp/4001/p2p/QmRelayId".parse()?
+];
+relay_config.max_inbound_relay_connections = 20;  // Maximum inbound relay connections
+relay_config.ttl = Duration::from_secs(3600);     // Time to keep relay connections alive
+
+config.circuit_relay_config = Some(relay_config);
+```
+
+### Using Circuit Relay
+
+```rust
+use icn_network::{P2pNetwork, NetworkService};
+use libp2p::PeerId;
+
+async fn connect_to_peer(network: &P2pNetwork, peer_id: &PeerId) -> anyhow::Result<()> {
+    // Smart connect will try direct connection first, then fall back to relay
+    network.smart_connect(peer_id).await?;
+    
+    // Check if the connection is relayed
+    let is_relayed = network.is_relay_connection(peer_id).await;
+    println!("Connection to {} is relayed: {}", peer_id, is_relayed);
+    
+    // If relayed, get the relay peer ID
+    if is_relayed {
+        if let Some(relay_id) = network.get_relay_for_connection(peer_id).await {
+            println!("Using relay: {}", relay_id);
+        }
+    }
+    
+    Ok(())
+}
+```
+
+### Circuit Relay Demo
+
+The crate includes a comprehensive circuit relay demo that shows how to run a relay server and connect nodes through it:
+
+```bash
+# Run a relay server
+cargo run --example circuit_relay_demo relay-server --port 9000
+
+# Run a public node that will connect to the relay
+cargo run --example circuit_relay_demo public-node --port 9001 --relay /ip4/127.0.0.1/tcp/9000/p2p/QmRelayId
+
+# Run a private node (NAT'd) that will connect to the public node through the relay
+cargo run --example circuit_relay_demo private-node --relay /ip4/127.0.0.1/tcp/9000/p2p/QmRelayId --target QmPublicNodeId
+```
+
+This demo demonstrates how nodes can communicate even when direct connections are not possible.
+
+## CLI Tool
+
+// ... rest of existing content ...

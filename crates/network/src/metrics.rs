@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
 use crate::NetworkResult;
+use crate::circuit_relay::CircuitRelayMetricsExt;
 
 /// Network metrics collector
 #[derive(Clone)]
@@ -56,7 +57,18 @@ pub struct NetworkMetrics {
     total_banned_peers: IntGauge,
     
     // Queue metrics
+    queue_size: IntGauge,
+    dropped_messages: IntCounter,
+    backpressure_events: IntCounter,
+    queue_priorities: IntGaugeVec,
     operation_durations: IntGaugeVec,
+    
+    // Circuit relay metrics
+    relay_servers: IntGauge,
+    active_relay_connections: IntGauge,
+    relay_connection_attempts: IntCounter,
+    relay_connection_successes: IntCounter,
+    relay_connection_failures: IntCounter,
 }
 
 impl NetworkMetrics {
@@ -73,33 +85,27 @@ impl NetworkMetrics {
         
         // Message metrics
         let messages_received = IntCounterVec::new(
-            Opts::new("network_messages_received", "Number of messages received by type"),
+            Opts::new("network_messages_received", "Number of messages received"),
             &["message_type"],
         ).unwrap();
         
         let messages_sent = IntCounterVec::new(
-            Opts::new("network_messages_sent", "Number of messages sent by type"),
+            Opts::new("network_messages_sent", "Number of messages sent"),
             &["message_type"],
         ).unwrap();
         
         let message_bytes_received = IntCounterVec::new(
-            Opts::new("network_message_bytes_received", "Number of bytes received by message type"),
+            Opts::new("network_message_bytes_received", "Number of bytes received"),
             &["message_type"],
         ).unwrap();
         
         let message_bytes_sent = IntCounterVec::new(
-            Opts::new("network_message_bytes_sent", "Number of bytes sent by message type"),
+            Opts::new("network_message_bytes_sent", "Number of bytes sent"),
             &["message_type"],
         ).unwrap();
         
         let message_processing_time = Histogram::with_opts(
-            HistogramOpts::new(
-                "network_message_processing_time",
-                "Time to process messages in milliseconds",
-            )
-            .buckets(vec![
-                1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0,
-            ]),
+            HistogramOpts::new("network_message_processing_time", "Time to process messages")
         ).unwrap();
         
         // Discovery metrics
@@ -110,17 +116,11 @@ impl NetworkMetrics {
         
         // Protocol metrics
         let protocol_negotiation_time = Histogram::with_opts(
-            HistogramOpts::new(
-                "network_protocol_negotiation_time",
-                "Time to negotiate protocols in milliseconds",
-            )
-            .buckets(vec![
-                1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0,
-            ]),
+            HistogramOpts::new("network_protocol_negotiation_time", "Time to negotiate protocols")
         ).unwrap();
         
         let protocol_failures = IntCounterVec::new(
-            Opts::new("network_protocol_failures", "Number of protocol negotiation failures"),
+            Opts::new("network_protocol_failures", "Number of protocol failures"),
             &["protocol"],
         ).unwrap();
         
@@ -134,36 +134,47 @@ impl NetworkMetrics {
         
         // Error metrics
         let errors = IntCounterVec::new(
-            Opts::new("network_errors", "Number of errors by type"),
+            Opts::new("network_errors", "Number of errors"),
             &["error_type"],
         ).unwrap();
         
         // Reputation metrics
         let reputation_scores = IntGaugeVec::new(
-            Opts::new("network_peer_reputation_scores", "Reputation scores by peer"),
+            Opts::new("network_reputation_scores", "Reputation scores by peer"),
             &["peer_id"],
         ).unwrap();
         
         let reputation_changes = IntCounterVec::new(
-            Opts::new("network_reputation_changes", "Number of reputation changes by peer"),
-            &["peer_id", "type"],
+            Opts::new("network_reputation_changes", "Reputation changes by peer and type"),
+            &["peer_id", "change_type"],
         ).unwrap();
         
         let banned_peers = IntGaugeVec::new(
-            Opts::new("network_banned_peers", "Whether a peer is banned (1) or not (0)"),
+            Opts::new("network_banned_peers", "Banned status by peer (1=banned, 0=not banned)"),
             &["peer_id"],
         ).unwrap();
         
-        let total_banned_peers = IntGauge::new(
-            "network_total_banned_peers", 
-            "Total number of banned peers"
-        ).unwrap();
+        let total_banned_peers = IntGauge::new("network_total_banned_peers", "Total number of banned peers").unwrap();
         
         // Queue metrics
+        let queue_size = IntGauge::new("network_message_queue_size", "Number of messages in the queue").unwrap();
+        let dropped_messages = IntCounter::new("network_dropped_messages", "Number of dropped messages").unwrap();
+        let backpressure_events = IntCounter::new("network_backpressure_events", "Number of backpressure events").unwrap();
+        let queue_priorities = IntGaugeVec::new(
+            Opts::new("network_queue_priorities", "Priority metrics for the message queue"),
+            &["metric"],
+        ).unwrap();
         let operation_durations = IntGaugeVec::new(
-            Opts::new("network_operation_durations", "Duration of operations in milliseconds"),
+            Opts::new("network_operation_durations", "Time taken for various operations in milliseconds"),
             &["operation"],
         ).unwrap();
+        
+        // Circuit relay metrics
+        let relay_servers = IntGauge::new("network_relay_servers", "Number of known relay servers").unwrap();
+        let active_relay_connections = IntGauge::new("network_active_relay_connections", "Number of active relay connections").unwrap();
+        let relay_connection_attempts = IntCounter::new("network_relay_connection_attempts", "Number of relay connection attempts").unwrap();
+        let relay_connection_successes = IntCounter::new("network_relay_connection_successes", "Number of successful relay connections").unwrap();
+        let relay_connection_failures = IntCounter::new("network_relay_connection_failures", "Number of failed relay connections").unwrap();
         
         // Register metrics
         registry.register(Box::new(peers_connected.clone())).unwrap();
@@ -189,7 +200,16 @@ impl NetworkMetrics {
         registry.register(Box::new(reputation_changes.clone())).unwrap();
         registry.register(Box::new(banned_peers.clone())).unwrap();
         registry.register(Box::new(total_banned_peers.clone())).unwrap();
+        registry.register(Box::new(queue_size.clone())).unwrap();
+        registry.register(Box::new(dropped_messages.clone())).unwrap();
+        registry.register(Box::new(backpressure_events.clone())).unwrap();
+        registry.register(Box::new(queue_priorities.clone())).unwrap();
         registry.register(Box::new(operation_durations.clone())).unwrap();
+        registry.register(Box::new(relay_servers.clone())).unwrap();
+        registry.register(Box::new(active_relay_connections.clone())).unwrap();
+        registry.register(Box::new(relay_connection_attempts.clone())).unwrap();
+        registry.register(Box::new(relay_connection_successes.clone())).unwrap();
+        registry.register(Box::new(relay_connection_failures.clone())).unwrap();
         
         info!("Network metrics initialized");
         
@@ -219,7 +239,16 @@ impl NetworkMetrics {
             reputation_changes,
             banned_peers,
             total_banned_peers,
+            queue_size,
+            dropped_messages,
+            backpressure_events,
+            queue_priorities,
             operation_durations,
+            relay_servers,
+            active_relay_connections,
+            relay_connection_attempts,
+            relay_connection_successes,
+            relay_connection_failures,
         }
     }
     
@@ -408,35 +437,36 @@ impl NetworkMetrics {
     
     /// Record queue size
     pub fn record_queue_size(&self, size: usize) {
-        // Record current queue size
-        self.operation_durations.with_label_values(&["message_queue_size"]).set(size as f64);
+        self.queue_size.set(size as i64);
     }
     
     /// Record a dropped message
     pub fn record_dropped_message(&self) {
-        // Count dropped messages
-        self.errors.with_label_values(&["dropped_message"]).inc();
+        self.dropped_messages.inc();
     }
     
     /// Record backpressure event
     pub fn record_backpressure(&self) {
-        // Count backpressure events
-        self.errors.with_label_values(&["backpressure"]).inc();
+        self.backpressure_events.inc();
     }
     
     /// Record queue statistics
     pub fn record_queue_stats(&self, size: usize, highest_priority: Option<i32>, lowest_priority: Option<i32>) {
-        // Record current queue size
-        self.operation_durations.with_label_values(&["message_queue_size"]).set(size as f64);
+        self.queue_size.set(size as i64);
         
-        // Record priority range if available
-        if let Some(highest) = highest_priority {
-            self.operation_durations.with_label_values(&["highest_message_priority"]).set(highest as f64);
+        if let Some(high) = highest_priority {
+            self.queue_priorities.with_label_values(&["highest"]).set(high as i64);
         }
         
-        if let Some(lowest) = lowest_priority {
-            self.operation_durations.with_label_values(&["lowest_message_priority"]).set(lowest as f64);
+        if let Some(low) = lowest_priority {
+            self.queue_priorities.with_label_values(&["lowest"]).set(low as i64);
         }
+    }
+    
+    /// Record operation duration
+    pub fn record_operation_duration(&self, operation: &str, duration: Duration) {
+        self.operation_durations.with_label_values(&[operation])
+            .set(duration.as_millis() as i64);
     }
 }
 
@@ -609,6 +639,29 @@ fn get_process_cpu_usage() -> Option<f64> {
     // This is a simplified implementation and may not be accurate
     // For production code, consider using a cross-platform library
     None
+}
+
+// Implement the CircuitRelayMetricsExt trait for NetworkMetrics
+impl CircuitRelayMetricsExt for NetworkMetrics {
+    fn record_relay_servers(&self, count: usize) {
+        self.relay_servers.set(count as i64);
+    }
+    
+    fn record_active_relay_connections(&self, count: usize) {
+        self.active_relay_connections.set(count as i64);
+    }
+    
+    fn record_relay_connection_attempt(&self) {
+        self.relay_connection_attempts.inc();
+    }
+    
+    fn record_relay_connection_success(&self) {
+        self.relay_connection_successes.inc();
+    }
+    
+    fn record_relay_connection_failure(&self) {
+        self.relay_connection_failures.inc();
+    }
 }
 
 #[cfg(test)]

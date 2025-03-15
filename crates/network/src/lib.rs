@@ -58,6 +58,26 @@ pub enum NetworkError {
     /// Internal error
     #[error("Internal error: {0}")]
     InternalError(String),
+    
+    /// No relay servers available
+    #[error("No relay servers available")]
+    NoRelaysAvailable,
+    
+    /// Invalid relay address
+    #[error("Invalid relay address")]
+    InvalidRelayAddress,
+    
+    /// Relay connection error
+    #[error("Relay connection error: {0}")]
+    RelayConnectionError(String),
+    
+    /// Relay server error
+    #[error("Relay server error: {0}")]
+    RelayServerError(String),
+    
+    /// Maximum relay connections reached
+    #[error("Maximum relay connections reached")]
+    MaxRelayConnectionsReached,
 }
 
 /// Result type for network operations
@@ -240,6 +260,7 @@ pub mod messaging;
 pub mod sync;
 pub mod metrics;
 pub mod reputation;
+pub mod circuit_relay;
 
 // Testing modules
 #[cfg(test)]
@@ -252,6 +273,7 @@ pub use messaging::{MessageProcessor, MessageEnvelope, DefaultMessageHandler};
 pub use sync::{Synchronizer, SyncConfig, SyncState};
 pub use metrics::{NetworkMetrics, Timer, start_metrics_server};
 pub use reputation::{ReputationManager, ReputationConfig, ReputationChange, PeerReputation};
+pub use circuit_relay::{CircuitRelayConfig, CircuitRelayManager};
 
 // Re-export the messaging types for convenience
 pub mod messages {

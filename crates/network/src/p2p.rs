@@ -31,6 +31,7 @@ use crate::{
 use crate::metrics::NetworkMetrics;
 use crate::reputation::{ReputationManager, ReputationConfig, ReputationChange};
 use crate::messaging;
+use crate::circuit_relay::{CircuitRelayConfig, CircuitRelayManager, configure_relay_transport};
 
 // Topic names for gossipsub
 const TOPIC_IDENTITY: &str = "icn/identity/v1";
@@ -39,7 +40,7 @@ const TOPIC_LEDGER: &str = "icn/ledger/v1";
 const TOPIC_GOVERNANCE: &str = "icn/governance/v1";
 
 /// Configuration for the P2P network
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct P2pConfig {
     /// Local listening addresses
     pub listen_addresses: Vec<Multiaddr>,
@@ -69,6 +70,10 @@ pub struct P2pConfig {
     pub enable_message_prioritization: bool,
     /// Priority configuration
     pub priority_config: Option<messaging::PriorityConfig>,
+    /// Enable circuit relay
+    pub enable_circuit_relay: bool,
+    /// Circuit relay configuration
+    pub circuit_relay_config: Option<CircuitRelayConfig>,
 }
 
 impl Default for P2pConfig {
@@ -80,14 +85,16 @@ impl Default for P2pConfig {
             enable_kademlia: true,
             gossipsub_validation: ValidationMode::Strict,
             message_timeout: Duration::from_secs(10),
-            keep_alive: Duration::from_secs(20),
+            keep_alive: Duration::from_secs(120),
             peer_store_path: None,
             enable_metrics: false,
-            metrics_address: Some("127.0.0.1:9090".to_string()),
-            enable_reputation: true,
+            metrics_address: None,
+            enable_reputation: false,
             reputation_config: None,
             enable_message_prioritization: true,
             priority_config: None,
+            enable_circuit_relay: false,
+            circuit_relay_config: None,
         }
     }
 }
@@ -199,6 +206,8 @@ pub struct P2pNetwork {
     reputation: Option<Arc<ReputationManager>>,
     /// Message processor for prioritized handling
     message_processor: Option<Arc<messaging::MessageProcessor>>,
+    /// Circuit relay manager
+    circuit_relay: Option<Arc<CircuitRelayManager>>,
 }
 
 impl P2pNetwork {
@@ -207,61 +216,80 @@ impl P2pNetwork {
         storage: Arc<dyn Storage>,
         config: P2pConfig,
     ) -> NetworkResult<Self> {
-        // Generate or load key pair
+        // Generate or load keypair
         let key_pair = Self::load_or_create_keypair(storage.clone()).await?;
         let local_peer_id = PeerId::from(key_pair.public());
         
-        // Create the command channel
+        debug!("Local peer ID: {}", local_peer_id);
+        
+        // Create message handlers map
+        let handlers = Arc::new(RwLock::new(HashMap::new()));
+        
+        // Create peer info map
+        let peers = Arc::new(RwLock::new(HashMap::new()));
+        
+        // Create command channel
         let (command_tx, command_rx) = mpsc::channel(100);
         
-        // Initialize metrics if enabled
+        // Create metrics if enabled
         let metrics = if config.enable_metrics {
             let metrics = NetworkMetrics::new();
             
-            // Start the metrics server if an address is provided
+            // Start metrics server if address is provided
             if let Some(addr) = &config.metrics_address {
-                crate::metrics::start_metrics_server(metrics.clone(), addr).await?;
-                crate::metrics::start_metrics_collection(metrics.clone()).await;
+                start_metrics_server(metrics.clone(), addr).await?;
             }
             
             Some(metrics)
         } else {
             None
         };
-
-        // Initialize reputation system if enabled
+        
+        // Create reputation manager if enabled
         let reputation = if config.enable_reputation {
-            let reputation_config = config.reputation_config.clone().unwrap_or_default();
-            let manager = ReputationManager::new(
-                reputation_config,
-                Some(storage.clone()),
-                metrics.clone(),
-            );
+            let rep_config = config.reputation_config.clone().unwrap_or_default();
+            let manager = ReputationManager::new(rep_config, metrics.clone());
             
-            // Start the reputation manager
-            manager.start().await?;
+            // Start decay task
+            manager.start_decay_task();
             
             Some(Arc::new(manager))
         } else {
             None
         };
         
-        // Initialize the handlers collection
-        let handlers = Arc::new(RwLock::new(HashMap::new()));
-        
-        // Initialize message processor if enabled
+        // Create message processor if prioritization is enabled
         let message_processor = if config.enable_message_prioritization {
             let priority_config = config.priority_config.clone().unwrap_or_default();
-            Some(Arc::new(messaging::MessageProcessor::new(
+            let processor = messaging::MessageProcessor::new(
                 handlers.clone(),
                 priority_config,
                 reputation.clone(),
                 metrics.clone(),
-            )))
+            );
+            
+            Some(Arc::new(processor))
         } else {
             None
         };
-
+        
+        // Create circuit relay manager if enabled
+        let circuit_relay = if config.enable_circuit_relay {
+            let relay_config = config.circuit_relay_config.clone().unwrap_or_default();
+            let manager = CircuitRelayManager::new(relay_config, metrics.clone());
+            
+            // Initialize relay manager
+            manager.initialize().await?;
+            
+            // Start cleanup task
+            manager.start_cleanup_task();
+            
+            Some(Arc::new(manager))
+        } else {
+            None
+        };
+        
+        // Create network instance
         let network = Self {
             storage,
             key_pair,
@@ -270,13 +298,14 @@ impl P2pNetwork {
             command_tx,
             task_handle: Arc::new(Mutex::new(None)),
             handlers,
-            peers: Arc::new(RwLock::new(HashMap::new())),
+            peers,
             metrics,
             reputation,
             message_processor,
+            circuit_relay,
         };
         
-        // Start the background task
+        // Start background task
         network.start_background_task(command_rx).await?;
         
         Ok(network)
@@ -334,17 +363,26 @@ impl P2pNetwork {
     
     /// Create the swarm with all network behaviors
     fn create_swarm(key_pair: &Keypair, config: &P2pConfig) -> NetworkResult<swarm::Swarm<P2pBehaviour>> {
-        // Set up an encrypted TCP transport
-        let noise_keys = noise::Keypair::<noise::X25519Spec>::new()
-            .into_authentic(key_pair)
-            .map_err(|e| NetworkError::Libp2pError(format!("Signing libp2p-noise static DH keypair failed: {}", e)))?;
+        let local_peer_id = PeerId::from(key_pair.public());
         
-        let transport = tcp::async_io::Transport::new(tcp::Config::default().nodelay(true))
-            .upgrade(upgrade::Version::V1)
-            .authenticate(noise::NoiseConfig::xx(noise_keys).into_authenticated())
-            .multiplex(yamux::YamuxConfig::default())
-            .timeout(Duration::from_secs(20))
-            .boxed();
+        // Create transport
+        let base_transport = {
+            let tcp = libp2p::tcp::tokio::Transport::default()
+                .upgrade(upgrade::Version::V1)
+                .authenticate(noise::Config::new(key_pair)?)
+                .multiplex(yamux::Config::default())
+                .timeout(config.keep_alive);
+            
+            tcp.boxed()
+        };
+        
+        // Add circuit relay transport if enabled
+        let transport = if config.enable_circuit_relay {
+            let relay_config = config.circuit_relay_config.clone().unwrap_or_default();
+            configure_relay_transport(base_transport, local_peer_id, &relay_config)?
+        } else {
+            base_transport
+        };
         
         // Set up gossipsub
         let gossipsub_config = gossipsub::ConfigBuilder::default()
@@ -1196,6 +1234,94 @@ impl P2pNetwork {
             Ok((0, None, None))
         }
     }
+    
+    /// Connect to a peer using the best available method (direct or relay)
+    pub async fn smart_connect(&self, peer_id: &PeerId) -> NetworkResult<()> {
+        // First try direct connection if we have addresses
+        let connected = {
+            let peers = self.peers.read().await;
+            if let Some(peer_info) = peers.get(peer_id) {
+                if !peer_info.addresses.is_empty() {
+                    // Try direct connection first
+                    for addr in &peer_info.addresses {
+                        let result = self.connect(addr).await;
+                        if result.is_ok() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            false
+        };
+        
+        if !connected && self.config.enable_circuit_relay {
+            // Try connecting via relay if direct connection failed
+            if let Some(relay_manager) = &self.circuit_relay {
+                match relay_manager.connect_via_relay(peer_id).await {
+                    Ok(relay_addr) => {
+                        // Connect via the relay address
+                        self.connect(&relay_addr).await?;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!("Failed to connect via relay to {}: {}", peer_id, e);
+                    }
+                }
+            }
+        }
+        
+        Err(NetworkError::ConnectionFailed)
+    }
+    
+    /// Check if a peer is connected via relay
+    pub async fn is_relay_connection(&self, peer_id: &PeerId) -> bool {
+        if let Some(relay_manager) = &self.circuit_relay {
+            relay_manager.is_relayed_connection(peer_id).await
+        } else {
+            false
+        }
+    }
+    
+    /// Get the relay used for a connection
+    pub async fn get_relay_for_connection(&self, peer_id: &PeerId) -> Option<PeerId> {
+        if let Some(relay_manager) = &self.circuit_relay {
+            relay_manager.get_relay_for_connection(peer_id).await
+        } else {
+            None
+        }
+    }
+    
+    /// Get a list of known relay servers
+    pub async fn get_relay_servers(&self) -> Vec<String> {
+        if let Some(relay_manager) = &self.circuit_relay {
+            let servers = relay_manager.get_relay_servers().await;
+            servers.into_iter().map(|server| server.peer_id.to_string()).collect()
+        } else {
+            Vec::new()
+        }
+    }
+    
+    /// Add a relay server
+    pub async fn add_relay_server(&self, addr: &Multiaddr) -> NetworkResult<()> {
+        if let Some(relay_manager) = &self.circuit_relay {
+            if let Some(peer_id) = extract_peer_id(addr) {
+                relay_manager.add_relay_server(peer_id, vec![addr.clone()]).await?;
+                Ok(())
+            } else {
+                Err(NetworkError::InvalidRelayAddress)
+            }
+        } else {
+            Err(NetworkError::ServiceNotEnabled("Circuit relay is not enabled".to_string()))
+        }
+    }
+}
+
+// Extract peer ID from a multiaddress
+fn extract_peer_id(addr: &Multiaddr) -> Option<PeerId> {
+    addr.iter().find_map(|p| match p {
+        libp2p::multiaddr::Protocol::P2p(hash) => Some(PeerId::from_multihash(hash).ok()?),
+        _ => None,
+    })
 }
 
 #[async_trait]
