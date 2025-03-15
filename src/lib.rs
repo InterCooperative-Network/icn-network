@@ -22,6 +22,7 @@ pub mod error;
 pub mod economics;
 pub mod governance;
 pub mod integration;
+pub mod reputation;
 
 // Public re-exports from external crates 
 // (commented out as they may not be available in this project)

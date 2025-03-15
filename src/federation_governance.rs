@@ -1,9 +1,11 @@
 use std::error::Error;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use crate::identity::Identity;
 use crate::storage::Storage;
+use crate::reputation::{ReputationSystem, AttestationType, Evidence as ReputationEvidence};
 
 // Governance error types
 #[derive(Debug)]
@@ -134,17 +136,24 @@ pub struct Resolution {
 
 // Federation governance system
 pub struct FederationGovernance {
-    identity: Identity,
-    storage: Storage,
+    identity: Arc<Identity>,
+    storage: Arc<Storage>,
+    reputation: Option<Arc<ReputationSystem>>,
 }
 
 impl FederationGovernance {
     // Create a new governance system
-    pub fn new(identity: Identity, storage: Storage) -> Self {
+    pub fn new(identity: Arc<Identity>, storage: Arc<Storage>) -> Self {
         FederationGovernance {
             identity,
             storage,
+            reputation: None,
         }
+    }
+    
+    // Set the reputation system (called after initialization)
+    pub fn set_reputation_system(&mut self, reputation: Arc<ReputationSystem>) {
+        self.reputation = Some(reputation);
     }
 
     // Create a new proposal
@@ -179,21 +188,49 @@ impl FederationGovernance {
         };
 
         // Store the proposal
-        self.storage.put_json(
+        self.storage.store_json(
             &format!("proposals/{}", proposal.id),
             &proposal,
         )?;
+        
+        // Add reputation for creating a quality proposal
+        if let Some(reputation) = &self.reputation {
+            // Creating a proposal gives a small reputation boost
+            let evidence = vec![
+                ReputationEvidence {
+                    evidence_type: "proposal_created".to_string(),
+                    evidence_id: proposal.id.clone(),
+                    description: format!("Created proposal: {}", title),
+                    timestamp: now,
+                    data: Some(serde_json::to_value(&proposal)?),
+                }
+            ];
+            
+            // Try to create an attestation for governance participation
+            let _ = reputation.attestation_manager().create_attestation(
+                &self.identity.did,
+                AttestationType::GovernanceQuality,
+                0.5, // Moderate score for creating a proposal
+                serde_json::json!({
+                    "action": "proposal_creation",
+                    "proposal_type": format!("{:?}", proposal_type),
+                }),
+                evidence,
+                1, // Self-attestation
+                Some(180), // Valid for 180 days
+            );
+        }
 
         Ok(proposal)
     }
 
     // Vote on a proposal
-    pub fn vote(
+    pub async fn vote(
         &self,
         proposal_id: &str,
         vote: bool,
     ) -> Result<(), Box<dyn Error>> {
-        let mut proposal: Proposal = self.storage.get_json(
+        let mut proposal: Proposal = self.storage.load_json(
             &format!("proposals/{}", proposal_id),
         )?;
 
@@ -218,7 +255,7 @@ impl FederationGovernance {
         let vote_data = serde_json::to_vec(&(proposal_id, vote, now))?;
         let signature = self.identity.sign(&vote_data)?;
 
-        let vote = Vote {
+        let vote_entry = Vote {
             member_did: self.identity.did.clone(),
             cooperative_id: self.identity.coop_id.clone(),
             vote,
@@ -226,21 +263,52 @@ impl FederationGovernance {
             signature: signature.to_bytes().to_vec(),
         };
 
-        proposal.votes.push(vote);
-        self.storage.put_json(
+        proposal.votes.push(vote_entry);
+        self.storage.store_json(
             &format!("proposals/{}", proposal_id),
             &proposal,
         )?;
+        
+        // Add reputation for voting participation
+        if let Some(reputation) = &self.reputation {
+            // Voting gives a small reputation boost
+            let evidence = vec![
+                ReputationEvidence {
+                    evidence_type: "vote_cast".to_string(),
+                    evidence_id: format!("{}:{}", proposal_id, now),
+                    description: format!("Voted on proposal: {}", proposal.title),
+                    timestamp: now,
+                    data: Some(serde_json::json!({
+                        "proposal_id": proposal_id,
+                        "vote": vote,
+                    })),
+                }
+            ];
+            
+            // Try to create an attestation for governance participation
+            let _ = reputation.attestation_manager().create_attestation(
+                &self.identity.did,
+                AttestationType::GovernanceQuality,
+                0.3, // Small score for basic voting
+                serde_json::json!({
+                    "action": "vote_participation",
+                    "proposal_type": format!("{:?}", proposal.proposal_type),
+                }),
+                evidence,
+                1, // Self-attestation
+                Some(90), // Valid for 90 days
+            );
+        }
 
         Ok(())
     }
 
-    // Process a proposal
-    pub fn process_proposal(
+    // Process a proposal and update participant reputation
+    pub async fn process_proposal(
         &self,
         proposal_id: &str,
     ) -> Result<(), Box<dyn Error>> {
-        let mut proposal: Proposal = self.storage.get_json(
+        let mut proposal: Proposal = self.storage.load_json(
             &format!("proposals/{}", proposal_id),
         )?;
 
@@ -257,7 +325,7 @@ impl FederationGovernance {
         // Check if quorum was reached
         if proposal.votes.len() < proposal.quorum as usize {
             proposal.status = ProposalStatus::Failed;
-            self.storage.put_json(
+            self.storage.store_json(
                 &format!("proposals/{}", proposal_id),
                 &proposal,
             )?;
@@ -279,7 +347,7 @@ impl FederationGovernance {
         };
 
         // Store updated proposal
-        self.storage.put_json(
+        self.storage.store_json(
             &format!("proposals/{}", proposal_id),
             &proposal,
         )?;
@@ -287,6 +355,93 @@ impl FederationGovernance {
         // If passed, apply the changes
         if passed {
             self.apply_proposal_changes(&proposal)?;
+        }
+        
+        // Update reputation for all participants
+        if let Some(reputation) = &self.reputation {
+            // For the proposal creator, add reputation based on outcome
+            let proposal_quality_score = if passed {
+                // Higher score if the proposal was successful
+                0.7 
+            } else {
+                // Lower score if the proposal failed
+                0.2
+            };
+            
+            let creator_evidence = vec![
+                ReputationEvidence {
+                    evidence_type: "proposal_outcome".to_string(),
+                    evidence_id: format!("{}:outcome", proposal_id),
+                    description: format!("Proposal outcome: {}", 
+                        if passed { "Passed" } else { "Failed" }),
+                    timestamp: now,
+                    data: Some(serde_json::json!({
+                        "proposal_id": proposal_id,
+                        "passed": passed,
+                        "yes_votes": yes_votes,
+                        "total_votes": total_votes,
+                    })),
+                }
+            ];
+            
+            // Proposal creator reputation update
+            let _ = reputation.attestation_manager().create_attestation(
+                &proposal.created_by,
+                AttestationType::GovernanceQuality,
+                proposal_quality_score,
+                serde_json::json!({
+                    "action": "proposal_outcome",
+                    "proposal_type": format!("{:?}", proposal.proposal_type),
+                    "passed": passed,
+                }),
+                creator_evidence,
+                1, 
+                Some(180), // Valid for 180 days
+            );
+            
+            // For each voter, minor reputation boost for participation
+            for vote in &proposal.votes {
+                // Check if voter was on the winning side (predicted correctly)
+                let vote_aligned_with_outcome = vote.vote == passed;
+                
+                // Higher score for votes that aligned with final outcome
+                let voter_score = if vote_aligned_with_outcome {
+                    0.4 // Better score for "correct" votes
+                } else {
+                    0.2 // Lower score for "incorrect" votes but still positive for participation
+                };
+                
+                let vote_evidence = vec![
+                    ReputationEvidence {
+                        evidence_type: "vote_outcome".to_string(),
+                        evidence_id: format!("{}:vote_outcome:{}", proposal_id, vote.member_did),
+                        description: format!("Vote alignment with outcome: {}", 
+                            if vote_aligned_with_outcome { "Aligned" } else { "Not aligned" }),
+                        timestamp: now,
+                        data: Some(serde_json::json!({
+                            "proposal_id": proposal_id,
+                            "vote": vote.vote,
+                            "outcome": passed,
+                            "aligned": vote_aligned_with_outcome,
+                        })),
+                    }
+                ];
+                
+                // Create attestation for voter
+                let _ = reputation.attestation_manager().create_attestation(
+                    &vote.member_did,
+                    AttestationType::GovernanceQuality,
+                    voter_score,
+                    serde_json::json!({
+                        "action": "vote_outcome",
+                        "proposal_type": format!("{:?}", proposal.proposal_type),
+                        "vote_aligned": vote_aligned_with_outcome,
+                    }),
+                    vote_evidence,
+                    1,
+                    Some(120), // Valid for 120 days
+                );
+            }
         }
 
         Ok(())
@@ -491,4 +646,255 @@ impl FederationGovernance {
 
         Ok(())
     }
+
+    // Add a comment or deliberation to a proposal
+    pub async fn add_deliberation(
+        &self,
+        proposal_id: &str,
+        comment: &str,
+        references: Vec<String>, // References to other comments or evidence
+    ) -> Result<Deliberation, Box<dyn Error>> {
+        // Check if the proposal exists
+        let proposal: Proposal = self.storage.load_json(
+            &format!("proposals/{}", proposal_id),
+        )?;
+        
+        // Check if voting period is still active
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_secs();
+        if now > proposal.voting_end {
+            return Err(Box::new(GovernanceError::VotingPeriodExpired(
+                "Voting period has ended".to_string(),
+            )));
+        }
+        
+        // Create and sign the deliberation
+        let deliberation_data = format!("{}:{}:{}", proposal_id, comment, now);
+        let signature = self.identity.sign(deliberation_data.as_bytes())?;
+        
+        let deliberation = Deliberation {
+            id: format!("delib-{}:{}", proposal_id, now),
+            proposal_id: proposal_id.to_string(),
+            member_did: self.identity.did.clone(),
+            comment: comment.to_string(),
+            timestamp: now,
+            references,
+            signature: signature.to_bytes().to_vec(),
+        };
+        
+        // Store the deliberation
+        let deliberation_key = format!("deliberations/{}/{}", proposal_id, deliberation.id);
+        self.storage.store_json(&deliberation_key, &deliberation)?;
+        
+        // Add to list of deliberations for this proposal
+        let deliberations_key = format!("proposal_deliberations/{}", proposal_id);
+        let mut deliberation_ids: Vec<String> = self.storage
+            .load_json(&deliberations_key)
+            .unwrap_or_else(|_| Vec::new());
+        
+        deliberation_ids.push(deliberation.id.clone());
+        self.storage.store_json(&deliberations_key, &deliberation_ids)?;
+        
+        // Add reputation for substantive deliberation
+        if let Some(reputation) = &self.reputation {
+            // Quality of deliberation based on length and references
+            let comment_length = comment.len();
+            let reference_count = references.len();
+            
+            // Calculate a quality score based on comment length and references
+            // More thought-out comments with references get higher scores
+            let quality_factor = (comment_length as f64 / 500.0).min(1.0) * 0.7 + 
+                                (reference_count as f64 / 3.0).min(1.0) * 0.3;
+            
+            // Scale the base score by quality
+            let deliberation_score = 0.4 * quality_factor + 0.2; // 0.2 to 0.6 range
+            
+            let evidence = vec![
+                ReputationEvidence {
+                    evidence_type: "deliberation".to_string(),
+                    evidence_id: deliberation.id.clone(),
+                    description: format!("Added deliberation to proposal: {}", proposal.title),
+                    timestamp: now,
+                    data: Some(serde_json::json!({
+                        "proposal_id": proposal_id,
+                        "comment_length": comment_length,
+                        "references": reference_count,
+                    })),
+                }
+            ];
+            
+            // Create attestation for deliberation
+            let _ = reputation.attestation_manager().create_attestation(
+                &self.identity.did,
+                AttestationType::GovernanceQuality,
+                deliberation_score,
+                serde_json::json!({
+                    "action": "deliberation",
+                    "proposal_type": format!("{:?}", proposal.proposal_type),
+                    "comment_length": comment_length,
+                    "references": reference_count,
+                }),
+                evidence,
+                1,
+                Some(150), // Valid for 150 days
+            );
+        }
+        
+        Ok(deliberation)
+    }
+    
+    // Get all deliberations for a proposal
+    pub fn get_deliberations(
+        &self,
+        proposal_id: &str,
+    ) -> Result<Vec<Deliberation>, Box<dyn Error>> {
+        // Get list of deliberation IDs
+        let deliberations_key = format!("proposal_deliberations/{}", proposal_id);
+        let deliberation_ids: Vec<String> = self.storage
+            .load_json(&deliberations_key)
+            .unwrap_or_else(|_| Vec::new());
+        
+        // Load each deliberation
+        let mut deliberations = Vec::new();
+        for id in deliberation_ids {
+            let key = format!("deliberations/{}/{}", proposal_id, id);
+            let deliberation: Deliberation = self.storage.load_json(&key)?;
+            deliberations.push(deliberation);
+        }
+        
+        // Sort by timestamp
+        deliberations.sort_by_key(|d| d.timestamp);
+        
+        Ok(deliberations)
+    }
+    
+    // Calculate governance participation score for a member
+    pub async fn calculate_governance_score(
+        &self,
+        member_did: &str,
+    ) -> Result<GovernanceParticipationScore, Box<dyn Error>> {
+        // Get all proposals
+        let proposal_ids: Vec<String> = self.storage
+            .list_keys("proposals/")
+            .unwrap_or_else(|_| Vec::new());
+        
+        let mut total_proposals = 0;
+        let mut proposals_voted = 0;
+        let mut proposals_created = 0;
+        let mut deliberations_count = 0;
+        
+        // Collect stats about participation
+        for proposal_id in &proposal_ids {
+            let proposal: Proposal = self.storage.load_json(&format!("proposals/{}", proposal_id))?;
+            
+            // Only count completed proposals
+            if proposal.status == ProposalStatus::Passed || proposal.status == ProposalStatus::Failed {
+                total_proposals += 1;
+                
+                // Check if member created this proposal
+                if proposal.created_by == member_did {
+                    proposals_created += 1;
+                }
+                
+                // Check if member voted on this proposal
+                if proposal.votes.iter().any(|v| v.member_did == member_did) {
+                    proposals_voted += 1;
+                }
+                
+                // Count deliberations
+                let deliberations = self.get_deliberations(proposal_id)?;
+                deliberations_count += deliberations.iter()
+                    .filter(|d| d.member_did == member_did)
+                    .count();
+            }
+        }
+        
+        // Calculate participation percentages
+        let vote_participation = if total_proposals > 0 {
+            proposals_voted as f64 / total_proposals as f64
+        } else {
+            0.0
+        };
+        
+        // Calculate overall score
+        // 60% weight on voting, 20% on proposing, 20% on deliberation
+        let mut score = vote_participation * 0.6;
+        
+        // Add proposal creation component (max 5 proposals get full credit)
+        score += (proposals_created as f64 / 5.0).min(1.0) * 0.2;
+        
+        // Add deliberation component (max 10 deliberations get full credit)
+        score += (deliberations_count as f64 / 10.0).min(1.0) * 0.2;
+        
+        // Create the score object
+        let governance_score = GovernanceParticipationScore {
+            member_did: member_did.to_string(),
+            total_proposals,
+            proposals_voted,
+            proposals_created,
+            deliberations_count,
+            vote_participation,
+            overall_score: score,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)?
+                .as_secs(),
+        };
+        
+        // If reputation system is available, create an attestation based on this score
+        if let Some(reputation) = &self.reputation {
+            let evidence = vec![
+                ReputationEvidence {
+                    evidence_type: "governance_participation".to_string(),
+                    evidence_id: format!("gov_score:{}:{}", member_did, governance_score.timestamp),
+                    description: format!("Governance participation score: {:.2}", score),
+                    timestamp: governance_score.timestamp,
+                    data: Some(serde_json::to_value(&governance_score)?),
+                }
+            ];
+            
+            // Create attestation for overall governance participation
+            let _ = reputation.attestation_manager().create_attestation(
+                member_did,
+                AttestationType::GovernanceQuality,
+                score, // Use the calculated score directly
+                serde_json::json!({
+                    "action": "governance_participation",
+                    "vote_rate": vote_participation,
+                    "proposals_created": proposals_created,
+                    "deliberations": deliberations_count,
+                }),
+                evidence,
+                1,
+                Some(180), // Valid for 180 days
+            );
+        }
+        
+        Ok(governance_score)
+    }
+}
+
+// Deliberation structure for comments and discussion on proposals
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Deliberation {
+    pub id: String,
+    pub proposal_id: String,
+    pub member_did: String,
+    pub comment: String,
+    pub timestamp: u64,
+    pub references: Vec<String>, // References to other comments or evidence
+    pub signature: Vec<u8>,
+}
+
+// Governance participation score
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GovernanceParticipationScore {
+    pub member_did: String,
+    pub total_proposals: usize,
+    pub proposals_voted: usize,
+    pub proposals_created: usize,
+    pub deliberations_count: usize,
+    pub vote_participation: f64,
+    pub overall_score: f64,
+    pub timestamp: u64,
 } 

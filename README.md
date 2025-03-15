@@ -10,6 +10,7 @@ The ICN project aims to create a decentralized infrastructure that supports:
 2. **Mutual Credit Systems**: Enabling economic exchanges between cooperatives without relying on traditional currencies
 3. **Resource Sharing**: Facilitating the sharing of resources between cooperatives
 4. **Governance**: Supporting democratic decision-making processes
+5. **Reputation System**: Building trust between cooperatives through attestations and behavior tracking
 
 ## Repository Structure
 
@@ -39,6 +40,30 @@ The project is in early development, with the following components implemented:
 - **Identity System**: DID implementation with local resolution
 - **Mutual Credit**: Basic mutual credit system with account management and transactions
 - **Integration Example**: Demonstrating the interaction between identity and mutual credit systems
+- **Reputation System**: Trust scoring based on economic transactions and governance participation
+- **Governance System**: Federation governance with proposals, voting, and deliberation processes
+
+## Key Features
+
+### Reputation System
+
+The reputation system provides a framework for building trust within the network by:
+
+- **Attestations**: Recording positive or negative actions by network participants
+- **Trust Scores**: Computing trust scores based on historical interactions
+- **Sybil Resistance**: Detecting potential Sybil attacks by analyzing account patterns
+- **Integration with Economic Systems**: Adjusting credit limits based on reputation
+- **Governance Participation**: Rewarding active participation in governance
+
+### Governance & Deliberation
+
+The governance system enables democratic decision-making within federations:
+
+- **Proposal Creation**: Members can create governance proposals
+- **Voting**: Democratic voting on proposals
+- **Deliberation**: Structured discussions around proposals
+- **Quality Assessment**: Evaluation of deliberation quality based on depth and references
+- **Reputation Integration**: Building reputation through governance participation
 
 ## Getting Started
 
@@ -51,7 +76,7 @@ cd standalone
 cargo run
 ```
 
-This example demonstrates the integration between the identity system and mutual credit system in a simplified manner.
+This example demonstrates the integration between the identity system and mutual credit systems in a simplified manner.
 
 ### Running the Integration Example
 
@@ -69,16 +94,19 @@ The project is following a phased development approach:
    - Identity system with DIDs
    - Basic mutual credit implementation
    - Integration between components
+   - Reputation and governance systems
 
 2. **Phase 2 (Planned)**: Enhanced functionality
    - Federation of DIDs across networks
    - Advanced credit policies and governance
    - Resource sharing mechanisms
+   - Advanced reputation metrics and analysis
 
 3. **Phase 3 (Future)**: Network deployment
    - Decentralized network deployment
    - Integration with existing cooperative networks
    - User-friendly interfaces
+   - Reputation visualization and recommendation systems
 
 ## Contributing
 
