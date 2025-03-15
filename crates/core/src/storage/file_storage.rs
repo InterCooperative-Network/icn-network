@@ -169,8 +169,8 @@ impl FileStorage {
                     result.push(rel_path_str);
                 }
             } else if path.is_dir() {
-                // Recursively list subdirectories
-                let sub_results = self.list_directory(&path).await?;
+                // Recursively list subdirectories with proper async recursion
+                let sub_results = Box::pin(self.list_directory(&path)).await?;
                 result.extend(sub_results);
             }
         }

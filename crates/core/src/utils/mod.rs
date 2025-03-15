@@ -69,7 +69,7 @@ where
 }
 
 /// A unit of resource measurement
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ResourceUnit {
     /// Count (no units)
     Count,

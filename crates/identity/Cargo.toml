@@ -2,7 +2,7 @@
 name = "icn-identity"
 version = "0.1.0"
 edition = "2021"
-description = "Decentralized Identity (DID) implementation for ICN"
+description = "Identity system for ICN"
 authors = ["ICN Developers"]
 license = "MIT OR Apache-2.0"
 

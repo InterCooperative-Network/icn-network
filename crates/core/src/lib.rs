@@ -29,4 +29,39 @@ pub fn init_tracing() {
     // Set the subscriber as the global default
     tracing::subscriber::set_global_default(subscriber)
         .expect("Failed to set global tracing subscriber");
+}
+
+// Core functionality for the ICN system
+
+/// Common utilities
+pub mod common {
+    /// Common types for ICN
+    pub mod types {
+        /// A simple type alias for a hash
+        pub type Hash = String;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::mock_storage::MockStorage;
+    
+    #[tokio::test]
+    async fn test_mock_storage() {
+        let storage = MockStorage::new();
+        
+        // Test put and get
+        storage.put("test_key", b"test_value").await.unwrap();
+        let value = storage.get("test_key").await.unwrap();
+        assert_eq!(value, Some(b"test_value".to_vec()));
+        
+        // Test exists
+        assert!(storage.exists("test_key").await.unwrap());
+        assert!(!storage.exists("nonexistent_key").await.unwrap());
+        
+        // Test delete
+        storage.delete("test_key").await.unwrap();
+        assert!(!storage.exists("test_key").await.unwrap());
+    }
 } 

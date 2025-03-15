@@ -2,7 +2,7 @@
 name = "icn-governance"
 version = "0.1.0"
 edition = "2021"
-description = "Federated governance system for ICN"
+description = "Governance system for ICN"
 authors = ["ICN Developers"]
 license = "MIT OR Apache-2.0"
 

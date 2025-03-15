@@ -28,7 +28,7 @@ impl CommandLineConfigProvider {
     /// Create a new provider with a specific base configuration
     pub fn with_base_config(base_config: NodeConfig) -> Self {
         Self {
-            base_config,
+            base_config: base_config.clone(),
             config: Arc::new(RwLock::new(None)),
             arg_matches: Arc::new(Self::parse_args(&base_config)),
         }
@@ -37,7 +37,7 @@ impl CommandLineConfigProvider {
     /// Create a new provider with specific command line arguments
     pub fn with_args(base_config: NodeConfig, args: Vec<String>) -> Self {
         Self {
-            base_config,
+            base_config: base_config.clone(),
             config: Arc::new(RwLock::new(None)),
             arg_matches: Arc::new(Self::create_app(&base_config).get_matches_from(args)),
         }
@@ -50,16 +50,24 @@ impl CommandLineConfigProvider {
     
     /// Create the command line parser
     fn create_app(base_config: &NodeConfig) -> Command {
+        // Get string values from the base config to use as references
+        let host = &base_config.network.host;
+        let port = base_config.network.port.to_string();
+        let friendly_name = &base_config.identity.friendly_name;
+        let environment = &base_config.environment;
+        let log_level = &base_config.log_level;
+        
         Command::new("icn-node")
             .version(env!("CARGO_PKG_VERSION"))
-            .about("InterCooperative Network Node")
+            .author(env!("CARGO_PKG_AUTHORS"))
+            .about("ICN Node")
             // Network configuration
             .arg(
                 Arg::new("host")
                     .long("host")
                     .value_name("HOST")
                     .help("Host to bind to")
-                    .default_value(&base_config.network.host)
+                    .default_value("0.0.0.0")
             )
             .arg(
                 Arg::new("port")
@@ -67,7 +75,7 @@ impl CommandLineConfigProvider {
                     .short('p')
                     .value_name("PORT")
                     .help("Port to bind to")
-                    .default_value(&base_config.network.port.to_string())
+                    .default_value("8000")
             )
             .arg(
                 Arg::new("bootstrap")
@@ -82,7 +90,7 @@ impl CommandLineConfigProvider {
                     .long("storage")
                     .value_name("PATH")
                     .help("Path to storage directory")
-                    .default_value(base_config.storage.path.to_str().unwrap_or("data"))
+                    .default_value("data")
             )
             .arg(
                 Arg::new("sync-writes")
@@ -116,7 +124,7 @@ impl CommandLineConfigProvider {
                     .long("key-file")
                     .value_name("FILE")
                     .help("Path to identity key file")
-                    .default_value(base_config.identity.key_file.to_str().unwrap_or("identity.key"))
+                    .default_value("identity.key")
             )
             .arg(
                 Arg::new("generate-identity")
@@ -132,26 +140,26 @@ impl CommandLineConfigProvider {
                     .conflicts_with("generate-identity")
             )
             .arg(
-                Arg::new("name")
-                    .long("name")
+                Arg::new("friendly-name")
+                    .long("friendly-name")
                     .value_name("NAME")
                     .help("Friendly name for this node")
-                    .default_value(&base_config.identity.friendly_name)
+                    .default_value("icn-node")
             )
             // Other configuration
             .arg(
                 Arg::new("environment")
-                    .long("env")
+                    .long("environment")
                     .value_name("ENV")
                     .help("Environment (development, production)")
-                    .default_value(&base_config.environment)
+                    .default_value("development")
             )
             .arg(
                 Arg::new("log-level")
                     .long("log-level")
                     .value_name("LEVEL")
                     .help("Log level (trace, debug, info, warn, error)")
-                    .default_value(&base_config.log_level)
+                    .default_value("info")
             )
             .arg(
                 Arg::new("config-file")
@@ -227,7 +235,7 @@ impl ConfigProvider for CommandLineConfigProvider {
             config.identity.generate_if_missing = false;
         }
         
-        if let Some(name) = matches.get_one::<String>("name") {
+        if let Some(name) = matches.get_one::<String>("friendly-name") {
             config.identity.friendly_name = name.clone();
         }
         

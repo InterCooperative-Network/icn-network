@@ -2,15 +2,16 @@
 name = "icn-cli"
 version = "0.1.0"
 edition = "2021"
-description = "CLI for interacting with ICN nodes"
+description = "ICN Command Line Interface"
 authors = ["ICN Developers"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 icn-core = { path = "../../crates/core" }
 icn-identity = { path = "../../crates/identity" }
-icn-governance = { path = "../../crates/governance" }
 icn-ledger = { path = "../../crates/ledger" }
+icn-governance = { path = "../../crates/governance" }
+icn-network = { path = "../../crates/network" }
 icn-apps = { path = "../../crates/apps" }
 
 tokio = { workspace = true }
@@ -18,13 +19,15 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+clap = { version = "4.4", features = ["derive"] }
 
 # TUI (Terminal User Interface)
 ratatui = "0.22"
 crossterm = "0.26"
-clap = { version = "4.3", features = ["derive"] }
+
+[[bin]]
+name = "icn-cli"
+path = "src/main.rs"
 
 [dev-dependencies]
 tokio-test = "0.4" 

@@ -2,15 +2,16 @@
 name = "icn-node"
 version = "0.1.0"
 edition = "2021"
-description = "ICN Node - The main executable for running an ICN node"
+description = "ICN Node binary"
 authors = ["ICN Developers"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 icn-core = { path = "../../crates/core" }
 icn-identity = { path = "../../crates/identity" }
-icn-governance = { path = "../../crates/governance" }
 icn-ledger = { path = "../../crates/ledger" }
+icn-governance = { path = "../../crates/governance" }
+icn-network = { path = "../../crates/network" }
 icn-apps = { path = "../../crates/apps" }
 
 tokio = { workspace = true }
@@ -27,4 +28,8 @@ dotenv = "0.15"
 clap = { version = "4.3", features = ["derive"] }
 
 [dev-dependencies]
-tokio-test = "0.4" 
+tokio-test = "0.4"
+
+[[bin]]
+name = "icn-node"
+path = "src/main.rs" 

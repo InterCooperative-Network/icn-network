@@ -8,6 +8,7 @@ use thiserror::Error;
 use ring::digest;
 use ring::signature::{self, Ed25519KeyPair, KeyPair};
 use rand::rngs::OsRng;
+use serde::{Serialize, Deserialize};
 
 /// Error types for cryptographic operations
 #[derive(Error, Debug)]
@@ -28,6 +29,10 @@ pub enum CryptoError {
     #[error("Hashing error: {0}")]
     HashingError(String),
     
+    /// Error during serialization
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
+    
     /// IO error
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
@@ -37,7 +42,7 @@ pub enum CryptoError {
 pub type CryptoResult<T> = Result<T, CryptoError>;
 
 /// A hash value
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Hash(pub Vec<u8>);
 
 impl Hash {
@@ -77,7 +82,7 @@ impl fmt::Display for Hash {
 }
 
 /// A digital signature
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signature(pub Vec<u8>);
 
 impl Signature {

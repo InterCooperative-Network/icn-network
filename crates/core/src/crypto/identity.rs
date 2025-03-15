@@ -79,12 +79,14 @@ impl IdentityKeyPair {
         self.key_pair.sign(message)
     }
     
-    /// Create a signed message with this identity
-    pub fn create_signed_message<T: Serialize>(&self, content: &T) -> CryptoResult<SignedMessage<T>> {
+    /// Create a signed message with this identity's key
+    pub fn create_signed_message<T: Serialize + Clone>(&self, content: &T) -> CryptoResult<SignedMessage<T>> {
+        // Serialize the content
         let content_bytes = serde_json::to_vec(content)
             .map_err(|e| CryptoError::SerializationError(format!("Failed to serialize content: {}", e)))?;
         
-        let signature = self.sign(&content_bytes);
+        // Sign the content
+        let signature = self.key_pair.sign(&content_bytes);
         
         Ok(SignedMessage {
             content: content.clone(),

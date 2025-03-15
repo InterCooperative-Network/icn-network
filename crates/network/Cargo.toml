@@ -8,9 +8,9 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 icn-core = { path = "../core" }
-icn-identity = { path = "../identity" }
-icn-ledger = { path = "../ledger" }
-icn-governance = { path = "../governance" }
+# icn-identity = { path = "../identity" }
+# icn-ledger = { path = "../ledger" }
+# icn-governance = { path = "../governance" }
 
 # Async runtime and utilities
 tokio = { workspace = true, features = ["full"] }
@@ -19,7 +19,7 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 
 # Networking
-libp2p = { version = "0.53", features = ["tcp-tokio", "noise", "yamux", "kad", "identify", "gossipsub", "mdns", "ping", "request-response"] }
+libp2p = { version = "0.53", features = ["tokio", "noise", "yamux", "kad", "identify", "gossipsub", "mdns", "ping", "request-response"] }
 multiaddr = "0.18.0"
 
 # Serialization

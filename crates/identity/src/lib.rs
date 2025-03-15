@@ -328,4 +328,38 @@ pub use mock::MockIdentityProvider;
 
 // Re-exports
 pub use reputation::{Reputation, ReputationScore, ReputationManager};
-pub use attestation::{Attestation, AttestationManager, AttestationVerifier}; 
+pub use attestation::{Attestation, AttestationManager, AttestationVerifier};
+
+// ICN Identity crate
+
+//! Identity system for ICN, including DIDs and credentials.
+
+/// Identity types and utilities
+pub mod identity {
+    /// A simple identity struct
+    #[derive(Debug, Clone)]
+    pub struct Identity {
+        /// The identifier for this identity
+        pub id: String,
+    }
+
+    impl Identity {
+        /// Create a new identity
+        pub fn new(id: &str) -> Self {
+            Self {
+                id: id.to_string(),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_identity_creation() {
+        let identity = identity::Identity::new("test-id");
+        assert_eq!(identity.id, "test-id");
+    }
+} 

@@ -420,4 +420,46 @@ pub mod execution;
 // Re-exports
 pub use manager::GovernanceManager;
 pub use voting::{VotingScheme, SimpleVoting, WeightedVoting};
-pub use execution::ProposalExecutor; 
+pub use execution::ProposalExecutor;
+
+// ICN Governance crate
+
+//! Governance system for ICN, including proposals and voting.
+
+/// Governance types and utilities
+pub mod governance {
+    /// A simple proposal struct
+    #[derive(Debug, Clone)]
+    pub struct Proposal {
+        /// The identifier for this proposal
+        pub id: String,
+        /// The title of the proposal
+        pub title: String,
+        /// The description of the proposal
+        pub description: String,
+    }
+
+    impl Proposal {
+        /// Create a new proposal
+        pub fn new(id: &str, title: &str, description: &str) -> Self {
+            Self {
+                id: id.to_string(),
+                title: title.to_string(),
+                description: description.to_string(),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_proposal_creation() {
+        let proposal = governance::Proposal::new("test-id", "Test Proposal", "A test proposal");
+        assert_eq!(proposal.id, "test-id");
+        assert_eq!(proposal.title, "Test Proposal");
+        assert_eq!(proposal.description, "A test proposal");
+    }
+} 
