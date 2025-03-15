@@ -353,4 +353,197 @@ async fn test_direct_messaging() {
     // Clean up
     network1.stop().await.unwrap();
     network2.stop().await.unwrap();
+}
+
+#[cfg(test)]
+mod reputation_tests {
+    use super::*;
+    use crate::reputation::{ReputationManager, ReputationConfig, ReputationChange};
+    use libp2p::PeerId;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_reputation_integration() {
+        // Create test networks
+        let (network1, peer_id1, _) = create_test_network(10201).await;
+        let (network2, peer_id2, _) = create_test_network(10202).await;
+        
+        // Enable reputation system
+        let mut config1 = P2pConfig::default();
+        config1.listen_addresses = vec!["/ip4/127.0.0.1/tcp/10203".parse().unwrap()];
+        config1.enable_reputation = true;
+        
+        let storage1 = Arc::new(MockStorage::new());
+        let reputation_network = P2pNetwork::new(storage1, config1).await.unwrap();
+        reputation_network.start().await.unwrap();
+        
+        // Get the reputation manager
+        let reputation = reputation_network.reputation_manager().unwrap();
+        
+        // Test recording reputation changes
+        let score1 = reputation.record_change(&peer_id2, ReputationChange::ConnectionEstablished).await.unwrap();
+        assert_eq!(score1, 10);
+        
+        let score2 = reputation.record_change(&peer_id2, ReputationChange::MessageSuccess).await.unwrap();
+        assert_eq!(score2, 15);
+        
+        // Test getting reputation
+        let rep = reputation.get_reputation(&peer_id2).await.unwrap();
+        assert_eq!(rep.score(), 15);
+        
+        // Test banning and checking ban status
+        assert!(!reputation.is_banned(&peer_id2).await);
+        reputation.ban_peer(&peer_id2).await.unwrap();
+        assert!(reputation.is_banned(&peer_id2).await);
+        
+        // Test unbanning
+        reputation.unban_peer(&peer_id2).await.unwrap();
+        assert!(!reputation.is_banned(&peer_id2).await);
+        
+        // Clean up
+        reputation_network.stop().await.unwrap();
+        network1.stop().await.unwrap();
+        network2.stop().await.unwrap();
+    }
+    
+    #[tokio::test]
+    async fn test_automatic_ban() {
+        // Create a custom reputation config with a high ban threshold for testing
+        let config = ReputationConfig {
+            ban_threshold: -25,
+            ..Default::default()
+        };
+        
+        let storage = Arc::new(MockStorage::new());
+        let reputation = ReputationManager::new(config, Some(storage), None);
+        reputation.start().await.unwrap();
+        
+        let peer_id = PeerId::random();
+        
+        // Not banned initially
+        assert!(!reputation.is_banned(&peer_id).await);
+        
+        // Record negative changes until the ban threshold is reached
+        reputation.record_change(&peer_id, ReputationChange::InvalidMessage).await.unwrap(); // -20
+        assert!(!reputation.is_banned(&peer_id).await);
+        
+        reputation.record_change(&peer_id, ReputationChange::MessageFailure).await.unwrap(); // -10 (total -30)
+        
+        // Should be banned now because score <= ban_threshold
+        assert!(reputation.is_banned(&peer_id).await);
+        
+        // Clean up
+        reputation.stop().await.unwrap();
+    }
+    
+    #[tokio::test]
+    async fn test_reputation_decay() {
+        // Create a configuration with fast decay for testing
+        let config = ReputationConfig {
+            decay_factor: 0.5,
+            decay_interval: Duration::from_millis(100),
+            ..Default::default()
+        };
+        
+        let storage = Arc::new(MockStorage::new());
+        let reputation = ReputationManager::new(config, Some(storage), None);
+        reputation.start().await.unwrap();
+        
+        let peer_id = PeerId::random();
+        
+        // Set a high score
+        reputation.record_change(&peer_id, ReputationChange::Manual(100)).await.unwrap();
+        assert_eq!(reputation.get_reputation(&peer_id).await.unwrap().score(), 100);
+        
+        // Wait for decay to happen
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        
+        // Score should have decayed
+        let new_score = reputation.get_reputation(&peer_id).await.unwrap().score();
+        assert!(new_score < 100, "Score should have decayed from 100, but is {}", new_score);
+        
+        // Clean up
+        reputation.stop().await.unwrap();
+    }
+    
+    #[tokio::test]
+    async fn test_response_time_tracking() {
+        let config = ReputationConfig {
+            fast_response_threshold: 50,
+            slow_response_threshold: 200,
+            ..Default::default()
+        };
+        
+        let storage = Arc::new(MockStorage::new());
+        let reputation = ReputationManager::new(config, Some(storage), None);
+        reputation.start().await.unwrap();
+        
+        let peer_id = PeerId::random();
+        
+        // Record fast response (should increase reputation)
+        reputation.record_response_time(&peer_id, Duration::from_millis(20)).await.unwrap();
+        let score1 = reputation.get_reputation(&peer_id).await.unwrap().score();
+        assert!(score1 > 0, "Score should be positive after fast response");
+        
+        // Record slow response (should decrease reputation)
+        reputation.record_response_time(&peer_id, Duration::from_millis(300)).await.unwrap();
+        let score2 = reputation.get_reputation(&peer_id).await.unwrap().score();
+        assert!(score2 < score1, "Score should decrease after slow response");
+        
+        // Clean up
+        reputation.stop().await.unwrap();
+    }
+    
+    #[tokio::test]
+    async fn test_p2p_with_reputation() {
+        // Create test networks with reputation enabled
+        let storage1 = Arc::new(MockStorage::new());
+        let storage2 = Arc::new(MockStorage::new());
+        
+        let mut config1 = P2pConfig::default();
+        config1.listen_addresses = vec!["/ip4/127.0.0.1/tcp/10301".parse().unwrap()];
+        config1.enable_reputation = true;
+        
+        let mut config2 = P2pConfig::default();
+        config2.listen_addresses = vec!["/ip4/127.0.0.1/tcp/10302".parse().unwrap()];
+        config2.enable_reputation = true;
+        
+        let network1 = Arc::new(P2pNetwork::new(storage1, config1).await.unwrap());
+        let network2 = Arc::new(P2pNetwork::new(storage2, config2).await.unwrap());
+        
+        network1.start().await.unwrap();
+        network2.start().await.unwrap();
+        
+        let peer_id1 = network1.local_peer_id().unwrap();
+        let peer_id2 = network2.local_peer_id().unwrap();
+        
+        // Connect the networks
+        network1.connect(&format!("/ip4/127.0.0.1/tcp/10302/p2p/{}", peer_id2)).await.unwrap();
+        
+        // Wait for connection to establish
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        
+        // Verify connection established 
+        assert!(network1.is_connected(&peer_id2).await.unwrap());
+        
+        // Connection should trigger a positive reputation change
+        let reputation1 = network1.reputation_manager().unwrap();
+        let rep = reputation1.get_reputation(&peer_id2).await;
+        assert!(rep.is_some(), "Should have reputation data for peer2");
+        if let Some(rep) = rep {
+            assert!(rep.score() > 0, "Should have positive reputation after connection");
+        }
+        
+        // Test ban functionality
+        network1.ban_peer(&peer_id2).await.unwrap();
+        assert!(reputation1.is_banned(&peer_id2).await);
+        
+        // Should disconnect when banned
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!network1.is_connected(&peer_id2).await.unwrap());
+        
+        // Clean up
+        network1.stop().await.unwrap();
+        network2.stop().await.unwrap();
+    }
 } 

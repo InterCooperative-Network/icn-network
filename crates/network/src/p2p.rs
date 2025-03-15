@@ -29,6 +29,7 @@ use crate::{
     PeerInfo,
 };
 use crate::metrics::NetworkMetrics;
+use crate::reputation::{ReputationManager, ReputationConfig, ReputationChange};
 
 // Topic names for gossipsub
 const TOPIC_IDENTITY: &str = "icn/identity/v1";
@@ -59,6 +60,10 @@ pub struct P2pConfig {
     pub enable_metrics: bool,
     /// Metrics server address
     pub metrics_address: Option<String>,
+    /// Enable reputation system
+    pub enable_reputation: bool,
+    /// Configuration for the reputation system
+    pub reputation_config: Option<ReputationConfig>,
 }
 
 impl Default for P2pConfig {
@@ -74,6 +79,8 @@ impl Default for P2pConfig {
             peer_store_path: None,
             enable_metrics: false,
             metrics_address: Some("127.0.0.1:9090".to_string()),
+            enable_reputation: true,
+            reputation_config: None,
         }
     }
 }
@@ -181,6 +188,8 @@ pub struct P2pNetwork {
     peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     /// Network metrics
     metrics: Option<NetworkMetrics>,
+    /// Reputation manager
+    reputation: Option<Arc<ReputationManager>>,
 }
 
 impl P2pNetwork {
@@ -211,6 +220,23 @@ impl P2pNetwork {
             None
         };
 
+        // Initialize reputation system if enabled
+        let reputation = if config.enable_reputation {
+            let reputation_config = config.reputation_config.clone().unwrap_or_default();
+            let manager = ReputationManager::new(
+                reputation_config,
+                Some(storage.clone()),
+                metrics.clone(),
+            );
+            
+            // Start the reputation manager
+            manager.start().await?;
+            
+            Some(Arc::new(manager))
+        } else {
+            None
+        };
+
         let network = Self {
             storage,
             key_pair,
@@ -221,6 +247,7 @@ impl P2pNetwork {
             handlers: Arc::new(RwLock::new(HashMap::new())),
             peers: Arc::new(RwLock::new(HashMap::new())),
             metrics,
+            reputation,
         };
         
         // Start the background task
@@ -412,6 +439,7 @@ impl P2pNetwork {
                             &handlers,
                             &peers,
                             self.metrics.as_ref(),
+                            self.reputation.as_ref(),
                         ).await;
                         
                         // Record event processing time
@@ -550,31 +578,94 @@ impl P2pNetwork {
         handlers: &Arc<RwLock<HashMap<String, Vec<Arc<dyn MessageHandler>>>>>,
         peers: &Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
         metrics: Option<&NetworkMetrics>,
+        reputation: Option<&Arc<ReputationManager>>,
     ) {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!("Listening on {}", address);
             }
-            SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
-                info!("Connection established with {} via {}", peer_id, endpoint.get_remote_address());
-                
-                // Update peer info
-                Self::update_peer_connection(peers, &peer_id, true, Some(endpoint.get_remote_address().clone())).await;
+            SwarmEvent::ConnectionEstablished { peer_id, endpoint, num_established, .. } => {
+                if num_established == 1 {
+                    // This is a new connection
+                    debug!("Connection established with peer: {}", peer_id);
+                    let addr = endpoint.get_remote_address().clone();
+                    Self::update_peer_connection(peers, &peer_id, true, Some(addr)).await;
+                    
+                    // Record connection established
+                    if let Some(m) = metrics {
+                        m.record_peer_connected();
+                    }
+                    
+                    // Update reputation
+                    if let Some(rep) = reputation {
+                        let _ = rep.record_change(&peer_id, ReputationChange::ConnectionEstablished).await;
+                    }
+                }
             }
-            SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
-                info!("Connection closed with {}: {:?}", peer_id, cause);
-                
-                // Update peer info
-                Self::update_peer_connection(peers, &peer_id, false, None).await;
+            SwarmEvent::ConnectionClosed { peer_id, cause, num_established, .. } => {
+                if num_established == 0 {
+                    // All connections to this peer are closed
+                    debug!("Connection closed with peer: {}, cause: {:?}", peer_id, cause);
+                    Self::update_peer_connection(peers, &peer_id, false, None).await;
+                    
+                    // Record connection closed
+                    if let Some(m) = metrics {
+                        m.record_peer_disconnected();
+                    }
+                    
+                    // Update reputation based on cause
+                    if let Some(rep) = reputation {
+                        match cause {
+                            Some(libp2p::swarm::DialError::ConnectionLimit(_)) => {
+                                // Don't penalize for connection limits
+                            }
+                            Some(libp2p::swarm::DialError::Transport(_)) |
+                            Some(libp2p::swarm::DialError::NoAddresses) => {
+                                // Connection issues
+                                let _ = rep.record_change(&peer_id, ReputationChange::ConnectionLost).await;
+                            }
+                            _ => {
+                                // Other unexpected disconnects
+                                let _ = rep.record_change(&peer_id, ReputationChange::ConnectionLost).await;
+                            }
+                        }
+                    }
+                }
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                warn!("Outgoing connection error: {:?} for peer {:?}", error, peer_id);
+                warn!("Outgoing connection error to {:?}: {}", peer_id, error);
+                
+                // Record connection failure in metrics
+                if let Some(m) = metrics {
+                    m.record_connection_failure();
+                    
+                    // Record specific error type
+                    let error_type = match &error {
+                        libp2p::swarm::DialError::Transport(_) => "transport",
+                        libp2p::swarm::DialError::LocalPeerId => "local_peer_id",
+                        _ => "other",
+                    };
+                    
+                    m.record_error(error_type);
+                }
+                
+                // Update reputation if peer ID is available
+                if let Some(peer_id) = peer_id {
+                    if let Some(rep) = reputation {
+                        let _ = rep.record_change(&peer_id, ReputationChange::ConnectionLost).await;
+                    }
+                }
             }
             SwarmEvent::Behaviour(ComposedEvent::Gossipsub(gossipsub::Event::Message { 
                 propagation_source,
                 message_id,
                 message,
             })) => {
+                // Record message received metrics
+                if let Some(m) = metrics {
+                    m.record_message_received("gossipsub", message.data.len());
+                }
+                
                 debug!(
                     "Received gossip message: {} from {}",
                     message_id, propagation_source
@@ -601,6 +692,9 @@ impl P2pNetwork {
                     }
                 };
                 
+                let start_time = Instant::now();
+                let mut handled_successfully = false;
+                
                 match serde_json::from_slice::<NetworkMessage>(&message.data) {
                     Ok(network_message) => {
                         // Get peer info
@@ -609,27 +703,99 @@ impl P2pNetwork {
                         // Call all handlers for this message type
                         let handlers_guard = handlers.read().await;
                         if let Some(type_handlers) = handlers_guard.get(message_type) {
+                            let mut success = true;
+                            
                             for handler in type_handlers {
                                 if let Err(e) = handler.handle_message(&network_message, &peer_info).await {
                                     error!("Handler error: {}", e);
+                                    success = false;
+                                    
+                                    // Update reputation for message failure
+                                    if let Some(rep) = reputation {
+                                        let _ = rep.record_change(&propagation_source, ReputationChange::MessageFailure).await;
+                                    }
+                                }
+                            }
+                            
+                            // Update reputation for successful message handling
+                            if success {
+                                handled_successfully = true;
+                                if let Some(rep) = reputation {
+                                    let _ = rep.record_change(&propagation_source, ReputationChange::MessageSuccess).await;
                                 }
                             }
                         }
                     }
                     Err(e) => {
                         warn!("Failed to deserialize gossip message: {}", e);
+                        
+                        // Update reputation for invalid message
+                        if let Some(rep) = reputation {
+                            let _ = rep.record_change(&propagation_source, ReputationChange::InvalidMessage).await;
+                        }
+                    }
+                }
+                
+                // Record message processing time
+                let elapsed = start_time.elapsed();
+                if let Some(m) = metrics {
+                    m.record_message_processing_time(elapsed);
+                }
+                
+                // Update reputation based on processing time
+                if let Some(rep) = reputation {
+                    let _ = rep.record_response_time(&propagation_source, elapsed).await;
+                    
+                    // Record verification success/failure
+                    if handled_successfully {
+                        let _ = rep.record_change(&propagation_source, ReputationChange::VerifiedMessage).await;
                     }
                 }
             }
+            SwarmEvent::Behaviour(ComposedEvent::Ping(ping::Event {
+                peer,
+                result: Ok(rtt),
+                ..
+            })) => {
+                // Record ping/latency metrics
+                if let Some(m) = metrics {
+                    m.record_peer_latency(&peer.to_string(), rtt).await;
+                }
+                
+                // Update reputation based on ping time
+                if let Some(rep) = reputation {
+                    let _ = rep.record_response_time(&peer, rtt).await;
+                }
+                
+                debug!("Ping to {} took {:?}", peer, rtt);
+            }
             SwarmEvent::Behaviour(ComposedEvent::Mdns(mdns::Event::Discovered(list))) => {
                 for (peer_id, addr) in list {
-                    info!("mDNS discovered peer {} at {}", peer_id, addr);
+                    debug!("mDNS discovered peer: {} at {}", peer_id, addr);
+                    
+                    // Record mDNS discovery
+                    if let Some(m) = metrics {
+                        m.record_mdns_discovery();
+                        m.record_peer_discovered();
+                    }
+                    
+                    // Update reputation for discovery help
+                    if let Some(rep) = reputation {
+                        let _ = rep.record_change(&peer_id, ReputationChange::DiscoveryHelp).await;
+                    }
                     
                     // Update peer info
                     Self::update_peer_connection(peers, &peer_id, false, Some(addr.clone())).await;
                     
-                    // Try to dial the peer if not connected
-                    if !swarm.is_connected(&peer_id) {
+                    // Check if the peer is banned before trying to dial
+                    let should_dial = if let Some(rep) = reputation {
+                        !rep.is_banned(&peer_id).await
+                    } else {
+                        true
+                    };
+                    
+                    // Try to dial the peer if not banned and not connected
+                    if should_dial && !swarm.is_connected(&peer_id) {
                         debug!("Dialing discovered peer {}", peer_id);
                         match swarm.dial(addr) {
                             Ok(_) => {}
@@ -638,33 +804,26 @@ impl P2pNetwork {
                     }
                 }
             }
-            SwarmEvent::Behaviour(ComposedEvent::Identify(identify::Event::Received { 
-                peer_id,
-                info: identify::Info { protocol_version, agent_version, listen_addrs, protocols, .. },
-            })) => {
-                info!(
-                    "Identified peer {} as {} ({}), listening on: {:?}",
-                    peer_id, agent_version, protocol_version, listen_addrs
-                );
-                
-                // Update peer info with all addresses and protocols
-                Self::update_peer_info(peers, &peer_id, &listen_addrs, &protocols).await;
-                
-                // Add the addresses to the Kademlia routing table
-                for addr in listen_addrs {
-                    swarm.behaviour_mut().kad.add_address(&peer_id, addr);
-                }
-            }
-            SwarmEvent::Behaviour(ComposedEvent::Ping(ping::Event {
+            SwarmEvent::Behaviour(ComposedEvent::Kad(kad::Event::RoutingUpdated {
                 peer,
-                result: Ok(rtt),
+                addresses,
                 ..
             })) => {
-                // Record peer latency
+                debug!("Kademlia routing updated for peer: {}", peer);
+                
+                // Record Kademlia discovery
                 if let Some(m) = metrics {
-                    m.record_peer_latency(&peer.to_string(), rtt).await;
+                    m.record_kad_discovery();
+                    m.record_peer_discovered();
                 }
-                debug!("Ping to {} took {:?}", peer, rtt);
+                
+                // Update reputation for discovery help
+                if let Some(rep) = reputation {
+                    let _ = rep.record_change(&peer, ReputationChange::DiscoveryHelp).await;
+                }
+                
+                // Update peer info
+                Self::update_peer_info(peers, &peer, &addresses, &[]).await;
             }
             _ => {} // Ignore other events
         }
@@ -905,6 +1064,52 @@ impl P2pNetwork {
         
         debug!("Registered handler for message type: {}", message_type);
         let _ = response_tx.send(Ok(())).await;
+    }
+    
+    /// Check if a peer is allowed to connect
+    pub async fn is_peer_allowed(&self, peer_id: &PeerId) -> bool {
+        // If reputation system is enabled, check if the peer is banned
+        if let Some(rep) = &self.reputation {
+            return !rep.is_banned(peer_id).await;
+        }
+        
+        // Otherwise, all peers are allowed
+        true
+    }
+    
+    /// Get the reputation manager
+    pub fn reputation_manager(&self) -> Option<Arc<ReputationManager>> {
+        self.reputation.clone()
+    }
+    
+    /// Update peer reputation
+    pub async fn update_reputation(&self, peer_id: &PeerId, change: ReputationChange) -> NetworkResult<()> {
+        if let Some(rep) = &self.reputation {
+            rep.record_change(peer_id, change).await?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Ban a peer
+    pub async fn ban_peer(&self, peer_id: &PeerId) -> NetworkResult<()> {
+        if let Some(rep) = &self.reputation {
+            rep.ban_peer(peer_id).await?;
+            
+            // Also disconnect from the peer
+            self.disconnect(peer_id).await?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Unban a peer
+    pub async fn unban_peer(&self, peer_id: &PeerId) -> NetworkResult<()> {
+        if let Some(rep) = &self.reputation {
+            rep.unban_peer(peer_id).await?;
+        }
+        
+        Ok(())
     }
 }
 

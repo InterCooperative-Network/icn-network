@@ -1,7 +1,11 @@
 //! Network layer for the InterCooperative Network
 //!
-//! This crate provides networking capabilities for the InterCooperative Network,
-//! including peer-to-peer networking, node discovery, messaging, and state synchronization.
+//! This crate provides peer-to-peer networking capabilities for the ICN, including:
+//! - Peer discovery and connection management
+//! - Message serialization and exchange
+//! - Network service interfaces
+//! - Peer synchronization protocols
+//! - Reputation management for peer reliability
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -235,6 +239,7 @@ pub mod discovery;
 pub mod messaging;
 pub mod sync;
 pub mod metrics;
+pub mod reputation;
 
 // Testing modules
 #[cfg(test)]
@@ -245,4 +250,14 @@ pub use p2p::{P2pNetwork, P2pConfig};
 pub use discovery::{PeerDiscovery, DiscoveryManager, DiscoveryConfig};
 pub use messaging::{MessageProcessor, MessageEnvelope, DefaultMessageHandler};
 pub use sync::{Synchronizer, SyncConfig, SyncState};
-pub use metrics::{NetworkMetrics, Timer, start_metrics_server}; 
+pub use metrics::{NetworkMetrics, Timer, start_metrics_server};
+pub use reputation::{ReputationManager, ReputationConfig, ReputationChange, PeerReputation};
+
+// Re-export the messaging types for convenience
+pub mod messages {
+    pub use crate::messaging::IdentityAnnouncement;
+    pub use crate::messaging::TransactionAnnouncement;
+    pub use crate::messaging::LedgerStateUpdate;
+    pub use crate::messaging::ProposalAnnouncement;
+    pub use crate::messaging::VoteAnnouncement;
+} 

@@ -48,6 +48,12 @@ pub struct NetworkMetrics {
     
     // Latency tracking
     peer_latencies: Arc<RwLock<HashMap<String, Duration>>>,
+    
+    // Reputation metrics
+    reputation_scores: IntGaugeVec,
+    reputation_changes: IntCounterVec,
+    banned_peers: IntGaugeVec,
+    total_banned_peers: IntGauge,
 }
 
 impl NetworkMetrics {
@@ -129,6 +135,27 @@ impl NetworkMetrics {
             &["error_type"],
         ).unwrap();
         
+        // Reputation metrics
+        let reputation_scores = IntGaugeVec::new(
+            Opts::new("network_peer_reputation_scores", "Reputation scores by peer"),
+            &["peer_id"],
+        ).unwrap();
+        
+        let reputation_changes = IntCounterVec::new(
+            Opts::new("network_reputation_changes", "Number of reputation changes by peer"),
+            &["peer_id", "type"],
+        ).unwrap();
+        
+        let banned_peers = IntGaugeVec::new(
+            Opts::new("network_banned_peers", "Whether a peer is banned (1) or not (0)"),
+            &["peer_id"],
+        ).unwrap();
+        
+        let total_banned_peers = IntGauge::new(
+            "network_total_banned_peers", 
+            "Total number of banned peers"
+        ).unwrap();
+        
         // Register metrics
         registry.register(Box::new(peers_connected.clone())).unwrap();
         registry.register(Box::new(connection_attempts.clone())).unwrap();
@@ -149,6 +176,10 @@ impl NetworkMetrics {
         registry.register(Box::new(memory_usage.clone())).unwrap();
         registry.register(Box::new(cpu_usage.clone())).unwrap();
         registry.register(Box::new(errors.clone())).unwrap();
+        registry.register(Box::new(reputation_scores.clone())).unwrap();
+        registry.register(Box::new(reputation_changes.clone())).unwrap();
+        registry.register(Box::new(banned_peers.clone())).unwrap();
+        registry.register(Box::new(total_banned_peers.clone())).unwrap();
         
         info!("Network metrics initialized");
         
@@ -174,6 +205,10 @@ impl NetworkMetrics {
             cpu_usage,
             errors,
             peer_latencies: Arc::new(RwLock::new(HashMap::new())),
+            reputation_scores,
+            reputation_changes,
+            banned_peers,
+            total_banned_peers,
         }
     }
     
@@ -312,6 +347,52 @@ impl NetworkMetrics {
     pub fn reset(&self) {
         self.peers_connected.set(0);
         // We don't reset counters as they should be monotonic
+    }
+    
+    /// Record a reputation change for a peer
+    pub fn record_reputation_change(&self, peer_id: &str, change: i32) {
+        let change_type = if change > 0 {
+            "positive"
+        } else if change < 0 {
+            "negative"
+        } else {
+            "neutral"
+        };
+        
+        self.reputation_changes.with_label_values(&[peer_id, change_type]).inc();
+    }
+    
+    /// Record a positive action from a peer
+    pub fn record_positive_action(&self, peer_id: &str, action: &str) {
+        self.reputation_changes.with_label_values(&[peer_id, "action"]).inc();
+    }
+    
+    /// Record a negative action from a peer
+    pub fn record_negative_action(&self, peer_id: &str, action: &str) {
+        self.reputation_changes.with_label_values(&[peer_id, "action"]).inc();
+    }
+    
+    /// Update a peer's reputation score
+    pub fn update_reputation_score(&self, peer_id: &str, score: i32) {
+        self.reputation_scores.with_label_values(&[peer_id]).set(score);
+    }
+    
+    /// Record that a peer was banned
+    pub fn record_peer_banned(&self, peer_id: &str) {
+        self.banned_peers.with_label_values(&[peer_id]).set(1);
+        self.total_banned_peers.inc();
+    }
+    
+    /// Record that a peer was unbanned
+    pub fn record_peer_unbanned(&self, peer_id: &str) {
+        self.banned_peers.with_label_values(&[peer_id]).set(0);
+        self.total_banned_peers.dec();
+    }
+    
+    /// Record reputation decay activity
+    pub fn record_reputation_decay(&self, peers_processed: u64) {
+        // No specific metric needed here, but we can log it
+        debug!("Processed reputation decay for {} peers", peers_processed);
     }
 }
 
