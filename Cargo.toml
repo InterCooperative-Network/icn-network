@@ -1,39 +1,45 @@
-[package]
-name = "icn-node"
-version = "0.1.0"
-edition = "2021"
-description = "Implementation of an Intercooperative Network (ICN) node"
-authors = ["ICN Developers"]
-license = "MIT OR Apache-2.0"
+[workspace]
+members = [
+    "crates/core",
+    "crates/identity",
+    "crates/governance",
+    "crates/ledger",
+    "crates/apps",
+    "bin/node",
+    "bin/cli",
+]
 
-[dependencies]
-# Serialization
+[workspace.dependencies]
+tokio = { version = "1.32", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"
-bs58 = "0.4"
+thiserror = "1.0"
+anyhow = "1.0"
+async-trait = "0.1"
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+ed25519-dalek = { version = "1.0" }
+ring = "0.17"
 hex = "0.4"
+bs58 = "0.4"
+rand = "0.7"
+
+# Serialization
+serde_yaml = "0.9"
 
 # Cryptography
-ed25519-dalek = "1.0"
 curve25519-dalek = "3.2"
 x25519-dalek = "2.0.0"
 chacha20poly1305 = "0.10"
-rand = "0.7"
 rand_core = "0.6"
 sha2 = "0.10"
 
 # Networking and async
-tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 
 # Logging and utilities
-tracing = "0.1"
-tracing-subscriber = "0.3"
-log = "0.4"
 env_logger = "0.10"
-thiserror = "1.0"
-anyhow = "1.0"
 
 [dev-dependencies]
 tempfile = "3.3"

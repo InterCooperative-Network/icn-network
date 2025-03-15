@@ -1,0 +1,33 @@
+[package]
+name = "icn-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core components for ICN (InterCooperative Network)"
+authors = ["ICN Developers"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+
+# Networking
+quinn = "0.10"  # QUIC protocol implementation
+socket2 = "0.5"
+rustls = { version = "0.21", features = ["dangerous_configuration"] }
+
+# Storage
+sled = "0.34"  # Embedded database
+
+# Cryptography
+ring = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.8" 

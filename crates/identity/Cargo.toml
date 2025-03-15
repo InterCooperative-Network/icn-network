@@ -1,0 +1,31 @@
+[package]
+name = "icn-identity"
+version = "0.1.0"
+edition = "2021"
+description = "Decentralized Identity (DID) implementation for ICN"
+authors = ["ICN Developers"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+icn-core = { path = "../core" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+
+# Cryptography
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+bs58 = { workspace = true }
+sha2 = "0.10"
+ring = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.8" 

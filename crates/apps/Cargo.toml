@@ -1,0 +1,31 @@
+[package]
+name = "icn-apps"
+version = "0.1.0"
+edition = "2021"
+description = "Cooperative Applications for ICN"
+authors = ["ICN Developers"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+icn-core = { path = "../core" }
+icn-identity = { path = "../identity" }
+icn-governance = { path = "../governance" }
+icn-ledger = { path = "../ledger" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+
+# Web server for apps
+axum = "0.6"
+tower = "0.4"
+tower-http = { version = "0.4", features = ["cors", "trace"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.8" 
