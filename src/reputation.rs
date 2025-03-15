@@ -252,18 +252,47 @@ impl AttestationManager {
     
     // Get attestations for a subject
     pub fn get_attestations_for_subject(&self, subject_did: &str) -> Result<Vec<Attestation>, Box<dyn Error>> {
+        println!("Getting attestations for subject: {}", subject_did);
+        
         // In a real implementation, we'd query the storage system more efficiently
         // This is simplified for demonstration purposes
-        let attestation_ids = self.storage.list("attestations/")?;
+        let attestation_ids = match self.storage.list("attestations/") {
+            Ok(ids) => {
+                println!("Found {} attestation IDs", ids.len());
+                ids
+            },
+            Err(e) => {
+                println!("Error listing attestations: {:?}", e);
+                // If the directory doesn't exist, return an empty list
+                if let Some(os_error) = e.downcast_ref::<std::io::Error>() {
+                    if os_error.kind() == std::io::ErrorKind::NotFound {
+                        println!("Attestations directory not found, returning empty list");
+                        return Ok(Vec::new());
+                    }
+                }
+                return Err(e);
+            }
+        };
+        
         let mut result = Vec::new();
         
         for id in attestation_ids {
-            let attestation: Attestation = self.storage.get_json(&format!("attestations/{}", id))?;
-            if attestation.subject_did == subject_did && !attestation.is_revoked {
-                result.push(attestation);
+            println!("Reading attestation: {}", id);
+            match self.storage.get_json::<Attestation>(&id) {
+                Ok(attestation) => {
+                    if attestation.subject_did == subject_did && !attestation.is_revoked {
+                        println!("Found attestation for subject: {}", subject_did);
+                        result.push(attestation);
+                    }
+                },
+                Err(e) => {
+                    println!("Error reading attestation {}: {:?}", id, e);
+                    // Continue with other attestations
+                }
             }
         }
         
+        println!("Found {} attestations for subject {}", result.len(), subject_did);
         Ok(result)
     }
     
