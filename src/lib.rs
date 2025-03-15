@@ -7,7 +7,7 @@ use std::env;
 use std::error::Error;
 use std::fs;
 use std::path::Path;
-use tracing::{info, error};
+use log::{info, error};
 
 // Public modules
 pub mod identity;
@@ -17,18 +17,15 @@ pub mod resource_sharing;
 pub mod cross_federation_governance;
 pub mod federation_governance;
 pub mod federation;
-pub mod networking;
-pub mod error;
-pub mod economics;
-pub mod governance;
-pub mod integration;
 pub mod reputation;
 
-// Public re-exports from external crates 
-// (commented out as they may not be available in this project)
-// pub use icn_common as common;
-// pub use icn_crypto as crypto;
-// pub use icn_mutual_credit as economic;
+// Temporarily disabled modules due to missing files
+// We'll address these in a future update
+// pub mod networking;
+// pub mod error;
+// pub mod economics;
+// pub mod governance;
+// pub mod integration;
 
 /// Module version information
 pub mod version {
@@ -61,7 +58,7 @@ pub async fn run_node() -> Result<(), Box<dyn Error>> {
     }
     
     // Load and parse configuration
-    let config_content = fs::read_to_string(&config_path)?;
+    let _config_content = fs::read_to_string(&config_path)?;
     
     // Display node information
     info!("Node ID: {}", env::var("ICN_NODE_ID").unwrap_or_else(|_| "unknown".to_string()));
@@ -77,3 +74,13 @@ pub async fn run_node() -> Result<(), Box<dyn Error>> {
     
     Ok(())
 }
+
+// Export the core types we need
+pub use identity::Identity;
+pub use storage::Storage;
+pub use crypto::CryptoUtils;
+pub use federation::*;
+pub use federation_governance::*;
+pub use cross_federation_governance::*;
+pub use resource_sharing::ResourceSharingSystem;
+pub use reputation::ReputationSystem;

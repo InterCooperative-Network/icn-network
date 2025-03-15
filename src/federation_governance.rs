@@ -3,9 +3,10 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use serde_json::{self, json, Value};
 use crate::identity::Identity;
 use crate::storage::Storage;
-use crate::reputation::{ReputationSystem, AttestationType, Evidence as ReputationEvidence};
+use crate::reputation::{ReputationSystem, AttestationType, Evidence};
 
 // Governance error types
 #[derive(Debug)]
@@ -49,7 +50,7 @@ pub enum ProposalType {
 }
 
 // Proposal status
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ProposalStatus {
     Draft,
     Active,
@@ -87,19 +88,34 @@ pub struct Vote {
     pub signature: Vec<u8>,
 }
 
-// Dispute structure
+// Evidence for governance disputes
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GovernanceEvidence {
+    pub id: String,
+    pub submitted_by: String,
+    pub signature: Vec<u8>,
+}
+
+// Dispute resolution for governance
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dispute {
     pub id: String,
-    pub federation_id: String,
-    pub transaction_id: String,
-    pub complainant_did: String,
-    pub respondent_did: String,
-    pub description: String,
+    pub proposal_id: String,
+    pub raised_by: String,
+    pub reason: String,
+    pub evidence: Vec<GovernanceEvidence>,
+    pub resolution: Option<DisputeResolution>,
     pub created_at: u64,
-    pub status: DisputeStatus,
-    pub evidence: Vec<Evidence>,
-    pub resolution: Option<Resolution>,
+}
+
+// Resolution for a dispute
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisputeResolution {
+    pub resolved_by: String,
+    pub decision: String,
+    pub evidence: Vec<GovernanceEvidence>,
+    pub timestamp: u64,
+    pub signature: Vec<u8>,
 }
 
 // Dispute status
@@ -171,6 +187,9 @@ impl FederationGovernance {
             .duration_since(UNIX_EPOCH)?
             .as_secs();
 
+        // Clone the proposal_type for later use
+        let proposal_type_clone = proposal_type.clone();
+
         let proposal = Proposal {
             id: format!("prop-{}", now),
             federation_id: federation_id.to_string(),
@@ -188,7 +207,8 @@ impl FederationGovernance {
         };
 
         // Store the proposal
-        self.storage.store_json(
+        println!("Storing proposal at: proposals/{}", proposal.id);
+        self.storage.put_json(
             &format!("proposals/{}", proposal.id),
             &proposal,
         )?;
@@ -197,7 +217,7 @@ impl FederationGovernance {
         if let Some(reputation) = &self.reputation {
             // Creating a proposal gives a small reputation boost
             let evidence = vec![
-                ReputationEvidence {
+                Evidence {
                     evidence_type: "proposal_created".to_string(),
                     evidence_id: proposal.id.clone(),
                     description: format!("Created proposal: {}", title),
@@ -207,13 +227,14 @@ impl FederationGovernance {
             ];
             
             // Try to create an attestation for governance participation
+            println!("Creating attestation for governance participation");
             let _ = reputation.attestation_manager().create_attestation(
                 &self.identity.did,
                 AttestationType::GovernanceQuality,
                 0.5, // Moderate score for creating a proposal
                 serde_json::json!({
                     "action": "proposal_creation",
-                    "proposal_type": format!("{:?}", proposal_type),
+                    "proposal_type": format!("{:?}", proposal_type_clone),
                 }),
                 evidence,
                 1, // Self-attestation
@@ -230,7 +251,7 @@ impl FederationGovernance {
         proposal_id: &str,
         vote: bool,
     ) -> Result<(), Box<dyn Error>> {
-        let mut proposal: Proposal = self.storage.load_json(
+        let mut proposal: Proposal = self.storage.get_json(
             &format!("proposals/{}", proposal_id),
         )?;
 
@@ -264,7 +285,7 @@ impl FederationGovernance {
         };
 
         proposal.votes.push(vote_entry);
-        self.storage.store_json(
+        self.storage.put_json(
             &format!("proposals/{}", proposal_id),
             &proposal,
         )?;
@@ -273,7 +294,7 @@ impl FederationGovernance {
         if let Some(reputation) = &self.reputation {
             // Voting gives a small reputation boost
             let evidence = vec![
-                ReputationEvidence {
+                Evidence {
                     evidence_type: "vote_cast".to_string(),
                     evidence_id: format!("{}:{}", proposal_id, now),
                     description: format!("Voted on proposal: {}", proposal.title),
@@ -308,7 +329,7 @@ impl FederationGovernance {
         &self,
         proposal_id: &str,
     ) -> Result<(), Box<dyn Error>> {
-        let mut proposal: Proposal = self.storage.load_json(
+        let mut proposal: Proposal = self.storage.get_json(
             &format!("proposals/{}", proposal_id),
         )?;
 
@@ -325,7 +346,7 @@ impl FederationGovernance {
         // Check if quorum was reached
         if proposal.votes.len() < proposal.quorum as usize {
             proposal.status = ProposalStatus::Failed;
-            self.storage.store_json(
+            self.storage.put_json(
                 &format!("proposals/{}", proposal_id),
                 &proposal,
             )?;
@@ -347,7 +368,7 @@ impl FederationGovernance {
         };
 
         // Store updated proposal
-        self.storage.store_json(
+        self.storage.put_json(
             &format!("proposals/{}", proposal_id),
             &proposal,
         )?;
@@ -369,7 +390,7 @@ impl FederationGovernance {
             };
             
             let creator_evidence = vec![
-                ReputationEvidence {
+                Evidence {
                     evidence_type: "proposal_outcome".to_string(),
                     evidence_id: format!("{}:outcome", proposal_id),
                     description: format!("Proposal outcome: {}", 
@@ -412,7 +433,7 @@ impl FederationGovernance {
                 };
                 
                 let vote_evidence = vec![
-                    ReputationEvidence {
+                    Evidence {
                         evidence_type: "vote_outcome".to_string(),
                         evidence_id: format!("{}:vote_outcome:{}", proposal_id, vote.member_did),
                         description: format!("Vote alignment with outcome: {}", 
@@ -462,15 +483,12 @@ impl FederationGovernance {
 
         let dispute = Dispute {
             id: format!("disp-{}", now),
-            federation_id: federation_id.to_string(),
-            transaction_id: transaction_id.to_string(),
-            complainant_did: self.identity.did.clone(),
-            respondent_did: respondent_did.to_string(),
-            description: description.to_string(),
-            created_at: now,
-            status: DisputeStatus::Open,
+            proposal_id: format!("{}:{}", federation_id, transaction_id),
+            raised_by: self.identity.did.clone(),
+            reason: description.to_string(),
             evidence,
             resolution: None,
+            created_at: now,
         };
 
         // Store the dispute
@@ -494,8 +512,7 @@ impl FederationGovernance {
         )?;
 
         // Verify the member is involved in the dispute
-        if dispute.complainant_did != self.identity.did && 
-           dispute.respondent_did != self.identity.did {
+        if dispute.raised_by != self.identity.did {
             return Err(Box::new(GovernanceError::InvalidResolution(
                 "Member is not involved in the dispute".to_string(),
             )));
@@ -509,12 +526,9 @@ impl FederationGovernance {
         let evidence_data = serde_json::to_vec(&(dispute_id, description, &data, now))?;
         let signature = self.identity.sign(&evidence_data)?;
 
-        let evidence = Evidence {
+        let evidence = GovernanceEvidence {
             id: format!("evid-{}", now),
             submitted_by: self.identity.did.clone(),
-            timestamp: now,
-            description: description.to_string(),
-            data,
             signature: signature.to_bytes().to_vec(),
         };
 
@@ -556,12 +570,11 @@ impl FederationGovernance {
         let resolution_data = serde_json::to_vec(&(dispute_id, decision, &actions, now))?;
         let signature = self.identity.sign(&resolution_data)?;
 
-        let resolution = Resolution {
-            id: format!("res-{}", now),
+        let resolution = DisputeResolution {
             resolved_by: self.identity.did.clone(),
-            timestamp: now,
             decision: decision.to_string(),
-            actions,
+            evidence: Vec::new(),
+            timestamp: now,
             signature: signature.to_bytes().to_vec(),
         };
 
@@ -655,8 +668,10 @@ impl FederationGovernance {
         references: Vec<String>, // References to other comments or evidence
     ) -> Result<Deliberation, Box<dyn Error>> {
         // Check if the proposal exists
-        let proposal: Proposal = self.storage.load_json(
-            &format!("proposals/{}", proposal_id),
+        let proposal_key = format!("proposals/{}", proposal_id);
+        println!("Checking if proposal exists at: {}", proposal_key);
+        let proposal: Proposal = self.storage.get_json(
+            &proposal_key,
         )?;
         
         // Check if voting period is still active
@@ -679,66 +694,90 @@ impl FederationGovernance {
             member_did: self.identity.did.clone(),
             comment: comment.to_string(),
             timestamp: now,
-            references,
+            references: references.clone(),
             signature: signature.to_bytes().to_vec(),
         };
         
         // Store the deliberation
         let deliberation_key = format!("deliberations/{}/{}", proposal_id, deliberation.id);
-        self.storage.store_json(&deliberation_key, &deliberation)?;
+        println!("Storing deliberation at: {}", deliberation_key);
+        match self.storage.put_json(&deliberation_key, &deliberation) {
+            Ok(_) => println!("Successfully stored deliberation"),
+            Err(e) => {
+                println!("Error storing deliberation: {:?}", e);
+                return Err(e);
+            }
+        }
         
         // Add to list of deliberations for this proposal
         let deliberations_key = format!("proposal_deliberations/{}", proposal_id);
+        println!("Updating deliberation list at: {}", deliberations_key);
         let mut deliberation_ids: Vec<String> = self.storage
-            .load_json(&deliberations_key)
+            .get_json(&deliberations_key)
             .unwrap_or_else(|_| Vec::new());
         
         deliberation_ids.push(deliberation.id.clone());
-        self.storage.store_json(&deliberations_key, &deliberation_ids)?;
         
-        // Add reputation for substantive deliberation
+        match self.storage.put_json(&deliberations_key, &deliberation_ids) {
+            Ok(_) => println!("Successfully updated deliberation list"),
+            Err(e) => {
+                println!("Error updating deliberation list: {:?}", e);
+                return Err(e);
+            }
+        }
+        
+        // Calculate quality score for deliberation
+        let comment_length = comment.len();
+        let reference_count = references.len();
+        
+        // Simple scoring based on length and references
+        let quality_score = if comment_length > 500 {
+            0.9 // High quality
+        } else if comment_length > 200 {
+            0.7 // Medium quality
+        } else if comment_length > 50 {
+            0.5 // Basic quality
+        } else {
+            0.3 // Low quality
+        };
+        
+        // Bonus for references
+        let reference_bonus = (reference_count as f64 * 0.1).min(0.3);
+        let final_score = (quality_score + reference_bonus).min(1.0);
+        
+        // Create evidence for reputation
         if let Some(reputation) = &self.reputation {
-            // Quality of deliberation based on length and references
-            let comment_length = comment.len();
-            let reference_count = references.len();
+            let evidence_data = json!({
+                "proposal_id": proposal_id,
+                "deliberation_id": deliberation.id,
+                "comment_length": comment_length,
+                "reference_count": reference_count,
+                "quality_score": final_score
+            });
             
-            // Calculate a quality score based on comment length and references
-            // More thought-out comments with references get higher scores
-            let quality_factor = (comment_length as f64 / 500.0).min(1.0) * 0.7 + 
-                                (reference_count as f64 / 3.0).min(1.0) * 0.3;
+            // Create evidence object
+            let evidence_obj = crate::reputation::Evidence {
+                evidence_type: "deliberation".to_string(),
+                evidence_id: deliberation.id.clone(),
+                description: format!("Added deliberation to proposal: {}", proposal_id),
+                timestamp: now,
+                data: Some(evidence_data.clone()),
+            };
             
-            // Scale the base score by quality
-            let deliberation_score = 0.4 * quality_factor + 0.2; // 0.2 to 0.6 range
-            
-            let evidence = vec![
-                ReputationEvidence {
-                    evidence_type: "deliberation".to_string(),
-                    evidence_id: deliberation.id.clone(),
-                    description: format!("Added deliberation to proposal: {}", proposal.title),
-                    timestamp: now,
-                    data: Some(serde_json::json!({
-                        "proposal_id": proposal_id,
-                        "comment_length": comment_length,
-                        "references": reference_count,
-                    })),
-                }
-            ];
-            
-            // Create attestation for deliberation
-            let _ = reputation.attestation_manager().create_attestation(
+            // Record this deliberation for reputation
+            println!("Creating attestation for deliberation quality");
+            match reputation.attestation_manager().create_attestation(
                 &self.identity.did,
                 AttestationType::GovernanceQuality,
-                deliberation_score,
-                serde_json::json!({
-                    "action": "deliberation",
-                    "proposal_type": format!("{:?}", proposal.proposal_type),
-                    "comment_length": comment_length,
-                    "references": reference_count,
-                }),
-                evidence,
+                final_score,
+                evidence_data,
+                vec![evidence_obj],
                 1,
                 Some(150), // Valid for 150 days
-            );
+            ) {
+                Ok(_) => println!("Successfully created deliberation quality attestation"),
+                Err(e) => println!("Error creating deliberation quality attestation: {:?}", e),
+            }
         }
         
         Ok(deliberation)
@@ -751,20 +790,30 @@ impl FederationGovernance {
     ) -> Result<Vec<Deliberation>, Box<dyn Error>> {
         // Get list of deliberation IDs
         let deliberations_key = format!("proposal_deliberations/{}", proposal_id);
+        println!("Looking for deliberations at key: {}", deliberations_key);
         let deliberation_ids: Vec<String> = self.storage
-            .load_json(&deliberations_key)
+            .get_json(&deliberations_key)
             .unwrap_or_else(|_| Vec::new());
+        
+        println!("Found {} deliberation IDs", deliberation_ids.len());
         
         // Load each deliberation
         let mut deliberations = Vec::new();
         for id in deliberation_ids {
             let key = format!("deliberations/{}/{}", proposal_id, id);
-            let deliberation: Deliberation = self.storage.load_json(&key)?;
-            deliberations.push(deliberation);
+            println!("Loading deliberation from: {}", key);
+            match self.storage.get_json(&key) {
+                Ok(deliberation) => {
+                    let deliberation: Deliberation = deliberation;
+                    deliberations.push(deliberation);
+                    println!("Successfully loaded deliberation");
+                },
+                Err(e) => {
+                    println!("Error loading deliberation: {:?}", e);
+                    return Err(e);
+                }
+            }
         }
-        
-        // Sort by timestamp
-        deliberations.sort_by_key(|d| d.timestamp);
         
         Ok(deliberations)
     }
@@ -774,9 +823,8 @@ impl FederationGovernance {
         &self,
         member_did: &str,
     ) -> Result<GovernanceParticipationScore, Box<dyn Error>> {
-        // Get all proposals
-        let proposal_ids: Vec<String> = self.storage
-            .list_keys("proposals/")
+        // Get all proposals - use the Storage object's list method
+        let proposal_ids: Vec<String> = self.storage.list("proposals/")
             .unwrap_or_else(|_| Vec::new());
         
         let mut total_proposals = 0;
@@ -786,7 +834,7 @@ impl FederationGovernance {
         
         // Collect stats about participation
         for proposal_id in &proposal_ids {
-            let proposal: Proposal = self.storage.load_json(&format!("proposals/{}", proposal_id))?;
+            let proposal: Proposal = self.storage.get_json(&format!("proposals/{}", proposal_id))?;
             
             // Only count completed proposals
             if proposal.status == ProposalStatus::Passed || proposal.status == ProposalStatus::Failed {
@@ -844,7 +892,7 @@ impl FederationGovernance {
         // If reputation system is available, create an attestation based on this score
         if let Some(reputation) = &self.reputation {
             let evidence = vec![
-                ReputationEvidence {
+                Evidence {
                     evidence_type: "governance_participation".to_string(),
                     evidence_id: format!("gov_score:{}:{}", member_did, governance_score.timestamp),
                     description: format!("Governance participation score: {:.2}", score),

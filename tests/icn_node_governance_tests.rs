@@ -13,8 +13,8 @@ async fn test_node_governance_reputation_integration() -> Result<(), Box<dyn Err
     let node = IcnNode::new(
         "test-coop".to_string(),
         "main-node".to_string(),
+        "did:icn:test-coop:main-node".to_string(),
         storage_path.clone(),
-        None, // Default network config
     )?;
     
     // Create a second test node
@@ -23,8 +23,8 @@ async fn test_node_governance_reputation_integration() -> Result<(), Box<dyn Err
     let node2 = IcnNode::new(
         "test-coop".to_string(),
         "voter-node".to_string(),
+        "did:icn:test-coop:voter-node".to_string(),
         storage_path2.clone(),
-        None, // Default network config
     )?;
     
     // Test federation ID
@@ -129,8 +129,8 @@ async fn test_node_reputation_influences_credit() -> Result<(), Box<dyn Error>> 
     let node = IcnNode::new(
         "test-coop".to_string(),
         "credit-test-node".to_string(),
+        "did:icn:test-coop:credit-test-node".to_string(),
         storage_path.clone(),
-        None, // Default network config
     )?;
     
     // Test federation ID

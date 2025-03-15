@@ -5,8 +5,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use serde::{Deserialize, Serialize};
 use crate::identity::{Identity, DidDocument};
-use crate::crypto::{CryptoUtils, Keypair, PublicKey, Signature};
+use crate::crypto::CryptoUtils;
 use crate::storage::Storage;
+// Import directly from the crate
+use ed25519_dalek::{Keypair, PublicKey, Signature};
 
 // Reputation system error types
 #[derive(Debug)]
@@ -145,12 +147,20 @@ impl AttestationManager {
         // Generate a unique ID for the attestation
         let id = format!("att:{}:{}:{}", issuer_did, subject_did, now);
         
-        // Calculate expiration time if provided
+        // Calculate expiration (no u32 to u64 conversion issue)
         let expires_at = expiration_days.map(|days| now + (days * 24 * 60 * 60));
         
-        // Create an initial signature from the issuer
-        let signature_data = format!("{}:{}:{}:{}", id, issuer_did, subject_did, now);
-        let signature = self.crypto.sign(signature_data.as_bytes())?;
+        // Create signature data
+        let signature_data = format!(
+            "{}:{}:{}:{}", 
+            id, 
+            subject_did,
+            now,
+            score
+        );
+        
+        // Create signature using the identity's private key
+        let signature = self.identity.sign(signature_data.as_bytes())?;
         
         let initial_signature = MultiPartySignature {
             signer_did: issuer_did.clone(),
@@ -176,7 +186,11 @@ impl AttestationManager {
         };
         
         // Store the attestation
-        self.storage.store_json(&format!("attestations/{}", attestation.id), &attestation)?;
+        println!("Storing attestation at: attestations/{}", attestation.id);
+        match self.storage.put_json(&format!("attestations/{}", attestation.id), &attestation) {
+            Ok(_) => println!("Successfully stored attestation"),
+            Err(e) => println!("Error storing attestation: {:?}", e),
+        }
         
         Ok(attestation)
     }
@@ -189,7 +203,7 @@ impl AttestationManager {
         signature: Vec<u8>,
     ) -> Result<Attestation, Box<dyn Error>> {
         // Load the attestation
-        let mut attestation: Attestation = self.storage.load_json(&format!("attestations/{}", attestation_id))?;
+        let mut attestation: Attestation = self.storage.get_json(&format!("attestations/{}", attestation_id))?;
         
         // Verify that the attestation is not expired
         let now = SystemTime::now()
@@ -222,7 +236,7 @@ impl AttestationManager {
         attestation.signatures.push(new_signature);
         
         // Update the attestation in storage
-        self.storage.store_json(&format!("attestations/{}", attestation.id), &attestation)?;
+        self.storage.put_json(&format!("attestations/{}", attestation.id), &attestation)?;
         
         Ok(attestation)
     }
@@ -240,11 +254,11 @@ impl AttestationManager {
     pub fn get_attestations_for_subject(&self, subject_did: &str) -> Result<Vec<Attestation>, Box<dyn Error>> {
         // In a real implementation, we'd query the storage system more efficiently
         // This is simplified for demonstration purposes
-        let attestation_ids = self.storage.list_keys("attestations/")?;
+        let attestation_ids = self.storage.list("attestations/")?;
         let mut result = Vec::new();
         
         for id in attestation_ids {
-            let attestation: Attestation = self.storage.load_json(&format!("attestations/{}", id))?;
+            let attestation: Attestation = self.storage.get_json(&format!("attestations/{}", id))?;
             if attestation.subject_did == subject_did && !attestation.is_revoked {
                 result.push(attestation);
             }
@@ -256,7 +270,7 @@ impl AttestationManager {
     // Revoke an attestation
     pub fn revoke_attestation(&self, attestation_id: &str) -> Result<(), Box<dyn Error>> {
         // Load the attestation
-        let mut attestation: Attestation = self.storage.load_json(&format!("attestations/{}", attestation_id))?;
+        let mut attestation: Attestation = self.storage.get_json(&format!("attestations/{}", attestation_id))?;
         
         // Verify the caller is the issuer
         if attestation.issuer_did != self.identity.did {
@@ -269,7 +283,7 @@ impl AttestationManager {
         attestation.is_revoked = true;
         
         // Update in storage
-        self.storage.store_json(&format!("attestations/{}", attestation.id), &attestation)?;
+        self.storage.put_json(&format!("attestations/{}", attestation.id), &attestation)?;
         
         Ok(())
     }
@@ -301,13 +315,13 @@ impl TrustGraph {
         // For demonstration, we implement a simplified approach:
         
         // Get all attestations
-        let attestation_ids = self.storage.list_keys("attestations/")?;
+        let attestation_ids = self.storage.list("attestations/")?;
         
         // Build an adjacency list for the trust graph
         let mut graph: HashMap<String, HashMap<String, f64>> = HashMap::new();
         
         for id in attestation_ids {
-            let attestation: Attestation = self.storage.load_json(&format!("attestations/{}", id))?;
+            let attestation: Attestation = self.storage.get_json(&format!("attestations/{}", id))?;
             if attestation.is_revoked {
                 continue;
             }

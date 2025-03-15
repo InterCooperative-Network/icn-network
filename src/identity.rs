@@ -5,6 +5,9 @@ use std::path::Path;
 use rand::rngs::OsRng;
 use ed25519_dalek::{Keypair, PublicKey, SecretKey, Signature, Signer, Verifier};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use crate::storage::Storage;
+use crate::crypto::CryptoUtils;
 
 // DID Method specific to ICN
 const DID_METHOD: &str = "icn";
@@ -20,49 +23,52 @@ pub struct Credential {
     pub expires_at: Option<u64>,
 }
 
+// Identity error types
 #[derive(Debug)]
 pub enum IdentityError {
-    KeyGeneration(String),
-    DidCreation(String),
-    Serialization(String),
-    Verification(String),
-    Storage(String),
+    InvalidDid(String),
+    CryptoError(String),
+    StorageError(String),
+    ValidationError(String),
 }
 
 impl fmt::Display for IdentityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            IdentityError::KeyGeneration(msg) => write!(f, "Key generation error: {}", msg),
-            IdentityError::DidCreation(msg) => write!(f, "DID creation error: {}", msg),
-            IdentityError::Serialization(msg) => write!(f, "Serialization error: {}", msg),
-            IdentityError::Verification(msg) => write!(f, "Verification error: {}", msg),
-            IdentityError::Storage(msg) => write!(f, "Storage error: {}", msg),
+            IdentityError::InvalidDid(msg) => write!(f, "Invalid DID: {}", msg),
+            IdentityError::CryptoError(msg) => write!(f, "Crypto error: {}", msg),
+            IdentityError::StorageError(msg) => write!(f, "Storage error: {}", msg),
+            IdentityError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
         }
     }
 }
 
 impl Error for IdentityError {}
 
-// DID Document structure
+// DID Document
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DidDocument {
     pub id: String,
+    pub context: Vec<String>,
     pub verification_method: Vec<VerificationMethod>,
     pub authentication: Vec<String>,
     pub assertion_method: Vec<String>,
     pub capability_invocation: Vec<String>,
     pub capability_delegation: Vec<String>,
+    pub key_agreement: Vec<String>,
     pub service: Vec<Service>,
 }
 
+// Verification method
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationMethod {
     pub id: String,
     pub controller: String,
     pub type_: String,
-    pub public_key_base58: String,
+    pub public_key_multibase: String,
 }
 
+// Service definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Service {
     pub id: String,
@@ -70,60 +76,129 @@ pub struct Service {
     pub service_endpoint: String,
 }
 
-// Main identity structure
+// Identity with DID
 pub struct Identity {
-    pub did: String,
-    pub did_document: DidDocument,
-    keypair: Keypair,
-    pub node_id: String,
     pub coop_id: String,
+    pub node_id: String,
+    pub did: String,
+    pub document: DidDocument,
+    pub keypair: Keypair,
+    pub listen_addr: String,
+    pub tls: bool,
+    storage: Arc<Storage>,
 }
 
 impl Identity {
-    // Update the new method to match our test requirements
-    pub fn new(coop_id: String, node_id: String, did: String, storage: Storage) -> Result<Self, Box<dyn Error>> {
-        // Generate a new keypair
-        let mut csprng = OsRng{};
-        let keypair = Keypair::generate(&mut csprng);
+    // Create a new identity
+    pub fn new(
+        coop_id: String, 
+        node_id: String, 
+        did: String, 
+        storage: Arc<Storage>
+    ) -> Result<Self, Box<dyn Error>> {
+        // Generate keypair for identity
+        let keypair = CryptoUtils::generate_keypair()?;
         
-        // Create a DID document
+        // Set default listening address
+        let listen_addr = "127.0.0.1:9090".to_string();
+        
+        // Create the DID document
+        let public_key_hex = hex::encode(keypair.public.to_bytes());
+        
         let verification_method = VerificationMethod {
             id: format!("{}#keys-1", did),
             controller: did.clone(),
             type_: "Ed25519VerificationKey2020".to_string(),
-            public_key_base58: bs58::encode(keypair.public.as_bytes()).into_string(),
+            public_key_multibase: format!("z{}", public_key_hex),
         };
         
-        let did_document = DidDocument {
+        let document = DidDocument {
             id: did.clone(),
+            context: vec!["https://www.w3.org/ns/did/v1".to_string()],
             verification_method: vec![verification_method.clone()],
-            authentication: vec![verification_method.id.clone()],
-            assertion_method: vec![verification_method.id.clone()],
-            capability_invocation: vec![verification_method.id.clone()],
-            capability_delegation: vec![verification_method.id.clone()],
-            service: vec![],
+            authentication: vec![format!("{}#keys-1", did)],
+            assertion_method: vec![format!("{}#keys-1", did)],
+            capability_invocation: vec![format!("{}#keys-1", did)],
+            capability_delegation: vec![],
+            key_agreement: vec![],
+            service: vec![
+                Service {
+                    id: format!("{}#node", did),
+                    type_: "ICNNode".to_string(),
+                    service_endpoint: format!("https://{}", listen_addr),
+                },
+            ],
         };
         
         // Store the DID document
-        storage.put_json(&format!("identity/{}/did-document", node_id), &did_document)?;
+        storage.put_json(&format!("dids/{}", did), &document)?;
         
         Ok(Identity {
-            did,
-            did_document,
-            keypair,
-            node_id,
             coop_id,
+            node_id,
+            did,
+            document,
+            keypair,
+            listen_addr,
+            tls: true,
+            storage,
         })
     }
     
-    // Sign a message
-    pub fn sign(&self, message: &[u8]) -> Result<Signature, Box<dyn Error>> {
-        Ok(self.keypair.sign(message))
+    // Get the DID document
+    pub fn get_document(&self) -> &DidDocument {
+        &self.document
     }
     
-    // Verify a signature
-    pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<bool, Box<dyn Error>> {
-        Ok(self.keypair.public.verify(message, signature).is_ok())
+    // Update the DID document
+    pub fn update_document(&mut self, document: DidDocument) -> Result<(), Box<dyn Error>> {
+        // Verify document ID matches our DID
+        if document.id != self.did {
+            return Err(Box::new(IdentityError::ValidationError(
+                "Document ID does not match identity DID".to_string(),
+            )));
+        }
+        
+        // Store the updated document
+        self.storage.put_json(&format!("dids/{}", self.did), &document)?;
+        
+        // Update local copy
+        self.document = document;
+        
+        Ok(())
+    }
+    
+    // Sign data with the identity's keypair
+    pub fn sign(&self, data: &[u8]) -> Result<Signature, Box<dyn Error>> {
+        Ok(self.keypair.sign(data))
+    }
+    
+    // Verify a signature using the identity's public key
+    pub fn verify(&self, data: &[u8], signature: &Signature) -> Result<bool, Box<dyn Error>> {
+        match self.keypair.public.verify(data, signature) {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+    
+    // Verify a signature using a provided public key
+    pub fn verify_with_key(&self, public_key: &PublicKey, data: &[u8], signature: &Signature) -> Result<bool, Box<dyn Error>> {
+        match public_key.verify(data, signature) {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+    
+    // Resolve a DID to a DID document
+    pub fn resolve_did(&self, did: &str) -> Result<DidDocument, Box<dyn Error>> {
+        // For now, we only support local resolution from our storage
+        // In a real system, this would use more advanced resolution methods
+        match self.storage.get_json(&format!("dids/{}", did)) {
+            Ok(document) => Ok(document),
+            Err(_) => Err(Box::new(IdentityError::InvalidDid(
+                format!("Could not resolve DID: {}", did),
+            ))),
+        }
     }
     
     // Create a credential
@@ -161,7 +236,7 @@ impl Identity {
         // Get the signature
         let signature_base58 = match &credential.signature {
             Some(sig) => sig,
-            None => return Err(Box::new(IdentityError::Verification("Missing signature".to_string()))),
+            None => return Err(Box::new(IdentityError::ValidationError("Missing signature".to_string()))),
         };
         
         // Create a copy of the credential without the signature for verification
@@ -174,21 +249,21 @@ impl Identity {
         // Decode the signature
         let signature_bytes = bs58::decode(signature_base58)
             .into_vec()
-            .map_err(|e| IdentityError::Verification(format!("Invalid signature encoding: {}", e)))?;
+            .map_err(|e| IdentityError::ValidationError(format!("Invalid signature encoding: {}", e)))?;
             
         let signature = Signature::from_bytes(&signature_bytes)
-            .map_err(|e| IdentityError::Verification(format!("Invalid signature: {}", e)))?;
+            .map_err(|e| IdentityError::ValidationError(format!("Invalid signature: {}", e)))?;
             
         // For simplicity, we're assuming we have the issuer's public key
         // In a real system, we would need to resolve the issuer's DID to get their public key
         // This is a placeholder for demonstration
-        let public_key_base58 = &self.did_document.verification_method[0].public_key_base58;
-        let public_key_bytes = bs58::decode(public_key_base58)
+        let public_key_multibase = &self.document.verification_method[0].public_key_multibase;
+        let public_key_bytes = bs58::decode(public_key_multibase)
             .into_vec()
-            .map_err(|e| IdentityError::Verification(format!("Invalid public key encoding: {}", e)))?;
+            .map_err(|e| IdentityError::ValidationError(format!("Invalid public key encoding: {}", e)))?;
             
         let public_key = PublicKey::from_bytes(&public_key_bytes)
-            .map_err(|e| IdentityError::Verification(format!("Invalid public key: {}", e)))?;
+            .map_err(|e| IdentityError::ValidationError(format!("Invalid public key: {}", e)))?;
             
         // Verify the signature
         Ok(public_key.verify(credential_json.as_bytes(), &signature).is_ok())
@@ -196,7 +271,7 @@ impl Identity {
     
     // Export DID document to file
     pub fn export_did_document(&self, path: &str) -> Result<(), Box<dyn Error>> {
-        let json = serde_json::to_string_pretty(&self.did_document)?;
+        let json = serde_json::to_string_pretty(&self.document)?;
         fs::write(path, json)?;
         Ok(())
     }

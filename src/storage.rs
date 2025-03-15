@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 
 // Storage error types
 #[derive(Debug)]
@@ -43,6 +44,7 @@ impl Error for StorageError {}
 pub struct StorageOptions {
     pub sync_write: bool,
     pub create_dirs: bool,
+    pub use_cache: bool,
 }
 
 impl Default for StorageOptions {
@@ -50,6 +52,7 @@ impl Default for StorageOptions {
         StorageOptions {
             sync_write: true,
             create_dirs: true,
+            use_cache: true,
         }
     }
 }
@@ -63,19 +66,14 @@ pub struct Storage {
 
 impl Storage {
     // Create a new storage instance
-    pub fn new(base_path: PathBuf) -> Self {
-        let options = StorageOptions::default();
-        
-        // Create the base directory if it doesn't exist
-        if options.create_dirs && !base_path.exists() {
-            fs::create_dir_all(&base_path).unwrap_or_else(|_| {
-                panic!("Failed to create storage directory: {:?}", base_path);
-            });
+    pub fn new(base_path: &str) -> Self {
+        let path = PathBuf::from(base_path);
+        if !path.exists() {
+            fs::create_dir_all(&path).unwrap();
         }
-        
         Storage {
-            base_path,
-            options,
+            base_path: path,
+            options: StorageOptions::default(),
             cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -88,138 +86,104 @@ impl Storage {
     
     // Get the full path for a key
     fn get_path(&self, key: &str) -> PathBuf {
-        let mut path = self.base_path.clone();
-        
-        // Split the key by / and create subdirectories
-        let parts: Vec<&str> = key.split('/').collect();
-        
-        // Add all parts except the last one as subdirectories
-        for part in &parts[..parts.len() - 1] {
-            path.push(part);
-        }
-        
-        // Create directories if needed
-        if self.options.create_dirs && parts.len() > 1 {
-            let _ = fs::create_dir_all(&path);
-        }
-        
-        // Add the last part as the filename
-        path.push(parts[parts.len() - 1]);
-        
-        path
+        self.base_path.join(key.replace("/", &std::path::MAIN_SEPARATOR.to_string()))
     }
     
-    // Put a value
-    pub fn put(&self, key: &str, value: &[u8]) -> Result<(), Box<dyn Error>> {
+    // Put data into storage
+    pub fn put(&self, key: &str, data: &[u8]) -> Result<(), Box<dyn Error>> {
         let path = self.get_path(key);
         
-        // Make sure the parent directory exists
+        // Create parent directories if they don't exist
         if let Some(parent) = path.parent() {
             if !parent.exists() {
                 fs::create_dir_all(parent)?;
             }
         }
         
-        // Write the file
-        let mut file = File::create(&path)?;
-        file.write_all(value)?;
+        // Write the data
+        fs::write(&path, data)?;
         
-        // Sync if needed
-        if self.options.sync_write {
-            file.sync_all()?;
+        // Update cache if enabled
+        if self.options.use_cache {
+            let mut cache = self.cache.lock().unwrap();
+            cache.insert(key.to_string(), data.to_vec());
         }
         
-        // Update cache
-        let mut cache = self.cache.lock().unwrap();
-        cache.insert(key.to_string(), value.to_vec());
-        
         Ok(())
     }
     
-    // Put a serializable value
-    pub fn put_json<T: Serialize>(&self, key: &str, value: &T) -> Result<(), Box<dyn Error>> {
-        let json = serde_json::to_vec(value)?;
-        self.put(key, &json)?;
-        Ok(())
-    }
-    
-    // Get a value
+    // Get data from storage
     pub fn get(&self, key: &str) -> Result<Vec<u8>, Box<dyn Error>> {
-        // Check cache first
-        {
-            let cache = self.cache.lock().unwrap();
-            if let Some(value) = cache.get(key) {
-                return Ok(value.clone());
-            }
-        }
-        
-        // Read from file
         let path = self.get_path(key);
-        if !path.exists() {
-            return Err(Box::new(StorageError::KeyNotFound(key.to_string())));
-        }
-        
-        let mut file = File::open(&path)?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
-        
-        // Update cache
-        let mut cache = self.cache.lock().unwrap();
-        cache.insert(key.to_string(), buffer.clone());
-        
-        Ok(buffer)
+        let mut file = File::open(path)?;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)?;
+        Ok(data)
     }
     
-    // Get a deserializable value
-    pub fn get_json<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<T, Box<dyn Error>> {
+    // Put JSON data into storage
+    pub fn put_json<T: Serialize>(&self, key: &str, value: &T) -> Result<(), Box<dyn Error>> {
+        let json_data = serde_json::to_vec_pretty(value)?;
+        self.put(key, &json_data)
+    }
+    
+    // Load JSON data
+    pub fn get_json<T: DeserializeOwned>(&self, key: &str) -> Result<T, Box<dyn Error>> {
         let data = self.get(key)?;
         let value = serde_json::from_slice(&data)?;
         Ok(value)
     }
     
-    // Delete a value
+    // Alternative method names to maintain compatibility
+    pub fn store_json<T: Serialize>(&self, key: &str, value: &T) -> Result<(), Box<dyn Error>> {
+        self.put_json(key, value)
+    }
+    
+    pub fn load_json<T: DeserializeOwned>(&self, key: &str) -> Result<T, Box<dyn Error>> {
+        self.get_json(key)
+    }
+    
+    // Delete data
     pub fn delete(&self, key: &str) -> Result<(), Box<dyn Error>> {
         let path = self.get_path(key);
-        
-        // Delete the file if it exists
         if path.exists() {
-            fs::remove_file(&path)?;
+            fs::remove_file(path)?;
         }
-        
-        // Remove from cache
-        let mut cache = self.cache.lock().unwrap();
-        cache.remove(key);
-        
         Ok(())
     }
     
-    // List keys with a prefix
+    // Check if key exists
+    pub fn exists(&self, key: &str) -> bool {
+        self.get_path(key).exists()
+    }
+    
+    // List all keys with a given prefix
     pub fn list(&self, prefix: &str) -> Result<Vec<String>, Box<dyn Error>> {
-        let mut prefix_path = self.base_path.clone();
+        let prefix_path = self.get_path(prefix);
+        let base_path_str = self.base_path.to_string_lossy().to_string();
         
-        // Split the prefix by / and navigate to that directory
-        let parts: Vec<&str> = prefix.split('/').collect();
-        for part in &parts {
-            if !part.is_empty() {
-                prefix_path.push(part);
+        let mut keys = Vec::new();
+        
+        if prefix_path.is_dir() {
+            self.list_directory(&prefix_path, &base_path_str, prefix, &mut keys)?;
+        } else if let Some(parent) = prefix_path.parent() {
+            if parent.exists() {
+                let file_name = prefix_path.file_name().unwrap().to_string_lossy();
+                self.list_directory_with_filter(parent, &base_path_str, &file_name.to_string(), &mut keys)?;
             }
         }
-        
-        // If the prefix path doesn't exist, return an empty list
-        if !prefix_path.exists() {
-            return Ok(Vec::new());
-        }
-        
-        // Collect all files recursively
-        let mut keys = Vec::new();
-        self.collect_keys(&prefix_path, &mut keys, prefix)?;
         
         Ok(keys)
     }
     
-    // Helper to recursively collect keys
-    fn collect_keys(&self, dir: &Path, keys: &mut Vec<String>, prefix: &str) -> Result<(), Box<dyn Error>> {
-        if !dir.exists() || !dir.is_dir() {
+    // List files for compatibility
+    pub fn list_files(&self, prefix: &str) -> Result<Vec<String>, Box<dyn Error>> {
+        self.list(prefix)
+    }
+    
+    // List keys in a directory
+    fn list_directory(&self, dir: &Path, base_path: &str, prefix: &str, keys: &mut Vec<String>) -> Result<(), Box<dyn Error>> {
+        if !dir.is_dir() {
             return Ok(());
         }
         
@@ -227,19 +191,35 @@ impl Storage {
             let entry = entry?;
             let path = entry.path();
             
-            if path.is_dir() {
-                // Recurse into subdirectories
-                self.collect_keys(&path, keys, prefix)?;
-            } else {
-                // Convert the path to a key
-                if let Ok(key) = path.strip_prefix(&self.base_path) {
-                    if let Some(key_str) = key.to_str() {
-                        // Only include keys that start with the prefix
-                        if key_str.starts_with(prefix) {
-                            keys.push(key_str.to_string());
-                        }
-                    }
-                }
+            if path.is_file() {
+                let path_str = path.to_string_lossy().to_string();
+                let key = path_str.replace(base_path, "").replace("\\", "/");
+                let key = if key.starts_with('/') { key[1..].to_string() } else { key };
+                keys.push(key);
+            } else if path.is_dir() {
+                self.list_directory(&path, base_path, prefix, keys)?;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    // List keys in a directory with a filter
+    fn list_directory_with_filter(&self, dir: &Path, base_path: &str, filter: &str, keys: &mut Vec<String>) -> Result<(), Box<dyn Error>> {
+        if !dir.is_dir() {
+            return Ok(());
+        }
+        
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let name = path.file_name().unwrap().to_string_lossy();
+            
+            if path.is_file() && name.to_string().contains(filter) {
+                let path_str = path.to_string_lossy().to_string();
+                let key = path_str.replace(base_path, "").replace("\\", "/");
+                let key = if key.starts_with('/') { key[1..].to_string() } else { key };
+                keys.push(key);
             }
         }
         
@@ -253,6 +233,7 @@ impl Storage {
             options: StorageOptions {
                 sync_write: self.options.sync_write,
                 create_dirs: self.options.create_dirs,
+                use_cache: self.options.use_cache,
             },
             cache: self.cache.clone(),
         }

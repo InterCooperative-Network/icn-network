@@ -1,3 +1,5 @@
+/* Disabled temporarily until all modules are implemented
+
 //! ICN node runner
 //!
 //! This binary demonstrates the overlay network in action by creating and
@@ -122,4 +124,11 @@ async fn main() -> Result<()> {
         tokio::time::sleep(Duration::from_secs(5)).await;
         info!("Node {} is running...", node_id);
     }
+}
+
+*/
+
+// Placeholder implementation until modules are available
+fn main() {
+    println!("Node runner is temporarily disabled");
 }

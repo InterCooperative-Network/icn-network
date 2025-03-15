@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::identity::Identity;
 use crate::storage::Storage;
 use crate::cross_federation_governance::{CrossFederationCoordination, CoordinationType, CoordinationStatus};
+use std::sync::Arc;
 
 // Resource sharing error types
 #[derive(Debug)]
@@ -294,13 +295,13 @@ pub struct UsageLimits {
 
 // Resource sharing system
 pub struct ResourceSharingSystem {
-    identity: Identity,
-    storage: Storage,
+    identity: Arc<Identity>,
+    storage: Arc<Storage>,
 }
 
 impl ResourceSharingSystem {
     // Create a new resource sharing system
-    pub fn new(identity: Identity, storage: Storage) -> Self {
+    pub fn new(identity: Arc<Identity>, storage: Arc<Storage>) -> Self {
         ResourceSharingSystem {
             identity,
             storage,
@@ -495,10 +496,10 @@ impl ResourceSharingSystem {
         let mut resources = Vec::new();
         
         // Get all resources
-        let resource_ids = self.storage.list_keys("resources/")?;
+        let resource_ids = self.storage.list("resources/")?;
         
         for id in resource_ids {
-            let resource: Resource = self.storage.get_json(&format!("resources/{}", id))?;
+            let resource: Resource = self.storage.get_json(&id)?;
             
             // Filter by type if specified
             if let Some(rtype) = &resource_type {
@@ -538,10 +539,10 @@ impl ResourceSharingSystem {
         let mut allocations = Vec::new();
         
         // Get all allocations
-        let allocation_ids = self.storage.list_keys("allocations/")?;
+        let allocation_ids = self.storage.list("allocations/")?;
         
         for id in allocation_ids {
-            let allocation: ResourceAllocation = self.storage.get_json(&format!("allocations/{}", id))?;
+            let allocation: ResourceAllocation = self.storage.get_json(&id)?;
             
             // Filter by federation
             if allocation.federation_id != self.identity.coop_id {
@@ -572,12 +573,12 @@ impl ResourceSharingSystem {
         )?;
 
         // Get all allocations for this resource
-        let allocation_ids = self.storage.list_keys("allocations/")?;
+        let allocation_ids = self.storage.list("allocations/")?;
         let mut active_allocations = 0;
         let mut total_allocated = 0;
 
         for id in allocation_ids {
-            let allocation: ResourceAllocation = self.storage.get_json(&format!("allocations/{}", id))?;
+            let allocation: ResourceAllocation = self.storage.get_json(&id)?;
             if allocation.resource_id == resource_id && allocation.status == AllocationStatus::Active {
                 active_allocations += 1;
                 total_allocated += allocation.amount;
@@ -738,10 +739,10 @@ impl ResourceSharingSystem {
         let mut resources = Vec::new();
         
         // Get all resources
-        let resource_ids = self.storage.list_keys("resources/")?;
+        let resource_ids = self.storage.list("resources/")?;
         
         for id in resource_ids {
-            let resource: Resource = self.storage.get_json(&format!("resources/{}", id))?;
+            let resource: Resource = self.storage.get_json(&id)?;
             
             // Check if resource has required capabilities
             if let Some(capabilities) = resource.metadata.get("capabilities") {
@@ -773,12 +774,12 @@ impl ResourceSharingSystem {
         )?;
 
         // Get all allocations for this resource
-        let allocation_ids = self.storage.list_keys("allocations/")?;
+        let allocation_ids = self.storage.list("allocations/")?;
         let mut period_allocations = Vec::new();
         let mut total_usage = 0;
 
         for id in allocation_ids {
-            let allocation: ResourceAllocation = self.storage.get_json(&format!("allocations/{}", id))?;
+            let allocation: ResourceAllocation = self.storage.get_json(&id)?;
             if allocation.resource_id == resource_id 
                 && allocation.status == AllocationStatus::Active
                 && allocation.start_time >= start_time

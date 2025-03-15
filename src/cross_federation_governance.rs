@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::identity::Identity;
 use crate::storage::Storage;
 use crate::federation_governance::{Proposal, ProposalType, ProposalStatus};
+use std::sync::Arc;
 
 // Cross-federation governance error types
 #[derive(Debug)]
@@ -15,6 +16,7 @@ pub enum CrossFederationError {
     InsufficientFederations(String),
     CoordinationExpired(String),
     InvalidConsensus(String),
+    InvalidProposal(String),
 }
 
 impl fmt::Display for CrossFederationError {
@@ -26,6 +28,7 @@ impl fmt::Display for CrossFederationError {
             CrossFederationError::InsufficientFederations(msg) => write!(f, "Insufficient federations: {}", msg),
             CrossFederationError::CoordinationExpired(msg) => write!(f, "Coordination expired: {}", msg),
             CrossFederationError::InvalidConsensus(msg) => write!(f, "Invalid consensus: {}", msg),
+            CrossFederationError::InvalidProposal(msg) => write!(f, "Invalid proposal: {}", msg),
         }
     }
 }
@@ -43,7 +46,7 @@ pub enum CoordinationType {
 }
 
 // Cross-federation coordination status
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CoordinationStatus {
     Draft,
     Active,
@@ -89,13 +92,13 @@ pub struct ConsensusSignature {
 
 // Cross-federation governance system
 pub struct CrossFederationGovernance {
-    identity: Identity,
-    storage: Storage,
+    identity: Arc<Identity>,
+    storage: Arc<Storage>,
 }
 
 impl CrossFederationGovernance {
     // Create a new cross-federation governance system
-    pub fn new(identity: Identity, storage: Storage) -> Self {
+    pub fn new(identity: Arc<Identity>, storage: Arc<Storage>) -> Self {
         CrossFederationGovernance {
             identity,
             storage,
