@@ -6,33 +6,29 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use futures::prelude::*;
 use libp2p::{
     core::{muxing::StreamMuxerBox, transport::OrTransport, upgrade},
     gossipsub::{self, IdentTopic, MessageAuthenticity, MessageId, ValidationMode},
-    identify, kad, mdns, noise, ping, request_response,
-    swarm::{self, NetworkBehaviour, SwarmBuilder, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, Transport,
+    identify, kad, mdns, noise, ping, swarm,
+    swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent},
+    tcp, yamux, Multiaddr, PeerId,
     identity::Keypair,
 };
 use tokio::sync::{mpsc, RwLock, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
-use icn_core::{
-    crypto::{NodeId, Signature},
-    storage::Storage,
-    utils::timestamp_secs,
-};
-
-use icn_identity::IdentityProvider;
+use icn_core::storage::Storage;
 
 use crate::{
     MessageHandler, NetworkError, NetworkMessage, NetworkResult, NetworkService,
     PeerInfo,
 };
+use crate::metrics::NetworkMetrics;
 
 // Topic names for gossipsub
 const TOPIC_IDENTITY: &str = "icn/identity/v1";
@@ -46,7 +42,7 @@ pub struct P2pConfig {
     /// Local listening addresses
     pub listen_addresses: Vec<Multiaddr>,
     /// Bootstrap peers
-    pub bootstrap_peers: Vec<Multiaddr>,
+    pub bootstrap_peers: Vec<String>,
     /// Enable mDNS discovery
     pub enable_mdns: bool,
     /// Enable Kademlia DHT
@@ -59,6 +55,10 @@ pub struct P2pConfig {
     pub keep_alive: Duration,
     /// Path to persistent peer storage
     pub peer_store_path: Option<String>,
+    /// Enable metrics collection
+    pub enable_metrics: bool,
+    /// Metrics server address
+    pub metrics_address: Option<String>,
 }
 
 impl Default for P2pConfig {
@@ -72,6 +72,8 @@ impl Default for P2pConfig {
             message_timeout: Duration::from_secs(10),
             keep_alive: Duration::from_secs(20),
             peer_store_path: None,
+            enable_metrics: false,
+            metrics_address: Some("127.0.0.1:9090".to_string()),
         }
     }
 }
@@ -142,23 +144,25 @@ enum Command {
     /// Broadcast a message to all peers
     Broadcast(NetworkMessage),
     /// Send a message to a specific peer
-    SendMessage(PeerId, NetworkMessage),
+    SendTo(PeerId, NetworkMessage),
     /// Connect to a peer
     Connect(Multiaddr, mpsc::Sender<NetworkResult<PeerId>>),
     /// Disconnect from a peer
     Disconnect(PeerId, mpsc::Sender<NetworkResult<()>>),
     /// Get information about a peer
-    GetPeerInfo(PeerId, mpsc::Sender<NetworkResult<Option<PeerInfo>>>),
+    GetPeerInfo(PeerId, mpsc::Sender<NetworkResult<PeerInfo>>),
     /// Get a list of connected peers
     GetConnectedPeers(mpsc::Sender<NetworkResult<Vec<PeerInfo>>>),
+    /// Register message handler
+    RegisterHandler(String, Arc<dyn MessageHandler>, mpsc::Sender<NetworkResult<()>>),
+    /// Get listen addresses
+    GetListenAddresses(mpsc::Sender<NetworkResult<Vec<Multiaddr>>>),
     /// Stop the network service
     Stop(mpsc::Sender<NetworkResult<()>>),
 }
 
 /// The main P2P network service implementation
 pub struct P2pNetwork {
-    /// Identity provider for authentication
-    identity_provider: Arc<dyn IdentityProvider>,
     /// Storage for network data
     storage: Arc<dyn Storage>,
     /// libp2p key pair
@@ -172,15 +176,16 @@ pub struct P2pNetwork {
     /// Background task handle
     task_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     /// Message handlers
-    handlers: Arc<RwLock<Vec<Arc<dyn MessageHandler>>>>,
+    handlers: Arc<RwLock<HashMap<String, Vec<Arc<dyn MessageHandler>>>>>,
     /// Known peers
     peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
+    /// Network metrics
+    metrics: Option<NetworkMetrics>,
 }
 
 impl P2pNetwork {
     /// Create a new P2P network
     pub async fn new(
-        identity_provider: Arc<dyn IdentityProvider>,
         storage: Arc<dyn Storage>,
         config: P2pConfig,
     ) -> NetworkResult<Self> {
@@ -191,22 +196,53 @@ impl P2pNetwork {
         // Create the command channel
         let (command_tx, command_rx) = mpsc::channel(100);
         
+        // Initialize metrics if enabled
+        let metrics = if config.enable_metrics {
+            let metrics = NetworkMetrics::new();
+            
+            // Start the metrics server if an address is provided
+            if let Some(addr) = &config.metrics_address {
+                crate::metrics::start_metrics_server(metrics.clone(), addr).await?;
+                crate::metrics::start_metrics_collection(metrics.clone()).await;
+            }
+            
+            Some(metrics)
+        } else {
+            None
+        };
+
         let network = Self {
-            identity_provider,
             storage,
             key_pair,
             local_peer_id,
             config,
             command_tx,
             task_handle: Arc::new(Mutex::new(None)),
-            handlers: Arc::new(RwLock::new(Vec::new())),
+            handlers: Arc::new(RwLock::new(HashMap::new())),
             peers: Arc::new(RwLock::new(HashMap::new())),
+            metrics,
         };
         
         // Start the background task
         network.start_background_task(command_rx).await?;
         
         Ok(network)
+    }
+    
+    /// Get the local peer ID
+    pub fn local_peer_id(&self) -> PeerId {
+        self.local_peer_id
+    }
+    
+    /// Get the listen addresses
+    pub async fn listen_addresses(&self) -> NetworkResult<Vec<Multiaddr>> {
+        let (tx, rx) = mpsc::channel(1);
+        self.command_tx.send(Command::GetListenAddresses(tx)).await
+            .map_err(|_| NetworkError::InternalError("Failed to send get_listen_addresses command".to_string()))?;
+        
+        // Wait for the response
+        rx.await
+            .map_err(|_| NetworkError::InternalError("Failed to receive get_listen_addresses response".to_string()))?
     }
     
     /// Load an existing or create a new libp2p keypair
@@ -250,7 +286,7 @@ impl P2pNetwork {
             .into_authentic(key_pair)
             .map_err(|e| NetworkError::Libp2pError(format!("Signing libp2p-noise static DH keypair failed: {}", e)))?;
         
-        let transport = tcp::async_io::Transport::new(tcp::Config::default())
+        let transport = tcp::async_io::Transport::new(tcp::Config::default().nodelay(true))
             .upgrade(upgrade::Version::V1)
             .authenticate(noise::NoiseConfig::xx(noise_keys).into_authenticated())
             .multiplex(yamux::YamuxConfig::default())
@@ -308,7 +344,7 @@ impl P2pNetwork {
             gossipsub,
         };
         
-        let swarm = SwarmBuilder::with_async_std_executor(
+        let swarm = SwarmBuilder::with_tokio_executor(
             transport,
             behaviour,
             key_pair.public().to_peer_id(),
@@ -329,7 +365,7 @@ impl P2pNetwork {
         
         // Connect to bootstrap peers
         for addr in &self.config.bootstrap_peers {
-            match swarm.dial(addr.clone()) {
+            match swarm.dial(addr.parse::<Multiaddr>()?) {
                 Ok(_) => info!("Dialing bootstrap peer {}", addr),
                 Err(e) => warn!("Failed to dial bootstrap peer {}: {}", addr, e),
             }
@@ -339,7 +375,27 @@ impl P2pNetwork {
         let handlers = self.handlers.clone();
         let peers = self.peers.clone();
         let peer_id = self.local_peer_id;
-        let identity_provider = self.identity_provider.clone();
+        
+        // Create a channel for listen addresses
+        let (listen_tx, mut listen_rx) = mpsc::channel::<Multiaddr>(16);
+        let listen_addresses = Arc::new(RwLock::new(Vec::<Multiaddr>::new()));
+        let listen_addresses_clone = listen_addresses.clone();
+        
+        // Spawn a task to collect listen addresses
+        tokio::spawn(async move {
+            while let Some(addr) = listen_rx.recv().await {
+                let mut addrs = listen_addresses_clone.write().await;
+                if !addrs.contains(&addr) {
+                    addrs.push(addr);
+                }
+            }
+        });
+        
+        // Record metrics for initial state
+        if let Some(metrics) = &self.metrics {
+            let peer_count = swarm.connected_peers().count();
+            metrics.peers_connected.set(peer_count as i64);
+        }
         
         // Start the network task
         let task = tokio::spawn(async move {
@@ -348,27 +404,100 @@ impl P2pNetwork {
             loop {
                 tokio::select! {
                     event = swarm.select_next_some() => {
+                        let start_time = Instant::now();
+                        
                         Self::handle_swarm_event(
                             event, 
                             &mut swarm, 
                             &handlers,
                             &peers,
-                            &identity_provider,
+                            self.metrics.as_ref(),
                         ).await;
+                        
+                        // Record event processing time
+                        if let Some(metrics) = &self.metrics {
+                            let elapsed = start_time.elapsed();
+                            metrics.record_message_processing_time(elapsed);
+                        }
                     }
                     cmd = command_rx.recv() => {
                         match cmd {
                             Some(Command::Broadcast(message)) => {
-                                Self::handle_broadcast(&mut swarm, message).await;
+                                let start_time = Instant::now();
+                                
+                                Self::handle_broadcast(&mut swarm, message.clone()).await;
+                                
+                                // Record metrics
+                                if let Some(metrics) = &self.metrics {
+                                    let elapsed = start_time.elapsed();
+                                    metrics.record_message_processing_time(elapsed);
+                                    
+                                    // Record message size approximately
+                                    let message_type = match &message {
+                                        NetworkMessage::IdentityAnnouncement(_) => "identity",
+                                        NetworkMessage::TransactionAnnouncement(_) => "transaction",
+                                        NetworkMessage::LedgerStateUpdate(_) => "ledger",
+                                        NetworkMessage::ProposalAnnouncement(_) => "proposal",
+                                        NetworkMessage::VoteAnnouncement(_) => "vote",
+                                        NetworkMessage::Custom(m) => &m.message_type,
+                                    };
+                                    
+                                    // Get approximate size
+                                    if let Ok(bytes) = bincode::serialize(&message) {
+                                        metrics.record_message_sent(message_type, bytes.len());
+                                    }
+                                }
                             }
-                            Some(Command::SendMessage(peer_id, message)) => {
-                                Self::handle_send_message(&mut swarm, &peer_id, message).await;
+                            Some(Command::SendTo(peer_id, message)) => {
+                                let start_time = Instant::now();
+                                
+                                Self::handle_send_to(&mut swarm, &peer_id, message.clone()).await;
+                                
+                                // Record metrics
+                                if let Some(metrics) = &self.metrics {
+                                    let elapsed = start_time.elapsed();
+                                    metrics.record_message_processing_time(elapsed);
+                                    
+                                    // Record message size approximately
+                                    let message_type = match &message {
+                                        NetworkMessage::IdentityAnnouncement(_) => "identity",
+                                        NetworkMessage::TransactionAnnouncement(_) => "transaction",
+                                        NetworkMessage::LedgerStateUpdate(_) => "ledger",
+                                        NetworkMessage::ProposalAnnouncement(_) => "proposal",
+                                        NetworkMessage::VoteAnnouncement(_) => "vote",
+                                        NetworkMessage::Custom(m) => &m.message_type,
+                                    };
+                                    
+                                    // Get approximate size
+                                    if let Ok(bytes) = bincode::serialize(&message) {
+                                        metrics.record_message_sent(message_type, bytes.len());
+                                    }
+                                }
                             }
                             Some(Command::Connect(addr, response_tx)) => {
-                                Self::handle_connect(&mut swarm, addr, response_tx).await;
+                                // Record connection attempt
+                                if let Some(metrics) = &self.metrics {
+                                    metrics.record_connection_attempt();
+                                }
+                                
+                                let result = Self::handle_connect(&mut swarm, addr, response_tx).await;
+                                
+                                // Record connection result
+                                if let Some(metrics) = &self.metrics {
+                                    if result.is_ok() {
+                                        metrics.record_connection_success();
+                                    } else {
+                                        metrics.record_connection_failure();
+                                    }
+                                }
                             }
                             Some(Command::Disconnect(peer_id, response_tx)) => {
                                 Self::handle_disconnect(&mut swarm, &peer_id, response_tx).await;
+                                
+                                // Record disconnection
+                                if let Some(metrics) = &self.metrics {
+                                    metrics.record_peer_disconnected();
+                                }
                             }
                             Some(Command::GetPeerInfo(peer_id, response_tx)) => {
                                 Self::handle_get_peer_info(&peers, &peer_id, response_tx).await;
@@ -376,9 +505,22 @@ impl P2pNetwork {
                             Some(Command::GetConnectedPeers(response_tx)) => {
                                 Self::handle_get_connected_peers(&peers, response_tx).await;
                             }
+                            Some(Command::RegisterHandler(message_type, handler, response_tx)) => {
+                                Self::handle_register_handler(&handlers, message_type, handler, response_tx).await;
+                            }
+                            Some(Command::GetListenAddresses(response_tx)) => {
+                                let addrs = listen_addresses.read().await.clone();
+                                let _ = response_tx.send(Ok(addrs)).await;
+                            }
                             Some(Command::Stop(response_tx)) => {
                                 info!("Stopping P2P network task");
                                 let _ = response_tx.send(Ok(())).await;
+                                
+                                // Reset metrics
+                                if let Some(metrics) = &self.metrics {
+                                    metrics.reset();
+                                }
+                                
                                 break;
                             }
                             None => {
@@ -405,9 +547,9 @@ impl P2pNetwork {
     async fn handle_swarm_event(
         event: SwarmEvent<ComposedEvent>,
         swarm: &mut swarm::Swarm<P2pBehaviour>,
-        handlers: &Arc<RwLock<Vec<Arc<dyn MessageHandler>>>>,
+        handlers: &Arc<RwLock<HashMap<String, Vec<Arc<dyn MessageHandler>>>>>,
         peers: &Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
-        identity_provider: &Arc<dyn IdentityProvider>,
+        metrics: Option<&NetworkMetrics>,
     ) {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
@@ -438,13 +580,39 @@ impl P2pNetwork {
                     message_id, propagation_source
                 );
                 
+                // Extract message type from the topic
+                let topic = &message.topic;
+                let message_type = match topic.as_str() {
+                    TOPIC_IDENTITY => "identity.announcement",
+                    TOPIC_TRANSACTIONS => "ledger.transaction",
+                    TOPIC_LEDGER => "ledger.state",
+                    TOPIC_GOVERNANCE => {
+                        // For governance, we need to look at the message content to determine if it's a proposal or vote
+                        // This is a simplification; in a real system we would have a more robust mechanism
+                        if message.data.starts_with(b"proposal") {
+                            "governance.proposal"
+                        } else {
+                            "governance.vote"
+                        }
+                    },
+                    _ => {
+                        // For unknown topics, we'll just use the topic name
+                        topic.as_str()
+                    }
+                };
+                
                 match serde_json::from_slice::<NetworkMessage>(&message.data) {
                     Ok(network_message) => {
-                        // Call all handlers
+                        // Get peer info
+                        let peer_info = Self::get_peer_info_from_id(peers, &propagation_source).await;
+                        
+                        // Call all handlers for this message type
                         let handlers_guard = handlers.read().await;
-                        for handler in handlers_guard.iter() {
-                            if let Err(e) = handler.handle_message(&propagation_source, network_message.clone()).await {
-                                error!("Handler error: {}", e);
+                        if let Some(type_handlers) = handlers_guard.get(message_type) {
+                            for handler in type_handlers {
+                                if let Err(e) = handler.handle_message(&network_message, &peer_info).await {
+                                    error!("Handler error: {}", e);
+                                }
                             }
                         }
                     }
@@ -458,7 +626,7 @@ impl P2pNetwork {
                     info!("mDNS discovered peer {} at {}", peer_id, addr);
                     
                     // Update peer info
-                    Self::update_peer_connection(peers, &peer_id, false, Some(addr)).await;
+                    Self::update_peer_connection(peers, &peer_id, false, Some(addr.clone())).await;
                     
                     // Try to dial the peer if not connected
                     if !swarm.is_connected(&peer_id) {
@@ -472,22 +640,31 @@ impl P2pNetwork {
             }
             SwarmEvent::Behaviour(ComposedEvent::Identify(identify::Event::Received { 
                 peer_id,
-                info: identify::Info { protocol_version, agent_version, listen_addrs, .. },
+                info: identify::Info { protocol_version, agent_version, listen_addrs, protocols, .. },
             })) => {
                 info!(
                     "Identified peer {} as {} ({}), listening on: {:?}",
                     peer_id, agent_version, protocol_version, listen_addrs
                 );
                 
-                // Update peer info with all addresses
-                for addr in listen_addrs {
-                    Self::update_peer_info(peers, &peer_id, None, Some(addr)).await;
-                }
+                // Update peer info with all addresses and protocols
+                Self::update_peer_info(peers, &peer_id, &listen_addrs, &protocols).await;
                 
                 // Add the addresses to the Kademlia routing table
                 for addr in listen_addrs {
                     swarm.behaviour_mut().kad.add_address(&peer_id, addr);
                 }
+            }
+            SwarmEvent::Behaviour(ComposedEvent::Ping(ping::Event {
+                peer,
+                result: Ok(rtt),
+                ..
+            })) => {
+                // Record peer latency
+                if let Some(m) = metrics {
+                    m.record_peer_latency(&peer.to_string(), rtt).await;
+                }
+                debug!("Ping to {} took {:?}", peer, rtt);
             }
             _ => {} // Ignore other events
         }
@@ -501,16 +678,18 @@ impl P2pNetwork {
         addr: Option<Multiaddr>,
     ) {
         let mut peers_guard = peers.write().await;
-        let now = timestamp_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         
         let entry = peers_guard.entry(*peer_id).or_insert_with(|| {
             PeerInfo {
                 peer_id: *peer_id,
-                node_id: None,
-                addresses: HashSet::new(),
-                first_seen: now,
-                last_seen: now,
+                addresses: Vec::new(),
+                protocols: Vec::new(),
                 connected: false,
+                last_seen: now,
             }
         });
         
@@ -518,7 +697,9 @@ impl P2pNetwork {
         entry.connected = connected;
         
         if let Some(addr) = addr {
-            entry.addresses.insert(addr);
+            if !entry.addresses.contains(&addr) {
+                entry.addresses.push(addr);
+            }
         }
     }
     
@@ -526,31 +707,60 @@ impl P2pNetwork {
     async fn update_peer_info(
         peers: &Arc<RwLock<HashMap<PeerId, PeerInfo>>>, 
         peer_id: &PeerId,
-        node_id: Option<NodeId>,
-        addr: Option<Multiaddr>,
+        addresses: &[Multiaddr],
+        protocols: &[String],
     ) {
         let mut peers_guard = peers.write().await;
-        let now = timestamp_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         
         let entry = peers_guard.entry(*peer_id).or_insert_with(|| {
             PeerInfo {
                 peer_id: *peer_id,
-                node_id: None,
-                addresses: HashSet::new(),
-                first_seen: now,
-                last_seen: now,
+                addresses: Vec::new(),
+                protocols: Vec::new(),
                 connected: false,
+                last_seen: now,
             }
         });
         
         entry.last_seen = now;
         
-        if let Some(node_id) = node_id {
-            entry.node_id = Some(node_id);
+        // Update addresses
+        for addr in addresses {
+            if !entry.addresses.contains(addr) {
+                entry.addresses.push(addr.clone());
+            }
         }
         
-        if let Some(addr) = addr {
-            entry.addresses.insert(addr);
+        // Update protocols
+        entry.protocols = protocols.to_vec();
+    }
+    
+    /// Get peer info from ID
+    async fn get_peer_info_from_id(
+        peers: &Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
+        peer_id: &PeerId,
+    ) -> PeerInfo {
+        let peers_guard = peers.read().await;
+        if let Some(info) = peers_guard.get(peer_id) {
+            info.clone()
+        } else {
+            // Create a minimal PeerInfo if we don't have it
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            
+            PeerInfo {
+                peer_id: *peer_id,
+                addresses: Vec::new(),
+                protocols: Vec::new(),
+                connected: true, // Assume connected since we're receiving messages
+                last_seen: now,
+            }
         }
     }
     
@@ -574,7 +784,7 @@ impl P2pNetwork {
             NetworkMessage::TransactionAnnouncement(_) => TOPIC_TRANSACTIONS,
             NetworkMessage::LedgerStateUpdate(_) => TOPIC_LEDGER,
             NetworkMessage::ProposalAnnouncement(_) | NetworkMessage::VoteAnnouncement(_) => TOPIC_GOVERNANCE,
-            NetworkMessage::Custom { message_type, .. } => {
+            NetworkMessage::Custom(custom) => {
                 // For custom messages, we use the governance topic
                 TOPIC_GOVERNANCE
             }
@@ -589,7 +799,7 @@ impl P2pNetwork {
     }
     
     /// Handle send message command
-    async fn handle_send_message(
+    async fn handle_send_to(
         swarm: &mut swarm::Swarm<P2pBehaviour>,
         peer_id: &PeerId,
         message: NetworkMessage,
@@ -604,22 +814,33 @@ impl P2pNetwork {
         swarm: &mut swarm::Swarm<P2pBehaviour>,
         addr: Multiaddr,
         response_tx: mpsc::Sender<NetworkResult<PeerId>>,
-    ) {
+    ) -> NetworkResult<PeerId> {
         // Try to dial the address
         match swarm.dial(addr.clone()) {
             Ok(_) => {
                 info!("Dialing {}", addr);
                 
-                // We don't immediately know the peer ID
                 // In a real implementation, we would wait for the connection to be established
-                // and then return the peer ID
-                // For now, we just return an error
-                let _ = response_tx.send(Err(NetworkError::ConnectionFailed(
-                    "Dialing successful, but peer ID not yet known".to_string()
-                ))).await;
+                // and then return the peer ID. For now, we'll just return success with a placeholder.
+                // We'll assume this is using multiaddr with a peer ID component for now
+                if let Some(peer_id) = addr.iter().find_map(|p| {
+                    if let libp2p::multiaddr::Protocol::P2p(hash) = p {
+                        Some(PeerId::from_multihash(hash).ok()?)
+                    } else {
+                        None
+                    }
+                }) {
+                    let _ = response_tx.send(Ok(peer_id)).await;
+                } else {
+                    // If we can't extract a peer ID, return an error
+                    let err = NetworkError::InternalError(
+                        "Dialing successful, but could not determine peer ID".to_string()
+                    );
+                    let _ = response_tx.send(Err(err)).await;
+                }
             }
             Err(e) => {
-                let err = NetworkError::ConnectionFailed(format!("Failed to dial {}: {}", addr, e));
+                let err = NetworkError::InternalError(format!("Failed to dial {}: {}", addr, e));
                 let _ = response_tx.send(Err(err)).await;
             }
         }
@@ -637,7 +858,7 @@ impl P2pNetwork {
             let _ = response_tx.send(Ok(())).await;
         } else {
             warn!("Failed to disconnect from {}", peer_id);
-            let err = NetworkError::PeerNotFound(*peer_id);
+            let err = NetworkError::PeerNotFound(peer_id.to_string());
             let _ = response_tx.send(Err(err)).await;
         }
     }
@@ -646,11 +867,15 @@ impl P2pNetwork {
     async fn handle_get_peer_info(
         peers: &Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
         peer_id: &PeerId,
-        response_tx: mpsc::Sender<NetworkResult<Option<PeerInfo>>>,
+        response_tx: mpsc::Sender<NetworkResult<PeerInfo>>,
     ) {
         let peers_guard = peers.read().await;
-        let result = peers_guard.get(peer_id).cloned();
-        let _ = response_tx.send(Ok(result)).await;
+        if let Some(info) = peers_guard.get(peer_id) {
+            let _ = response_tx.send(Ok(info.clone())).await;
+        } else {
+            let err = NetworkError::PeerNotFound(peer_id.to_string());
+            let _ = response_tx.send(Err(err)).await;
+        }
     }
     
     /// Handle get connected peers command
@@ -665,6 +890,22 @@ impl P2pNetwork {
             .collect();
         let _ = response_tx.send(Ok(connected_peers)).await;
     }
+    
+    /// Handle register handler command
+    async fn handle_register_handler(
+        handlers: &Arc<RwLock<HashMap<String, Vec<Arc<dyn MessageHandler>>>>>,
+        message_type: String,
+        handler: Arc<dyn MessageHandler>,
+        response_tx: mpsc::Sender<NetworkResult<()>>,
+    ) {
+        let mut handlers_guard = handlers.write().await;
+        
+        let type_handlers = handlers_guard.entry(message_type.clone()).or_insert_with(Vec::new);
+        type_handlers.push(handler);
+        
+        debug!("Registered handler for message type: {}", message_type);
+        let _ = response_tx.send(Ok(())).await;
+    }
 }
 
 #[async_trait]
@@ -677,72 +918,72 @@ impl NetworkService for P2pNetwork {
     async fn stop(&self) -> NetworkResult<()> {
         let (tx, rx) = mpsc::channel(1);
         self.command_tx.send(Command::Stop(tx)).await
-            .map_err(|_| NetworkError::MessageHandlingError("Failed to send stop command".to_string()))?;
+            .map_err(|_| NetworkError::InternalError("Failed to send stop command".to_string()))?;
         
         // Wait for the stop command to complete
         rx.await
-            .map_err(|_| NetworkError::MessageHandlingError("Failed to receive stop response".to_string()))?
+            .map_err(|_| NetworkError::InternalError("Failed to receive stop response".to_string()))?
     }
     
     async fn broadcast(&self, message: NetworkMessage) -> NetworkResult<()> {
         self.command_tx.send(Command::Broadcast(message)).await
-            .map_err(|_| NetworkError::MessageHandlingError("Failed to send broadcast command".to_string()))?;
+            .map_err(|_| NetworkError::InternalError("Failed to send broadcast command".to_string()))?;
         Ok(())
     }
     
-    async fn send_message(&self, peer_id: &PeerId, message: NetworkMessage) -> NetworkResult<()> {
-        self.command_tx.send(Command::SendMessage(*peer_id, message)).await
-            .map_err(|_| NetworkError::MessageHandlingError("Failed to send message command".to_string()))?;
+    async fn send_to(&self, peer_id: &PeerId, message: NetworkMessage) -> NetworkResult<()> {
+        self.command_tx.send(Command::SendTo(*peer_id, message)).await
+            .map_err(|_| NetworkError::InternalError("Failed to send message command".to_string()))?;
         Ok(())
     }
     
     async fn connect(&self, addr: &Multiaddr) -> NetworkResult<PeerId> {
         let (tx, rx) = mpsc::channel(1);
         self.command_tx.send(Command::Connect(addr.clone(), tx)).await
-            .map_err(|_| NetworkError::MessageHandlingError("Failed to send connect command".to_string()))?;
+            .map_err(|_| NetworkError::InternalError("Failed to send connect command".to_string()))?;
         
         // Wait for the connect command to complete
         rx.await
-            .map_err(|_| NetworkError::MessageHandlingError("Failed to receive connect response".to_string()))?
+            .map_err(|_| NetworkError::InternalError("Failed to receive connect response".to_string()))?
     }
     
     async fn disconnect(&self, peer_id: &PeerId) -> NetworkResult<()> {
         let (tx, rx) = mpsc::channel(1);
         self.command_tx.send(Command::Disconnect(*peer_id, tx)).await
-            .map_err(|_| NetworkError::MessageHandlingError("Failed to send disconnect command".to_string()))?;
+            .map_err(|_| NetworkError::InternalError("Failed to send disconnect command".to_string()))?;
         
         // Wait for the disconnect command to complete
         rx.await
-            .map_err(|_| NetworkError::MessageHandlingError("Failed to receive disconnect response".to_string()))?
+            .map_err(|_| NetworkError::InternalError("Failed to receive disconnect response".to_string()))?
     }
     
-    async fn get_peer_info(&self, peer_id: &PeerId) -> NetworkResult<Option<PeerInfo>> {
+    async fn get_peer_info(&self, peer_id: &PeerId) -> NetworkResult<PeerInfo> {
         let (tx, rx) = mpsc::channel(1);
         self.command_tx.send(Command::GetPeerInfo(*peer_id, tx)).await
-            .map_err(|_| NetworkError::MessageHandlingError("Failed to send get_peer_info command".to_string()))?;
+            .map_err(|_| NetworkError::InternalError("Failed to send get_peer_info command".to_string()))?;
         
         // Wait for the get_peer_info command to complete
         rx.await
-            .map_err(|_| NetworkError::MessageHandlingError("Failed to receive get_peer_info response".to_string()))?
+            .map_err(|_| NetworkError::InternalError("Failed to receive get_peer_info response".to_string()))?
     }
     
     async fn get_connected_peers(&self) -> NetworkResult<Vec<PeerInfo>> {
         let (tx, rx) = mpsc::channel(1);
         self.command_tx.send(Command::GetConnectedPeers(tx)).await
-            .map_err(|_| NetworkError::MessageHandlingError("Failed to send get_connected_peers command".to_string()))?;
+            .map_err(|_| NetworkError::InternalError("Failed to send get_connected_peers command".to_string()))?;
         
         // Wait for the get_connected_peers command to complete
         rx.await
-            .map_err(|_| NetworkError::MessageHandlingError("Failed to receive get_connected_peers response".to_string()))?
+            .map_err(|_| NetworkError::InternalError("Failed to receive get_connected_peers response".to_string()))?
     }
     
-    fn register_handler(&self, handler: Arc<dyn MessageHandler>) {
-        tokio::spawn({
-            let handlers = self.handlers.clone();
-            async move {
-                let mut handlers_guard = handlers.write().await;
-                handlers_guard.push(handler);
-            }
-        });
+    async fn register_message_handler(&self, message_type: &str, handler: Arc<dyn MessageHandler>) -> NetworkResult<()> {
+        let (tx, rx) = mpsc::channel(1);
+        self.command_tx.send(Command::RegisterHandler(message_type.to_string(), handler, tx)).await
+            .map_err(|_| NetworkError::InternalError("Failed to send register_handler command".to_string()))?;
+        
+        // Wait for the register_handler command to complete
+        rx.await
+            .map_err(|_| NetworkError::InternalError("Failed to receive register_handler response".to_string()))?
     }
 } 

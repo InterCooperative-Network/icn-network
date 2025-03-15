@@ -33,9 +33,19 @@ anyhow = { workspace = true }
 
 # Utilities
 uuid = { version = "1.4", features = ["v4", "serde"] }
+clap = { version = "4.4", features = ["derive"] }
+
+# Metrics
+prometheus = { version = "0.13", default-features = false }
+hyper = { version = "0.14", features = ["server", "tcp", "http1"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.8"
 test-log = { version = "0.2", features = ["trace"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] } 
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "network_benchmarks"
+harness = false 

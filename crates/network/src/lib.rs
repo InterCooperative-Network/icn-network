@@ -234,9 +234,15 @@ pub mod p2p;
 pub mod discovery;
 pub mod messaging;
 pub mod sync;
+pub mod metrics;
+
+// Testing modules
+#[cfg(test)]
+mod tests;
 
 // Re-exports
 pub use p2p::{P2pNetwork, P2pConfig};
 pub use discovery::{PeerDiscovery, DiscoveryManager, DiscoveryConfig};
 pub use messaging::{MessageProcessor, MessageEnvelope, DefaultMessageHandler};
-pub use sync::{Synchronizer, SyncConfig, SyncState}; 
+pub use sync::{Synchronizer, SyncConfig, SyncState};
+pub use metrics::{NetworkMetrics, Timer, start_metrics_server}; 

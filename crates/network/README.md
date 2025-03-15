@@ -1,183 +1,180 @@
 # ICN Network
 
-The network layer for the InterCooperative Network (ICN) system.
-
-## Overview
-
-This crate provides the networking capabilities for ICN, allowing nodes to communicate in a peer-to-peer fashion. It handles node discovery, secure messaging, and state synchronization between nodes.
+The network communication layer for the InterCooperative Network (ICN). This crate provides a peer-to-peer networking solution using libp2p, enabling nodes in the network to discover each other, exchange messages, and synchronize state.
 
 ## Features
 
-- **Peer-to-peer networking** using libp2p
-- **Decentralized node discovery** using mDNS, Kademlia DHT, and bootstrap nodes
-- **Secure messaging** with identity verification
-- **State synchronization** for ledger and governance data
-- **Message handlers** for processing different message types
-- **Configurable network behavior**
+- **Peer-to-peer networking** - Establish connections with other nodes in the network
+- **Peer discovery** - Find other nodes using various discovery mechanisms
+- **Messaging** - Send and receive different types of messages
+- **State synchronization** - Keep the network state in sync across nodes
+- **Metrics and monitoring** - Collect and expose performance metrics
 
 ## Components
 
-The network crate consists of several key components:
-
 ### P2P Network
 
-The `p2p` module provides the core peer-to-peer networking functionality, including:
+The core P2P networking functionality is implemented in the `P2pNetwork` struct, which provides:
 
-- Connection management
-- Message routing
-- Protocol handling
-- Network event processing
+- Starting and stopping the network service
+- Broadcasting messages to the entire network
+- Sending messages to specific peers
+- Connecting to and disconnecting from peers
+- Retrieving peer information
 
 ### Discovery
 
-The `discovery` module handles node discovery mechanisms, such as:
+The discovery module provides mechanisms for finding other nodes in the network:
 
-- Bootstrap peers
-- mDNS for local network discovery
-- Kademlia DHT for decentralized discovery
-- Persistent peer storage
+- Local network discovery using mDNS
+- Distributed Hash Table (DHT) based discovery using Kademlia
+- Bootstrap peer list for initial connections
 
 ### Messaging
 
-The `messaging` module handles message processing, including:
+The messaging module handles the exchange of various message types:
 
-- Message encoding and decoding
-- Message routing to appropriate handlers
-- Message validation
+- Identity announcements
+- Transaction announcements
+- Ledger state updates
+- Governance proposal announcements
+- Vote announcements
+- Custom messages
 
 ### Synchronization
 
-The `sync` module handles state synchronization between nodes, including:
+The synchronization module ensures that all nodes have a consistent view of the network state:
 
 - Ledger state synchronization
+- Identity state synchronization
 - Governance state synchronization
-- Identity synchronization
+
+### Metrics
+
+The metrics module provides comprehensive monitoring of network performance:
+
+- Connection metrics (peers connected, connections established, disconnects)
+- Message metrics (messages received/sent by type, message size, processing time)
+- Discovery metrics (peers discovered, discovery methods)
+- Resource usage (memory, CPU)
+- Error tracking
 
 ## Usage
 
-### Creating a Network
+### Basic Example
 
 ```rust
 use std::sync::Arc;
-use icn_core::storage::Storage;
-use icn_network::{P2pNetwork, P2pConfig};
+use icn_core::storage::mock_storage::MockStorage;
+use icn_network::{P2pNetwork, P2pConfig, NetworkService};
 
-async fn create_network(storage: Arc<dyn Storage>) -> Result<Arc<P2pNetwork>, Box<dyn std::error::Error>> {
-    // Create network configuration
+async fn main() -> anyhow::Result<()> {
+    // Create a storage backend
+    let storage = Arc::new(MockStorage::new());
+    
+    // Configure the network
     let mut config = P2pConfig::default();
-    config.listen_addresses = vec!["/ip4/0.0.0.0/tcp/9000".parse()?];
+    config.listen_addresses = vec!["/ip4/0.0.0.0/tcp/8000".parse()?];
     
-    // Create the network
-    let network = Arc::new(P2pNetwork::new(storage, config).await?);
-    
-    // Start the network
+    // Create and start the network
+    let network = P2pNetwork::new(storage, config).await?;
     network.start().await?;
     
-    Ok(network)
-}
-```
-
-### Handling Messages
-
-```rust
-use std::sync::Arc;
-use icn_network::{MessageProcessor, NetworkMessage, DefaultMessageHandler, PeerInfo, NetworkResult};
-
-async fn setup_message_handling(message_processor: Arc<MessageProcessor>) {
-    // Create a message handler
-    let handler = Arc::new(DefaultMessageHandler::new(
-        1,
-        "TransactionHandler".to_string(),
-        move |message, peer| {
-            println!("Received message from {}: {:?}", peer.peer_id, message);
-            Ok(())
-        }
-    ));
+    // Connect to a peer
+    let peer_addr = "/ip4/127.0.0.1/tcp/8001/p2p/QmPeerID".parse()?;
+    network.connect(&peer_addr).await?;
     
-    // Register the handler for transaction messages
-    message_processor.register_handler("ledger.transaction", handler).await;
-}
-```
-
-### Sending Messages
-
-```rust
-use icn_network::{NetworkMessage, TransactionAnnouncement};
-
-async fn send_message(network: &P2pNetwork) -> NetworkResult<()> {
-    // Create a transaction announcement
-    let tx_announce = TransactionAnnouncement {
-        transaction_id: "tx123".to_string(),
-        transaction_type: "transfer".to_string(),
-        timestamp: 12345,
-        sender: "alice".to_string(),
-        data_hash: "abcdef123456".to_string(),
-    };
-    
-    // Create the network message
-    let message = NetworkMessage::TransactionAnnouncement(tx_announce);
-    
-    // Broadcast the message to all connected peers
+    // Broadcast a message
+    let message = /* create a message */;
     network.broadcast(message).await?;
+    
+    // Stop the network when done
+    network.stop().await?;
     
     Ok(())
 }
 ```
 
-### State Synchronization
+### Enabling Metrics
+
+To enable metrics collection and exposure:
 
 ```rust
-use std::sync::Arc;
-use icn_network::{Synchronizer, SyncConfig};
+// Configure the network with metrics
+let mut config = P2pConfig::default();
+config.listen_addresses = vec!["/ip4/0.0.0.0/tcp/8000".parse()?];
+config.enable_metrics = true;
+config.metrics_address = Some("127.0.0.1:9090".to_string());
 
-async fn setup_synchronization(
-    network: Arc<dyn NetworkService>,
-    storage: Arc<dyn Storage>
-) -> NetworkResult<Arc<Synchronizer>> {
-    // Create sync configuration
-    let config = SyncConfig::default();
-    
-    // Create the synchronizer
-    let synchronizer = Arc::new(Synchronizer::new(
-        storage,
-        network,
-        config,
-    ));
-    
-    // Start synchronization
-    synchronizer.start().await?;
-    
-    Ok(synchronizer)
-}
+// Create the network with metrics enabled
+let network = P2pNetwork::new(storage, config).await?;
 ```
 
-## Examples
+This will start a Prometheus-compatible metrics server at the specified address, which you can scrape with Prometheus or query directly in your browser.
 
-The crate includes examples that demonstrate the usage of the network layer:
+Available metrics include:
+- `network_peers_connected` - Number of connected peers
+- `network_messages_received` - Number of messages received by type
+- `network_messages_sent` - Number of messages sent by type
+- `network_message_processing_time` - Time to process messages
+- `network_peers_discovered` - Number of peers discovered
+- And many more
 
-- `simple_network.rs`: A simple example of two nodes communicating with each other.
+## CLI Tool
 
-Run the examples using:
+The crate includes a command-line interface for testing and demonstration purposes. You can run it using:
 
 ```bash
-cargo run --example simple_network
+# Start a listening node
+cargo run --example network_cli -- -p 8000 listen
+
+# Connect to another node
+cargo run --example network_cli -- -p 8001 connect -p /ip4/127.0.0.1/tcp/8000/p2p/<PEER_ID>
+
+# Broadcast messages
+cargo run --example network_cli -- -p 8002 broadcast -p /ip4/127.0.0.1/tcp/8000/p2p/<PEER_ID> -i 2 -c 10
 ```
 
-## Configuration
+## Metrics Demo
 
-The network behavior can be configured using the following configuration structs:
+Try out the metrics functionality with the provided demo:
 
-- `P2pConfig`: Configuration for the P2P network
-- `DiscoveryConfig`: Configuration for peer discovery
-- `SyncConfig`: Configuration for state synchronization
+```bash
+# Run the metrics demo
+cargo run --example metrics_demo
 
-## Dependencies
+# Visit http://127.0.0.1:9091 in your browser to see the metrics
+```
 
-- `libp2p`: Core peer-to-peer networking library
-- `tokio`: Asynchronous runtime
-- `serde`: Serialization and deserialization
-- `tracing`: Logging and tracing
+## Benchmarks
+
+Performance benchmarks are included to measure the network's efficiency:
+
+```bash
+# Run all benchmarks
+cargo bench
+
+# Run a specific benchmark
+cargo bench -- network_broadcast
+```
+
+## Testing
+
+The crate includes comprehensive unit tests for all components:
+
+```bash
+# Run all tests
+cargo test
+
+# Run tests with logging
+RUST_LOG=debug cargo test -- --nocapture
+```
 
 ## License
 
-This crate is licensed under MIT OR Apache-2.0, the same as the rest of the ICN project. 
+Licensed under either of:
+
+- Apache License, Version 2.0
+- MIT License
+
+at your option. 
