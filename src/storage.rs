@@ -87,8 +87,19 @@ impl Storage {
     }
     
     // Get the full path for a key
-    fn get_path(&self, key: &str) -> PathBuf {
+    pub fn get_path(&self, key: &str) -> PathBuf {
         self.base_path.join(key.replace("/", &std::path::MAIN_SEPARATOR.to_string()))
+    }
+    
+    // Get the base path as a string
+    pub fn get_base_path(&self) -> Result<String, Box<dyn Error>> {
+        match self.base_path.to_str() {
+            Some(path) => Ok(path.to_string()),
+            None => Err(Box::new(StorageError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Base path contains invalid UTF-8 characters"
+            ))))
+        }
     }
     
     // Put data into storage
