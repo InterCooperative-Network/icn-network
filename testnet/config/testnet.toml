@@ -1,0 +1,62 @@
+# ICN Testnet Configuration
+
+[network]
+name = "icn-testnet"
+version = "0.1.0"
+bootstrap_nodes = 3
+relay_nodes = 2
+regular_nodes = 5
+
+[network.params]
+min_peers = 3
+max_peers = 10
+heartbeat_interval = 30
+connection_timeout = 5
+
+[bootstrap]
+# Bootstrap node configuration
+public_addresses = [
+    "/ip6/::1/tcp/9000",
+    "/ip6/::1/tcp/9001",
+    "/ip6/::1/tcp/9002"
+]
+external_addresses = []  # Add external addresses for production
+
+[relay]
+# Relay node configuration
+public_addresses = [
+    "/ip6/::1/tcp/9010",
+    "/ip6/::1/tcp/9011"
+]
+max_connections = 50
+max_circuits = 20
+circuit_timeout = 3600
+
+[regular]
+# Regular node configuration
+port_range_start = 9020
+port_range_end = 9025
+enable_relay_client = true
+enable_metrics = true
+enable_ipv4_fallback = true  # Enable IPv4 fallback if IPv6 fails
+
+[storage]
+path = "data"
+engine = "sled"
+sync_mode = "periodic"
+sync_interval = 300
+
+[metrics]
+enabled = true
+prometheus_port = 9090
+metrics_interval = 60
+
+[logging]
+level = "info"
+file = "testnet.log"
+format = "json"
+
+[identity]
+type = "ed25519"
+key_path = "keys"
+generate_if_missing = true 

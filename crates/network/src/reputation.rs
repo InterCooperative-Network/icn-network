@@ -4,1004 +4,603 @@
 //! reputation scores based on their actions. The system helps make better decisions
 //! about which peers to connect to, prioritize messages from, or avoid entirely.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
-use futures::StreamExt;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
+use tracing::{debug, error, info, warn};
+
 use libp2p::PeerId;
-use tracing::{debug, info, warn, error};
-use serde::{Serialize, Deserialize};
-use tokio::sync::{RwLock, mpsc};
-use tokio::task::JoinHandle;
 
-use crate::{NetworkResult, NetworkError};
-use crate::metrics::NetworkMetrics;
-use icn_core::storage::Storage;
+use crate::NetworkError;
 
-/// Maximum number of reputation history items to store per peer
-const MAX_HISTORY_ITEMS: usize = 100;
-
-/// Types of actions that affect a peer's reputation
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+/// Reputation change values for different events
+#[derive(Debug, Clone, Copy)]
 pub enum ReputationChange {
-    /// Successful connection established (+10)
-    ConnectionEstablished,
-    /// Connection dropped unexpectedly (-5)
-    ConnectionLost,
-    /// Successful message exchange (+5)
-    MessageSuccess,
-    /// Failed message exchange (-10)
-    MessageFailure,
-    /// Invalid or malformed message (-20)
-    InvalidMessage,
-    /// Successfully verified message (+15)
-    VerifiedMessage,
-    /// Helped with peer discovery (+5)
-    DiscoveryHelp,
-    /// Deliberately provided incorrect information (-50)
-    Misinformation,
-    /// Explicit ban by user or administrator (-100)
-    ExplicitBan,
-    /// Failed to respond in a timely manner (-2)
-    SlowResponse,
-    /// Fast response (+1)
-    FastResponse,
-    /// Explicit administrative unban (+0) (just resets to 0)
-    AdminUnban,
-    /// Manual value adjustment (used for testing or special cases)
-    Manual(i32),
+    /// Message processed successfully
+    MessageSuccess = 1,
+    /// Message processing failed
+    MessageFailure = -2,
+    /// Invalid message format
+    InvalidMessage = -5,
+    /// Peer responded quickly
+    FastResponse = 2,
+    /// Peer response was slow
+    SlowResponse = -1,
+    /// Peer provided useful data
+    UsefulData = 5,
+    /// Peer provided invalid data
+    InvalidData = -10,
+    /// Peer violated protocol rules
+    ProtocolViolation = -20,
+    /// Peer helped with relay
+    RelaySuccess = 3,
+    /// Peer failed relay attempt
+    RelayFailure = -3,
+    /// Peer provided resources
+    ResourceProvision = 4,
+    /// Peer consumed excessive resources
+    ResourceAbuse = -15,
 }
 
-impl ReputationChange {
-    /// Get the score value for this reputation change
-    pub fn value(&self) -> i32 {
+/// Peer behavior categories
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BehaviorCategory {
+    /// Message handling performance
+    Messaging,
+    /// Data validation and provision
+    DataQuality,
+    /// Protocol compliance
+    ProtocolCompliance,
+    /// Resource usage
+    ResourceUsage,
+    /// Network relay performance
+    RelayPerformance,
+}
+
+/// Peer status based on reputation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerStatus {
+    /// Trusted peer with high reputation
+    Trusted,
+    /// Normal peer with acceptable reputation
+    Normal,
+    /// Probation peer with low reputation
+    Probation,
+    /// Banned peer with very low reputation
+    Banned,
+}
+
+impl PeerStatus {
+    /// Get the reputation threshold for this status
+    pub fn threshold(&self) -> i32 {
         match self {
-            Self::ConnectionEstablished => 10,
-            Self::ConnectionLost => -5,
-            Self::MessageSuccess => 5,
-            Self::MessageFailure => -10,
-            Self::InvalidMessage => -20,
-            Self::VerifiedMessage => 15,
-            Self::DiscoveryHelp => 5,
-            Self::Misinformation => -50,
-            Self::ExplicitBan => -100,
-            Self::SlowResponse => -2,
-            Self::FastResponse => 1,
-            Self::AdminUnban => 0, // This resets to 0, not an increment
-            Self::Manual(val) => *val,
+            PeerStatus::Trusted => 50,
+            PeerStatus::Normal => 0,
+            PeerStatus::Probation => -25,
+            PeerStatus::Banned => -50,
         }
     }
     
-    /// Determine if this change is a reset type (like AdminUnban)
-    pub fn is_reset(&self) -> bool {
-        matches!(self, Self::AdminUnban)
-    }
-    
-    /// Check if this is a positive change
-    pub fn is_positive(&self) -> bool {
-        self.value() > 0
-    }
-    
-    /// Check if this is a negative change
-    pub fn is_negative(&self) -> bool {
-        self.value() < 0
+    /// Get the status for a given reputation score
+    pub fn from_score(score: i32) -> Self {
+        if score >= PeerStatus::Trusted.threshold() {
+            PeerStatus::Trusted
+        } else if score >= PeerStatus::Normal.threshold() {
+            PeerStatus::Normal
+        } else if score >= PeerStatus::Probation.threshold() {
+            PeerStatus::Probation
+        } else {
+            PeerStatus::Banned
+        }
     }
 }
 
-/// History item for reputation changes
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ReputationHistoryItem {
-    /// The type of change
-    change: ReputationChange,
-    /// When the change occurred
-    timestamp: u64,
-    /// The value of the change
-    value: i32,
-    /// Score after the change
-    score_after: i32,
+/// Detailed peer behavior tracking
+#[derive(Debug, Clone)]
+struct PeerBehavior {
+    /// Reputation score per category
+    category_scores: HashMap<BehaviorCategory, i32>,
+    /// Last update time per category
+    last_updates: HashMap<BehaviorCategory, Instant>,
+    /// Number of violations per category
+    violations: HashMap<BehaviorCategory, u32>,
+    /// Time when peer was last banned
+    last_banned: Option<Instant>,
+    /// Number of times peer has been banned
+    ban_count: u32,
+    /// Recent behavior timestamps for analysis
+    recent_events: Vec<(Instant, ReputationChange)>,
+    /// Current peer group
+    current_group: Option<String>,
+    /// Time spent in current group
+    group_time: Duration,
 }
 
-/// Reputation score for a peer
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PeerReputation {
-    /// Peer ID
-    #[serde(with = "crate::peer_id_serde")]
-    pub peer_id: PeerId,
-    /// Current reputation score
-    pub score: i32,
-    /// Last time the reputation was updated
-    #[serde(with = "timestamp_serde")]
-    pub last_updated: SystemTime,
-    /// Number of positive actions
-    pub positive_actions: u32,
-    /// Number of negative actions
-    pub negative_actions: u32,
-}
-
-/// Serialization helpers for SystemTime
-mod timestamp_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-    pub fn serialize<S>(time: &SystemTime, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let duration = time
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::from_secs(0));
-        let secs = duration.as_secs();
-        secs.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<SystemTime, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let secs = u64::deserialize(deserializer)?;
-        Ok(UNIX_EPOCH + Duration::from_secs(secs))
-    }
-}
-
-impl Default for PeerReputation {
+impl Default for PeerBehavior {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PeerReputation {
-    /// Create a new peer reputation with default values
-    pub fn new() -> Self {
-        let now = SystemTime::now();
+        let mut category_scores = HashMap::new();
+        let mut last_updates = HashMap::new();
+        let mut violations = HashMap::new();
+        
+        // Initialize all categories
+        for category in [
+            BehaviorCategory::Messaging,
+            BehaviorCategory::DataQuality,
+            BehaviorCategory::ProtocolCompliance,
+            BehaviorCategory::ResourceUsage,
+            BehaviorCategory::RelayPerformance,
+        ] {
+            category_scores.insert(category, 0);
+            last_updates.insert(category, Instant::now());
+            violations.insert(category, 0);
+        }
+        
         Self {
-            peer_id: PeerId::random(),
-            score: 0,
-            last_updated: now,
-            positive_actions: 0,
-            negative_actions: 0,
+            category_scores,
+            last_updates,
+            violations,
+            last_banned: None,
+            ban_count: 0,
+            recent_events: Vec::new(),
+            current_group: None,
+            group_time: Duration::from_secs(0),
         }
     }
-
-    /// Get the reputation score
-    pub fn score(&self) -> i32 {
-        self.score
-    }
-
-    /// Record a change to the peer's reputation
-    pub fn record_change(&mut self, change: ReputationChange) -> i32 {
-        let score = self.score + change.value();
-        self.score = score;
-        score
-    }
 }
 
-/// Configuration for the reputation system
+/// Configuration for reputation management
 #[derive(Debug, Clone)]
 pub struct ReputationConfig {
-    /// Minimum reputation value
-    pub min_value: i32,
-    /// Maximum reputation value
-    pub max_value: i32,
-    /// Threshold for banning peers
-    pub ban_threshold: i32,
-    /// Threshold for unbanning peers
-    pub unban_threshold: i32,
-    /// Threshold for considering a peer "good"
-    pub good_threshold: i32,
-    /// Decay factor (how quickly reputation returns to neutral)
-    pub decay_factor: f64,
-    /// Decay interval in seconds
-    pub decay_interval: Duration,
-    /// Storage key for saving reputation data
-    pub storage_key: String,
-    /// Value for connection established
-    pub connection_established_value: i32,
-    /// Value for connection closed
-    pub connection_closed_value: i32,
-    /// Value for successful message
-    pub message_success_value: i32,
-    /// Value for failed message
-    pub message_failure_value: i32,
-    /// Value for invalid message
-    pub invalid_message_value: i32,
-    /// Maximum number of response times to keep per peer
-    pub max_response_times: usize,
-    /// Threshold for fast response time in milliseconds
-    pub fast_response_threshold: u64,
-    /// Threshold for slow response time in milliseconds
-    pub slow_response_threshold: u64,
+    /// Minimum reputation score (default: -100)
+    pub min_score: i32,
+    /// Maximum reputation score (default: 100)
+    pub max_score: i32,
+    /// Score decay rate per hour (default: 1)
+    pub decay_rate: i32,
+    /// Maximum violations before auto-ban (default: 5)
+    pub max_violations: u32,
+    /// Ban duration in hours (default: 24)
+    pub ban_duration: Duration,
+    /// Maximum ban count before permanent ban (default: 3)
+    pub max_ban_count: u32,
+    /// Whether to enable automatic peer banning (default: true)
+    pub enable_auto_ban: bool,
+    /// Category weights for scoring
+    pub category_weights: CategoryWeights,
+    /// Time window for recent behavior analysis (default: 24 hours)
+    pub recent_window: Duration,
+    /// Score boost for consistent good behavior (default: 1.1)
+    pub consistency_multiplier: f32,
+    /// Score penalty for repeated violations (default: 1.5)
+    pub violation_multiplier: f32,
+    /// Peer groups configuration
+    pub peer_groups: Vec<PeerGroup>,
 }
 
 impl Default for ReputationConfig {
     fn default() -> Self {
         Self {
-            min_value: -100,
-            max_value: 100,
-            ban_threshold: -50,
-            unban_threshold: -20,
-            good_threshold: 20,
-            decay_factor: 0.9,
-            decay_interval: Duration::from_secs(3600), // 1 hour
-            storage_key: "reputation".to_string(),
-            connection_established_value: 1,
-            connection_closed_value: 0,
-            message_success_value: 1,
-            message_failure_value: -1,
-            invalid_message_value: -5,
-            max_response_times: 10,
-            fast_response_threshold: 100,
-            slow_response_threshold: 1000,
+            min_score: -100,
+            max_score: 100,
+            decay_rate: 1,
+            max_violations: 5,
+            ban_duration: Duration::from_secs(24 * 3600),
+            max_ban_count: 3,
+            enable_auto_ban: true,
+            category_weights: CategoryWeights::default(),
+            recent_window: Duration::from_secs(24 * 3600),
+            consistency_multiplier: 1.1,
+            violation_multiplier: 1.5,
+            peer_groups: Vec::new(),
         }
     }
 }
 
-/// Commands that can be sent to the reputation manager
-#[derive(Debug)]
-enum ReputationCommand {
-    /// Record a reputation change for a peer
-    RecordChange {
-        peer_id: PeerId,
-        change_type: ReputationChange,
-        response_tx: Option<tokio::sync::oneshot::Sender<NetworkResult<i32>>>,
-    },
-    
-    /// Record response time for a peer's request
-    RecordResponseTime {
-        peer_id: PeerId,
-        duration: Duration,
-        response_tx: Option<tokio::sync::oneshot::Sender<NetworkResult<()>>>,
-    },
-    
-    /// Check if a peer is banned
-    IsBanned {
-        peer_id: PeerId,
-        response_tx: Option<tokio::sync::oneshot::Sender<bool>>,
-    },
-    
-    /// Ban a peer
-    BanPeer {
-        peer_id: PeerId,
-        response_tx: Option<tokio::sync::oneshot::Sender<NetworkResult<()>>>,
-    },
-    
-    /// Unban a peer
-    UnbanPeer {
-        peer_id: PeerId,
-        response_tx: Option<tokio::sync::oneshot::Sender<NetworkResult<()>>>,
-    },
-    
-    /// Get the reputation for a peer
-    GetReputation {
-        peer_id: PeerId,
-        response_tx: Option<tokio::sync::oneshot::Sender<Option<PeerReputation>>>,
-    },
-    
-    /// Save current reputations to storage
-    Save {
-        response_tx: Option<tokio::sync::oneshot::Sender<NetworkResult<()>>>,
-    },
-    
-    /// Stop the background task
-    Stop {
-        response_tx: Option<tokio::sync::oneshot::Sender<NetworkResult<()>>>,
-    },
+/// Weight factors for different behavior categories
+#[derive(Debug, Clone, Copy)]
+pub struct CategoryWeights {
+    /// Weight for messaging performance (default: 1.0)
+    pub messaging: f32,
+    /// Weight for data quality (default: 1.2)
+    pub data_quality: f32,
+    /// Weight for protocol compliance (default: 1.5)
+    pub protocol_compliance: f32,
+    /// Weight for resource usage (default: 1.3)
+    pub resource_usage: f32,
+    /// Weight for relay performance (default: 1.1)
+    pub relay_performance: f32,
 }
 
-/// Manager for peer reputations
+impl Default for CategoryWeights {
+    fn default() -> Self {
+        Self {
+            messaging: 1.0,
+            data_quality: 1.2,
+            protocol_compliance: 1.5,
+            resource_usage: 1.3,
+            relay_performance: 1.1,
+        }
+    }
+}
+
+impl CategoryWeights {
+    /// Get weight for a specific category
+    pub fn get_weight(&self, category: BehaviorCategory) -> f32 {
+        match category {
+            BehaviorCategory::Messaging => self.messaging,
+            BehaviorCategory::DataQuality => self.data_quality,
+            BehaviorCategory::ProtocolCompliance => self.protocol_compliance,
+            BehaviorCategory::ResourceUsage => self.resource_usage,
+            BehaviorCategory::RelayPerformance => self.relay_performance,
+        }
+    }
+}
+
+/// Peer group for managing sets of peers with similar characteristics
+#[derive(Debug, Clone)]
+pub struct PeerGroup {
+    /// Name of the group
+    pub name: String,
+    /// Minimum reputation score to join the group
+    pub min_score: i32,
+    /// Maximum number of peers in the group
+    pub max_peers: usize,
+    /// Priority level for message processing
+    pub priority: u8,
+    /// Additional privileges granted to group members
+    pub privileges: Vec<String>,
+}
+
+/// Reputation manager for tracking peer behavior
 pub struct ReputationManager {
-    /// Peer reputation data
-    reputations: Arc<RwLock<HashMap<PeerId, PeerReputation>>>,
-    /// Configuration for the reputation system
+    /// Configuration
     config: ReputationConfig,
-    /// Command sender for the background task
-    command_tx: mpsc::Sender<ReputationCommand>,
-    /// Handle for the background task
-    task_handle: RwLock<Option<JoinHandle<()>>>,
-    /// Storage provider
-    storage: Option<Arc<dyn Storage>>,
-    /// Metrics
-    metrics: Option<NetworkMetrics>,
-    /// Command senders
-    command_senders: RwLock<Vec<mpsc::Sender<ReputationCommand>>>,
+    /// Peer behavior tracking
+    behaviors: Arc<RwLock<HashMap<PeerId, PeerBehavior>>>,
+    /// Banned peers
+    banned: Arc<RwLock<HashMap<PeerId, Instant>>>,
 }
 
 impl ReputationManager {
     /// Create a new reputation manager
-    pub async fn new(
-        config: ReputationConfig,
-        storage: Option<Arc<dyn Storage>>,
-        metrics: Option<NetworkMetrics>,
-    ) -> NetworkResult<Self> {
-        let reputations = Arc::new(RwLock::new(HashMap::new()));
-        
-        // Clone the config for storage operations
-        let config_clone = config.clone();
-        
-        // Load existing reputations from storage if available
-        if let Some(storage) = &storage {
-            if let Ok(data) = storage.get(&config_clone.storage_key).await {
-                if let Ok(stored_reputations) = serde_json::from_slice::<HashMap<String, PeerReputation>>(&data) {
-                    let mut reputations_write = reputations.write().await;
-                    
-                    for (peer_id_str, reputation) in stored_reputations {
-                        if let Ok(peer_id) = PeerId::from_bytes(peer_id_str.as_bytes()) {
-                            reputations_write.insert(peer_id, reputation);
-                        }
-                    }
-                    
-                    info!("Loaded {} peer reputations from storage", reputations_write.len());
-                }
-            }
+    pub fn new(config: ReputationConfig) -> Self {
+        Self {
+            config,
+            behaviors: Arc::new(RwLock::new(HashMap::new())),
+            banned: Arc::new(RwLock::new(HashMap::new())),
         }
-        
-        let manager = Self {
-            reputations,
-            config: config_clone,
-            storage,
-            metrics,
-            task_handle: RwLock::new(None),
-            command_tx: mpsc::channel(32).0,
-            command_senders: RwLock::new(vec![]),
-        };
-        
-        // Start the background task and store the task handle
-        let reputations_clone = Arc::clone(&manager.reputations);
-        let config_clone = manager.config.clone();
-        let metrics_clone = manager.metrics.clone();
-        let storage_clone = manager.storage.clone();
-        
-        let task = tokio::spawn(async move {
-            if let Err(e) = Self::run_decay_task(
-                reputations_clone,
-                config_clone,
-                metrics_clone,
-                storage_clone
-            ).await {
-                error!("Reputation decay task failed: {}", e);
-            }
-        });
-        
-        // Store the task handle in a separate block to release the lock before returning
-        {
-            let mut handle = manager.task_handle.write().await;
-            *handle = Some(task);
-        }
-        
-        // Now we can safely return the manager
-        Ok(manager)
-    }
-    
-    /// Start the reputation manager
-    pub async fn start(
-        storage: Arc<dyn Storage>,
-        config: ReputationConfig,
-    ) -> NetworkResult<Self> {
-        debug!("Starting reputation manager with config: {:?}", config);
-        
-        // Create the manager instance
-        let (command_tx, command_rx) = mpsc::channel(32);
-        
-        let manager = Self {
-            reputations: Arc::new(RwLock::new(HashMap::new())),
-            storage: Some(storage.clone()),
-            config: config.clone(), // Clone config here
-            task_handle: RwLock::new(None),
-            command_tx,
-            metrics: None,
-            command_senders: RwLock::new(Vec::new()),
-        };
-
-        // Load existing reputations from storage
-        if let Ok(data) = storage.get(&config.storage_key).await {
-            if let Ok(stored_reputations) = serde_json::from_slice::<Vec<PeerReputation>>(&data) {
-                debug!("Loaded {} peer reputations from storage", stored_reputations.len());
-                let mut reputations = manager.reputations.write().await;
-                for rep in stored_reputations {
-                    reputations.insert(rep.peer_id.clone(), rep);
-                }
-            } else {
-                debug!("Failed to deserialize stored reputations");
-            }
-        }
-
-        // Start the background task for reputation decay
-        let reputations_clone = Arc::clone(&manager.reputations);
-        let config_clone = config.clone();
-        let storage_clone = manager.storage.clone();
-        let metrics_clone = manager.metrics.clone();
-        
-        let task = tokio::spawn(async move {
-            if let Err(e) = Self::run_decay_task(
-                reputations_clone,
-                config_clone,
-                metrics_clone,
-                storage_clone
-            ).await {
-                error!("Reputation decay task failed: {}", e);
-            }
-        });
-
-        // Store the task handle in a separate block to release the lock before returning
-        {
-            let mut handle = manager.task_handle.write().await;
-            *handle = Some(task);
-        }
-
-        Ok(manager)
-    }
-    
-    /// Start the background task for reputation management
-    pub async fn start_background_task(&self) -> NetworkResult<()> {
-        let (command_tx, command_rx) = mpsc::channel(100);
-        
-        let mut senders = self.command_senders.write().await;
-        senders.push(command_tx);
-        
-        let reputations = Arc::clone(&self.reputations);
-        let metrics = self.metrics.clone();
-        let storage = self.storage.clone();
-        let config = self.config.clone();
-        
-        let task = tokio::spawn(async move {
-            if let Err(e) = Self::run_background_task(
-                command_rx,
-                reputations,
-                metrics,
-                storage,
-                config,
-            ).await {
-                error!("Reputation background task failed: {}", e);
-            }
-        });
-        
-        let mut handle = self.task_handle.write().await;
-        *handle = Some(task);
-        
-        Ok(())
-    }
-
-    /// Actual implementation of the background task
-    async fn run_background_task(
-        mut command_rx: mpsc::Receiver<ReputationCommand>,
-        reputations: Arc<RwLock<HashMap<PeerId, PeerReputation>>>,
-        metrics: Option<NetworkMetrics>,
-        storage: Option<Arc<dyn Storage>>,
-        config: ReputationConfig,
-    ) -> NetworkResult<()> {
-        debug!("Starting reputation background task");
-        
-        // Create an interval for periodic decay
-        let mut interval = tokio::time::interval(config.decay_interval);
-        
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    if let Err(e) = Self::handle_decay(&reputations, &metrics, &config).await {
-                        error!("Error during reputation decay: {}", e);
-                    }
-                }
-                
-                Some(command) = command_rx.recv() => {
-                    match command {
-                        ReputationCommand::RecordChange { peer_id, change_type, response_tx } => {
-                            let score = Self::handle_record_change(&reputations, &metrics, &peer_id, change_type).await;
-                            if let Some(tx) = response_tx {
-                                let _ = tx.send(Ok(score));
-                            }
-                        }
-                        
-                        ReputationCommand::RecordResponseTime { peer_id, duration, response_tx } => {
-                            Self::handle_record_response_time(&reputations, &metrics, &peer_id, duration).await;
-                            if let Some(tx) = response_tx {
-                                let _ = tx.send(Ok(()));
-                            }
-                        }
-                        
-                        ReputationCommand::IsBanned { peer_id, response_tx } => {
-                            let is_banned = Self::handle_is_banned(&reputations, &peer_id).await;
-                            if let Some(tx) = response_tx {
-                                let _ = tx.send(is_banned);
-                            }
-                        }
-                        
-                        ReputationCommand::BanPeer { peer_id, response_tx } => {
-                            Self::handle_ban_peer(&reputations, &metrics, &peer_id).await;
-                            if let Some(tx) = response_tx {
-                                let _ = tx.send(Ok(()));
-                            }
-                        }
-                        
-                        ReputationCommand::UnbanPeer { peer_id, response_tx } => {
-                            Self::handle_unban_peer(&reputations, &metrics, &peer_id).await;
-                            if let Some(tx) = response_tx {
-                                let _ = tx.send(Ok(()));
-                            }
-                        }
-                        
-                        ReputationCommand::GetReputation { peer_id, response_tx } => {
-                            let rep = Self::handle_get_reputation(&reputations, &peer_id).await;
-                            if let Some(tx) = response_tx {
-                                let _ = tx.send(rep);
-                            }
-                        }
-                        
-                        ReputationCommand::Save { response_tx } => {
-                            let result = Self::handle_save(&reputations, &storage, &config).await;
-                            if let Some(tx) = response_tx {
-                                let _ = tx.send(result);
-                            }
-                        }
-                        
-                        ReputationCommand::Stop { response_tx } => {
-                            // Save reputations before stopping
-                            let result = Self::handle_save(&reputations, &storage, &config).await;
-                            if let Some(tx) = response_tx {
-                                let _ = tx.send(result);
-                            }
-                            break;
-                        }
-                    }
-                }
-                
-                else => {
-                    debug!("All reputation command senders dropped, stopping background task");
-                    // Try to save reputations before exiting
-                    let _ = Self::handle_save(&reputations, &storage, &config).await;
-                    break;
-                }
-            }
-        }
-        
-        debug!("Reputation background task stopped");
-        Ok(())
-    }
-    
-    /// Handle a reputation change for a peer
-    async fn handle_record_change(
-        reputations: &RwLock<HashMap<PeerId, PeerReputation>>,
-        metrics: &Option<NetworkMetrics>,
-        peer_id: &PeerId,
-        change: ReputationChange,
-    ) -> i32 {
-        let mut reputations = reputations.write().await;
-        
-        // Get or create the reputation entry
-        let reputation = reputations
-            .entry(peer_id.clone())
-            .or_insert_with(PeerReputation::new);
-        
-        // Record the change
-        let new_score = reputation.record_change(change);
-        
-        // Update metrics
-        if let Some(m) = metrics {
-            m.record_reputation_change(&peer_id.to_string(), change.value());
-            m.update_reputation_score(&peer_id.to_string(), new_score);
-            
-            // Record specific metrics based on the change type
-            match change {
-                ReputationChange::ConnectionEstablished => {
-                    // Connection metrics are handled elsewhere
-                },
-                ReputationChange::ConnectionLost => {
-                    // Connection metrics are handled elsewhere
-                },
-                ReputationChange::MessageSuccess => {
-                    m.record_positive_action(&peer_id.to_string(), "message_success");
-                },
-                ReputationChange::MessageFailure => {
-                    m.record_negative_action(&peer_id.to_string(), "message_failure");
-                },
-                ReputationChange::InvalidMessage => {
-                    m.record_negative_action(&peer_id.to_string(), "invalid_message");
-                },
-                ReputationChange::VerifiedMessage => {
-                    m.record_positive_action(&peer_id.to_string(), "verified_message");
-                },
-                ReputationChange::DiscoveryHelp => {
-                    m.record_positive_action(&peer_id.to_string(), "discovery_help");
-                },
-                ReputationChange::Misinformation => {
-                    m.record_negative_action(&peer_id.to_string(), "misinformation");
-                },
-                ReputationChange::ExplicitBan => {
-                    m.record_peer_banned(&peer_id.to_string());
-                },
-                ReputationChange::SlowResponse => {
-                    m.record_negative_action(&peer_id.to_string(), "slow_response");
-                },
-                ReputationChange::FastResponse => {
-                    m.record_positive_action(&peer_id.to_string(), "fast_response");
-                },
-                ReputationChange::AdminUnban => {
-                    // Admin unban is handled elsewhere
-                },
-                ReputationChange::Manual(_) => {
-                    // Manual changes don't need specific metrics
-                },
-            }
-        }
-        
-        new_score
-    }
-    
-    // Handle recording a response time
-    async fn handle_record_response_time(
-        reputations: &RwLock<HashMap<PeerId, PeerReputation>>,
-        metrics: &Option<NetworkMetrics>,
-        peer_id: &PeerId,
-        duration: Duration,
-    ) {
-        let mut reputations = reputations.write().await;
-        let reputation = reputations
-            .entry(peer_id.clone())
-            .or_insert_with(PeerReputation::new);
-        
-        // Instead of storing response times, we'll just update the score based on the duration
-        // Fast responses improve reputation, slow responses decrease it
-        
-        // Update metrics
-        if let Some(m) = metrics {
-            m.record_operation_duration(&format!("peer_response_{}", peer_id), duration);
-        }
-    }
-    
-    // Handle checking if a peer is banned
-    async fn handle_is_banned(
-        reputations: &RwLock<HashMap<PeerId, PeerReputation>>,
-        peer_id: &PeerId,
-    ) -> bool {
-        let reputations = reputations.read().await;
-        
-        match reputations.get(peer_id) {
-            Some(rep) => rep.score <= i32::MIN / 2, // Consider extremely low scores as banned
-            None => false,
-        }
-    }
-    
-    // Handle banning a peer
-    async fn handle_ban_peer(
-        reputations: &RwLock<HashMap<PeerId, PeerReputation>>,
-        metrics: &Option<NetworkMetrics>,
-        peer_id: &PeerId,
-    ) {
-        let mut reputations = reputations.write().await;
-        let reputation = reputations
-            .entry(peer_id.clone())
-            .or_insert_with(PeerReputation::new);
-        
-        // Set score to minimum value to indicate ban
-        reputation.score = i32::MIN;
-        reputation.last_updated = SystemTime::now();
-        
-        if let Some(ref m) = metrics {
-            m.record_peer_banned(peer_id.to_string().as_str());
-        }
-    }
-    
-    // Handle unbanning a peer
-    async fn handle_unban_peer(
-        reputations: &RwLock<HashMap<PeerId, PeerReputation>>,
-        metrics: &Option<NetworkMetrics>,
-        peer_id: &PeerId,
-    ) {
-        let mut reputations = reputations.write().await;
-        
-        if let Some(reputation) = reputations.get_mut(peer_id) {
-            // Reset score to 0 to indicate unbanned
-            reputation.score = 0;
-            reputation.last_updated = SystemTime::now();
-            
-            if let Some(ref m) = metrics {
-                m.record_peer_unbanned(peer_id.to_string().as_str());
-            }
-        }
-    }
-    
-    // Handle getting a peer's reputation
-    async fn handle_get_reputation(
-        reputations: &RwLock<HashMap<PeerId, PeerReputation>>,
-        peer_id: &PeerId,
-    ) -> Option<PeerReputation> {
-        let reputations = reputations.read().await;
-        reputations.get(peer_id).cloned()
-    }
-    
-    // Handle saving reputation data
-    async fn handle_save(
-        reputations: &RwLock<HashMap<PeerId, PeerReputation>>,
-        storage: &Option<Arc<dyn Storage>>,
-        config: &ReputationConfig,
-    ) -> NetworkResult<()> {
-        if let Some(storage) = storage {
-            let storage_key = &config.storage_key;
-            if !storage_key.is_empty() {
-                // Convert PeerId to string for serialization
-                let reputations_read = reputations.read().await;
-                let mut serializable_reputations = Vec::new();
-                
-                for (peer_id, reputation) in reputations_read.iter() {
-                    serializable_reputations.push(reputation.clone());
-                }
-                
-                // Serialize and save
-                let data = serde_json::to_vec(&serializable_reputations)
-                    .map_err(|e| NetworkError::InternalError(format!("Failed to serialize reputations: {}", e)))?;
-                
-                storage.put(storage_key, &data).await
-                    .map_err(|e| NetworkError::StorageError(e))?;
-                
-                debug!("Saved {} peer reputation records", serializable_reputations.len());
-            }
-        }
-        
-        Ok(())
-    }
-    
-    // Handle reputation decay
-    async fn handle_decay(
-        reputations: &RwLock<HashMap<PeerId, PeerReputation>>,
-        metrics: &Option<NetworkMetrics>,
-        config: &ReputationConfig,
-    ) -> NetworkResult<()> {
-        let mut reputations = reputations.write().await;
-        let decay_count = reputations.len();
-        
-        for (peer_id, reputation) in reputations.iter_mut() {
-            let old_score = reputation.score;
-            reputation.score = (old_score as f64 * config.decay_factor).ceil() as i32;
-            
-            // If score changed, update metrics
-            if old_score != reputation.score && metrics.is_some() {
-                if let Some(m) = metrics {
-                    m.update_reputation_score(&peer_id.to_string(), reputation.score);
-                }
-            }
-        }
-        
-        // Record decay processing in metrics
-        if let Some(m) = metrics {
-            m.record_reputation_decay(decay_count as u64);
-        }
-        
-        Ok(())
     }
     
     /// Record a reputation change for a peer
-    pub async fn record_change(&self, peer_id: PeerId, change_type: ReputationChange) -> NetworkResult<i32> {
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    pub async fn record_change(
+        &self,
+        peer_id: PeerId,
+        change: ReputationChange,
+    ) -> Result<(), NetworkError> {
+        let mut behaviors = self.behaviors.write().await;
+        let behavior = behaviors.entry(peer_id).or_default();
         
-        let cmd = ReputationCommand::RecordChange {
-            peer_id,
-            change_type,
-            response_tx: Some(response_tx),
-        };
-        
-        match self.send_command(cmd).await {
-            Ok(_) => match response_rx.await {
-                Ok(result) => result,
-                Err(_) => Err(NetworkError::ChannelClosed("Reputation response channel closed".into())),
+        // Determine category and update score
+        let (category, score_change) = match change {
+            ReputationChange::MessageSuccess |
+            ReputationChange::MessageFailure |
+            ReputationChange::InvalidMessage => (BehaviorCategory::Messaging, change as i32),
+            
+            ReputationChange::FastResponse |
+            ReputationChange::SlowResponse |
+            ReputationChange::UsefulData |
+            ReputationChange::InvalidData => (BehaviorCategory::DataQuality, change as i32),
+            
+            ReputationChange::ProtocolViolation => {
+                let violations = behavior.violations.entry(BehaviorCategory::ProtocolCompliance)
+                    .or_default();
+                *violations += 1;
+                
+                if *violations >= self.config.max_violations && self.config.enable_auto_ban {
+                    self.ban_peer(peer_id).await?;
+                }
+                
+                (BehaviorCategory::ProtocolCompliance, change as i32)
             },
-            Err(e) => Err(e),
-        }
-    }
-    
-    /// Record response time for a peer
-    pub async fn record_response_time(&self, peer_id: PeerId, duration: Duration) -> NetworkResult<()> {
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-        
-        let cmd = ReputationCommand::RecordResponseTime {
-            peer_id,
-            duration,
-            response_tx: Some(response_tx),
+            
+            ReputationChange::ResourceProvision |
+            ReputationChange::ResourceAbuse => (BehaviorCategory::ResourceUsage, change as i32),
+            
+            ReputationChange::RelaySuccess |
+            ReputationChange::RelayFailure => (BehaviorCategory::RelayPerformance, change as i32),
         };
         
-        match self.send_command(cmd).await {
-            Ok(_) => match response_rx.await {
-                Ok(result) => result,
-                Err(_) => Err(NetworkError::ChannelClosed("Reputation response channel closed".into())),
-            },
-            Err(e) => Err(e),
-        }
-    }
-    
-    /// Check if a peer is banned
-    pub async fn is_banned(&self, peer_id: PeerId) -> bool {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Update category score
+        let score = behavior.category_scores.entry(category).or_default();
+        *score = (*score + score_change)
+            .max(self.config.min_score)
+            .min(self.config.max_score);
+            
+        // Update last update time
+        behavior.last_updates.insert(category, Instant::now());
         
-        let cmd = ReputationCommand::IsBanned {
-            peer_id,
-            response_tx: Some(tx),
-        };
-        
-        if let Err(e) = self.send_command(cmd).await {
-            error!("Failed to send is_banned command: {}", e);
-            return false;
+        // Check if peer should be banned based on total score
+        let total_score: i32 = behavior.category_scores.values().sum();
+        if total_score <= PeerStatus::Banned.threshold() && self.config.enable_auto_ban {
+            self.ban_peer(peer_id).await?;
         }
         
-        match rx.await {
-            Ok(is_banned) => is_banned,
-            Err(e) => {
-                error!("Failed to receive is_banned response: {}", e);
-                false
-            }
-        }
-    }
-    
-    /// Ban a peer manually
-    pub async fn ban_peer(&self, peer_id: PeerId) -> NetworkResult<()> {
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        // Track recent behavior
+        behavior.recent_events.push((Instant::now(), change));
         
-        let cmd = ReputationCommand::BanPeer {
-            peer_id,
-            response_tx: Some(response_tx),
-        };
-        
-        match self.send_command(cmd).await {
-            Ok(_) => match response_rx.await {
-                Ok(result) => result,
-                Err(_) => Err(NetworkError::ChannelClosed("Reputation response channel closed".into())),
-            },
-            Err(e) => Err(e),
-        }
-    }
-    
-    /// Unban a peer manually
-    pub async fn unban_peer(&self, peer_id: PeerId) -> NetworkResult<()> {
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-        
-        let cmd = ReputationCommand::UnbanPeer {
-            peer_id,
-            response_tx: Some(response_tx),
-        };
-        
-        match self.send_command(cmd).await {
-            Ok(_) => match response_rx.await {
-                Ok(result) => result,
-                Err(_) => Err(NetworkError::ChannelClosed("Reputation response channel closed".into())),
-            },
-            Err(e) => Err(e),
-        }
-    }
-    
-    /// Get the current reputation value for a peer
-    pub async fn get_reputation(&self, peer_id: PeerId) -> NetworkResult<PeerReputation> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let cmd = ReputationCommand::GetReputation {
-            peer_id,
-            response_tx: Some(tx),
-        };
-        
-        match self.send_command(cmd).await {
-            Ok(_) => match rx.await {
-                Ok(Some(rep)) => Ok(rep),
-                Ok(None) => Ok(PeerReputation::default()), // Default reputation for unknown peers
-                Err(e) => Err(NetworkError::Other(format!("Failed to get reputation: {}", e))),
-            },
-            Err(e) => Err(e),
-        }
-    }
-    
-    /// Save the current reputation state
-    pub async fn save(&self) -> NetworkResult<()> {
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-        
-        let cmd = ReputationCommand::Save {
-            response_tx: Some(response_tx),
-        };
-        
-        match self.send_command(cmd).await {
-            Ok(_) => match response_rx.await {
-                Ok(result) => result,
-                Err(_) => Err(NetworkError::ChannelClosed("Reputation response channel closed".into())),
-            },
-            Err(e) => Err(e),
-        }
-    }
-    
-    /// Stop the reputation manager
-    pub async fn stop(&self) -> NetworkResult<()> {
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-        
-        let cmd = ReputationCommand::Stop {
-            response_tx: Some(response_tx),
-        };
-        
-        match self.send_command(cmd).await {
-            Ok(_) => match response_rx.await {
-                Ok(result) => result,
-                Err(_) => Err(NetworkError::ChannelClosed("Reputation response channel closed".into())),
-            },
-            Err(e) => Err(e),
-        }
-    }
-    
-    /// Get an immutable reference to the reputations
-    pub async fn reputations(&self) -> tokio::sync::RwLockReadGuard<'_, HashMap<PeerId, PeerReputation>> {
-        self.reputations.read().await
-    }
-    
-    /// Start the decay task
-    pub async fn start_decay_task(&self) -> NetworkResult<()> {
-        let reputations = Arc::clone(&self.reputations);
-        let metrics = self.metrics.clone();
-        let storage = self.storage.clone();
-        let config = self.config.clone();
-        
-        // Create a channel for reputation commands
-        let (command_tx, command_rx) = mpsc::channel(32);
-        
-        // Store the sender in the list of command senders
-        {
-            let mut senders = self.command_senders.write().await;
-            senders.push(command_tx);
-        }
-        
-        // Spawn the background task
-        tokio::spawn(async move {
-            if let Err(e) = Self::run_decay_task(
-                reputations,
-                config,
-                metrics,
-                storage
-            ).await {
-                error!("Reputation decay task failed: {}", e);
-            }
+        // Cleanup old events
+        behavior.recent_events.retain(|(timestamp, _)| {
+            timestamp.elapsed() <= self.config.recent_window
         });
         
+        // Update peer group after reputation change
+        self.update_peer_group(peer_id).await?;
+        
         Ok(())
     }
-
-    /// Send a command to the background task
-    async fn send_command(&self, cmd: ReputationCommand) -> NetworkResult<()> {
-        // Try to send the command to the background task
-        if let Err(e) = self.command_tx.send(cmd).await {
-            return Err(NetworkError::Other(format!("Failed to send reputation command: {}", e)));
+    
+    /// Ban a peer
+    pub async fn ban_peer(&self, peer_id: PeerId) -> Result<(), NetworkError> {
+        let mut behaviors = self.behaviors.write().await;
+        let mut banned = self.banned.write().await;
+        
+        if let Some(behavior) = behaviors.get_mut(&peer_id) {
+            behavior.ban_count += 1;
+            behavior.last_banned = Some(Instant::now());
+            
+            // Check for permanent ban
+            if behavior.ban_count >= self.config.max_ban_count {
+                info!("Permanently banning peer {}", peer_id);
+                banned.insert(peer_id, Instant::now());
+            } else {
+                info!("Temporarily banning peer {} for {:?}", peer_id, self.config.ban_duration);
+                banned.insert(peer_id, Instant::now());
+            }
         }
         
         Ok(())
     }
-
-    /// Add a new method to get just the reputation value
-    pub async fn get_reputation_value(&self, peer_id: PeerId) -> NetworkResult<i32> {
-        match self.get_reputation(peer_id).await {
-            Ok(rep) => Ok(rep.score),
-            Err(e) => Err(e),
+    
+    /// Unban a peer if ban duration has expired
+    pub async fn check_unban(&self, peer_id: PeerId) -> Result<bool, NetworkError> {
+        let mut banned = self.banned.write().await;
+        let behaviors = self.behaviors.read().await;
+        
+        if let Some(ban_time) = banned.get(&peer_id) {
+            let behavior = behaviors.get(&peer_id)
+                .ok_or_else(|| NetworkError::PeerNotFound)?;
+                
+            // Check if this is a permanent ban
+            if behavior.ban_count >= self.config.max_ban_count {
+                return Ok(false);
+            }
+            
+            // Check if temporary ban has expired
+            if ban_time.elapsed() >= self.config.ban_duration {
+                banned.remove(&peer_id);
+                info!("Unbanning peer {}", peer_id);
+                return Ok(true);
+            }
+        }
+        
+        Ok(false)
+    }
+    
+    /// Get a peer's current status
+    pub async fn get_peer_status(&self, peer_id: PeerId) -> PeerStatus {
+        let behaviors = self.behaviors.read().await;
+        let banned = self.banned.read().await;
+        
+        // Check if peer is banned
+        if banned.contains_key(&peer_id) {
+            return PeerStatus::Banned;
+        }
+        
+        // Calculate total reputation score
+        if let Some(behavior) = behaviors.get(&peer_id) {
+            let total_score: i32 = behavior.category_scores.values().sum();
+            PeerStatus::from_score(total_score)
+        } else {
+            PeerStatus::Normal // New peers start with normal status
         }
     }
-
-    /// Run the decay task in the background
-    async fn run_decay_task(
-        reputations: Arc<RwLock<HashMap<PeerId, PeerReputation>>>,
-        config: ReputationConfig,
-        metrics: Option<NetworkMetrics>,
-        storage: Option<Arc<dyn Storage>>,
-    ) -> NetworkResult<()> {
-        let mut interval = tokio::time::interval(config.decay_interval);
+    
+    /// Get detailed behavior statistics for a peer
+    pub async fn get_peer_stats(&self, peer_id: PeerId) -> Option<PeerStats> {
+        let behaviors = self.behaviors.read().await;
+        let banned = self.banned.read().await;
         
-        loop {
-            interval.tick().await;
+        behaviors.get(&peer_id).map(|behavior| {
+            let total_score: i32 = behavior.category_scores.values().sum();
+            let total_violations: u32 = behavior.violations.values().sum();
             
-            // Apply decay to all reputations
-            Self::handle_decay(&reputations, &metrics, &config).await?;
-            
-            // Save to storage if available
-            if let Some(storage) = &storage {
-                let reputations_read = reputations.read().await;
+            PeerStats {
+                status: if banned.contains_key(&peer_id) {
+                    PeerStatus::Banned
+                } else {
+                    PeerStatus::from_score(total_score)
+                },
+                total_score,
+                category_scores: behavior.category_scores.clone(),
+                total_violations,
+                violations: behavior.violations.clone(),
+                ban_count: behavior.ban_count,
+                last_banned: behavior.last_banned,
+            }
+        })
+    }
+    
+    /// Decay reputation scores for inactive peers
+    pub async fn decay_scores(&self) {
+        let mut behaviors = self.behaviors.write().await;
+        let now = Instant::now();
+        
+        for behavior in behaviors.values_mut() {
+            for (category, last_update) in &behavior.last_updates {
+                let hours_elapsed = last_update.elapsed().as_secs() as f64 / 3600.0;
+                let decay = (hours_elapsed * self.config.decay_rate as f64) as i32;
                 
-                // Convert to serializable format
-                let mut serializable = HashMap::new();
-                for (peer_id, reputation) in reputations_read.iter() {
-                    serializable.insert(peer_id.to_string(), reputation.clone());
-                }
-                
-                // Save to storage
-                if let Err(e) = storage.put(&config.storage_key, &serde_json::to_vec(&serializable).unwrap()).await {
-                    error!("Failed to save reputations to storage: {}", e);
+                if decay > 0 {
+                    let score = behavior.category_scores.get_mut(category).unwrap();
+                    *score = (*score - decay).max(self.config.min_score);
                 }
             }
         }
     }
+
+    /// Calculate weighted reputation score for a peer
+    pub async fn calculate_weighted_score(&self, peer_id: PeerId) -> Option<f32> {
+        let behaviors = self.behaviors.read().await;
+        
+        behaviors.get(&peer_id).map(|behavior| {
+            let mut weighted_score = 0.0;
+            
+            for (category, score) in &behavior.category_scores {
+                let weight = self.config.category_weights.get_weight(*category);
+                weighted_score += *score as f32 * weight;
+            }
+            
+            // Apply consistency multiplier for good behavior
+            if behavior.violations.values().sum::<u32>() == 0 {
+                weighted_score *= self.config.consistency_multiplier;
+            }
+            
+            // Apply violation penalty for repeat offenders
+            let total_violations: u32 = behavior.violations.values().sum();
+            if total_violations > 0 {
+                weighted_score /= (total_violations as f32 * self.config.violation_multiplier);
+            }
+            
+            weighted_score
+        })
+    }
+
+    /// Update peer group membership
+    pub async fn update_peer_group(&self, peer_id: PeerId) -> Result<(), NetworkError> {
+        let mut behaviors = self.behaviors.write().await;
+        
+        if let Some(behavior) = behaviors.get_mut(&peer_id) {
+            let weighted_score = self.calculate_weighted_score(peer_id).await.unwrap_or(0.0);
+            
+            // Find the highest priority group the peer qualifies for
+            let new_group = self.config.peer_groups.iter()
+                .filter(|group| {
+                    weighted_score >= group.min_score as f32 &&
+                    self.count_group_members(&group.name).await <= group.max_peers
+                })
+                .max_by_key(|group| group.priority)
+                .map(|group| group.name.clone());
+                
+            // Update group membership if changed
+            if behavior.current_group != new_group {
+                if let Some(old_group) = &behavior.current_group {
+                    debug!("Peer {} leaving group {}", peer_id, old_group);
+                }
+                if let Some(new_group) = &new_group {
+                    debug!("Peer {} joining group {}", peer_id, new_group);
+                }
+                
+                behavior.current_group = new_group;
+                behavior.group_time = Duration::from_secs(0);
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Count number of peers in a group
+    async fn count_group_members(&self, group_name: &str) -> usize {
+        let behaviors = self.behaviors.read().await;
+        
+        behaviors.values()
+            .filter(|behavior| {
+                behavior.current_group.as_ref().map(|g| g == group_name).unwrap_or(false)
+            })
+            .count()
+    }
+
+    /// Get peers in a specific group
+    pub async fn get_group_peers(&self, group_name: &str) -> Vec<PeerId> {
+        let behaviors = self.behaviors.read().await;
+        
+        behaviors.iter()
+            .filter(|(_, behavior)| {
+                behavior.current_group.as_ref().map(|g| g == group_name).unwrap_or(false)
+            })
+            .map(|(peer_id, _)| *peer_id)
+            .collect()
+    }
+
+    /// Analyze recent behavior patterns
+    pub async fn analyze_recent_behavior(&self, peer_id: PeerId) -> Option<BehaviorAnalysis> {
+        let behaviors = self.behaviors.read().await;
+        
+        behaviors.get(&peer_id).map(|behavior| {
+            let now = Instant::now();
+            let recent_window = self.config.recent_window;
+            
+            // Filter recent events within the time window
+            let recent_events: Vec<_> = behavior.recent_events.iter()
+                .filter(|(timestamp, _)| timestamp.elapsed() <= recent_window)
+                .collect();
+                
+            // Calculate statistics
+            let total_events = recent_events.len();
+            let positive_events = recent_events.iter()
+                .filter(|(_, change)| *change as i32 > 0)
+                .count();
+            let negative_events = recent_events.iter()
+                .filter(|(_, change)| *change as i32 < 0)
+                .count();
+                
+            BehaviorAnalysis {
+                total_events,
+                positive_events,
+                negative_events,
+                event_rate: total_events as f32 / recent_window.as_secs_f32(),
+                positive_ratio: if total_events > 0 {
+                    positive_events as f32 / total_events as f32
+                } else {
+                    0.0
+                },
+            }
+        })
+    }
+}
+
+/// Detailed peer statistics
+#[derive(Debug, Clone)]
+pub struct PeerStats {
+    /// Current peer status
+    pub status: PeerStatus,
+    /// Total reputation score
+    pub total_score: i32,
+    /// Scores per behavior category
+    pub category_scores: HashMap<BehaviorCategory, i32>,
+    /// Total number of violations
+    pub total_violations: u32,
+    /// Violations per category
+    pub violations: HashMap<BehaviorCategory, u32>,
+    /// Number of times peer has been banned
+    pub ban_count: u32,
+    /// Time of last ban
+    pub last_banned: Option<Instant>,
+}
+
+/// Recent behavior analysis results
+#[derive(Debug, Clone)]
+pub struct BehaviorAnalysis {
+    /// Total number of events in the analysis window
+    pub total_events: usize,
+    /// Number of positive reputation changes
+    pub positive_events: usize,
+    /// Number of negative reputation changes
+    pub negative_events: usize,
+    /// Rate of events per second
+    pub event_rate: f32,
+    /// Ratio of positive to total events
+    pub positive_ratio: f32,
 }
 
 impl Clone for ReputationManager {

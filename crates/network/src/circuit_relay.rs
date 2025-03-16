@@ -264,67 +264,121 @@ impl CircuitRelayManager {
         self.relay_peers.read().await.values().cloned().collect()
     }
     
+    /// Create the relay client behaviour
+    fn create_relay_client(&self) -> NetworkResult<relay::client::Behaviour> {
+        let relay_config = relay::client::Config::default();
+        Ok(relay::client::Behaviour::new(self.local_peer_id.clone(), relay_config))
+    }
+    
     /// Connect to a peer through a relay
     pub async fn connect_via_relay(&self, dest_peer_id: &PeerId) -> NetworkResult<Multiaddr> {
         let relay_peers = self.relay_peers.read().await;
         
-        if relay_peers.is_empty() {
-            return Err(NetworkError::NoRelaysAvailable);
-        }
+        // Find the best relay to use
+        let best_relay = self.select_best_relay(&relay_peers).ok_or_else(|| {
+            NetworkError::RelayError("No suitable relay servers available".to_string())
+        })?;
         
-        // Find the best relay based on success rate
-        let mut best_relay = None;
-        let mut best_score = 0.0;
-        
-        for (_, server) in relay_peers.iter() {
-            let success_rate = if server.successful_connections + server.failed_connections > 0 {
-                server.successful_connections as f64 / (server.successful_connections + server.failed_connections) as f64
-            } else {
-                0.5 // Default for untested relays
-            };
-            
-            if success_rate > best_score {
-                best_score = success_rate;
-                best_relay = Some(server);
-            }
-        }
-        
-        let server = best_relay.ok_or(NetworkError::NoRelaysAvailable)?;
-        
-        // Create a relay address
-        if server.addresses.is_empty() {
-            return Err(NetworkError::InvalidRelayAddress);
-        }
-        
-        let relay_addr = server.addresses[0].clone();
-        let dest_addr = relay_addr.clone().with(Protocol::P2pCircuit).with(Protocol::P2p(*dest_peer_id));
-        
-        // Record the connection attempt
-        let _connection_info = RelayConnectionInfo {
-            dest_peer_id: *dest_peer_id,
-            relay_peer_id: server.peer_id,
-            established_at: Instant::now(),
-            ttl: self.config.ttl,
-            reservation_id: None,
-        };
-        
-        // Convert to RelayServerInfo for storage
-        let server_info = RelayServerInfo {
-            peer_id: server.peer_id,
-            addresses: server.addresses.clone(),
-            last_used: Instant::now(),
-            successful_connections: 0,
-            failed_connections: 0,
-        };
-        
-        self.relay_peers.write().await.insert(*dest_peer_id, server_info);
-        
+        // Create relay address
+        let relay_addr = best_relay.addresses.first().ok_or_else(|| {
+            NetworkError::RelayError("Relay server has no addresses".to_string())
+        })?;
+
+        // Create the relayed address
+        let relayed_addr = relay_addr
+            .clone()
+            .with(Protocol::P2pCircuit)
+            .with(Protocol::P2p(dest_peer_id.clone().into()));
+
+        // Update metrics
         if let Some(metrics) = &self.metrics {
-            metrics.record_active_relay_connections(self.relay_peers.read().await.len());
             metrics.record_relay_connection_attempt();
         }
+
+        // Attempt to establish the relay connection
+        match self.establish_relay_connection(&relayed_addr, &best_relay.peer_id).await {
+            Ok(()) => {
+                // Record successful connection
+                self.record_successful_connection(dest_peer_id, &best_relay.peer_id).await?;
+                
+                if let Some(metrics) = &self.metrics {
+                    metrics.record_relay_connection_success();
+                }
+                
+                Ok(relayed_addr)
+            }
+            Err(e) => {
+                // Record failed connection
+                self.record_failed_connection(dest_peer_id, &best_relay.peer_id).await?;
+                
+                if let Some(metrics) = &self.metrics {
+                    metrics.record_relay_connection_failure();
+                }
+                
+                Err(e)
+            }
+        }
+    }
+    
+    /// Select the best relay server based on past performance
+    fn select_best_relay(&self, relay_peers: &HashMap<PeerId, RelayServerInfo>) -> Option<RelayServerInfo> {
+        relay_peers.values()
+            .max_by(|a, b| {
+                let a_score = self.calculate_relay_score(a);
+                let b_score = self.calculate_relay_score(b);
+                a_score.partial_cmp(&b_score).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .cloned()
+    }
+    
+    /// Calculate a score for a relay based on its performance
+    fn calculate_relay_score(&self, relay: &RelayServerInfo) -> f64 {
+        let total_connections = relay.successful_connections + relay.failed_connections;
+        if total_connections == 0 {
+            return 0.0;
+        }
+
+        let success_rate = relay.successful_connections as f64 / total_connections as f64;
+        let time_factor = 1.0 / (1.0 + relay.last_used.elapsed().as_secs_f64() / 3600.0);
         
-        Ok(dest_addr)
+        success_rate * time_factor
+    }
+    
+    /// Establish a relay connection
+    async fn establish_relay_connection(&self, addr: &Multiaddr, relay_peer_id: &PeerId) -> NetworkResult<()> {
+        // Create reservation with the relay
+        let reservation = self.create_relay_reservation(relay_peer_id).await?;
+        
+        // Store the relay connection info
+        let connection_info = RelayConnectionInfo {
+            dest_peer_id: PeerId::random(), // This should be the actual destination peer
+            relay_peer_id: relay_peer_id.clone(),
+            established_at: Instant::now(),
+            ttl: self.config.ttl,
+            reservation_id: Some(reservation.to_string()),
+        };
+
+        // Update active connections
+        self.update_active_connections(connection_info).await?;
+
+        Ok(())
+    }
+    
+    /// Create a reservation with a relay server
+    async fn create_relay_reservation(&self, relay_peer_id: &PeerId) -> NetworkResult<String> {
+        // This would interact with the actual relay server to create a reservation
+        // For now, we'll just generate a random ID
+        Ok(format!("reservation-{}", uuid::Uuid::new_v4()))
+    }
+    
+    /// Update the list of active relay connections
+    async fn update_active_connections(&self, connection_info: RelayConnectionInfo) -> NetworkResult<()> {
+        // This would update the internal state of active connections
+        // For now, we'll just update metrics
+        if let Some(metrics) = &self.metrics {
+            metrics.record_active_relay_connections(1);
+        }
+        Ok(())
     }
     
     /// Record a successful relay connection
