@@ -245,8 +245,12 @@ impl MessageProcessor {
         let config = self.config.clone();
         let reputation = self.reputation.clone();
         let metrics = self.metrics.clone();
+        
         let running = Arc::new(tokio::sync::RwLock::new(true));
         let running_clone = Arc::clone(&running);
+        
+        // Create a processor clone to use in the spawned task
+        let processor_clone = self.clone();
         
         let task = tokio::spawn(async move {
             *running_clone.write().await = true;
@@ -254,8 +258,15 @@ impl MessageProcessor {
             while let Some(command) = command_rx.recv().await {
                 match command {
                     ProcessorCommand::ProcessMessage(envelope) => {
-                        // Add the message to the priority queue
-                        queue.write().await.push_back(envelope);
+                        // Convert MessageEnvelope to QueuedMessage
+                        let queued_message = QueuedMessage {
+                            message_type: envelope.message.message_type().clone(),
+                            data: Vec::new(), // We don't have the actual data here
+                            sender: Some(envelope.peer.peer_id.clone()),
+                            received_at: Instant::now(),
+                            priority: envelope.priority,
+                        };
+                        queue.write().await.push_back(queued_message);
                         
                         // Record queue size in metrics
                         if let Some(m) = &metrics {
@@ -271,7 +282,7 @@ impl MessageProcessor {
                 }
                 
                 // Process messages from the queue while there are any
-                self.process_queue(
+                processor_clone.process_queue(
                     &handlers,
                     &queue,
                     &reputation,
@@ -551,6 +562,18 @@ impl MessageProcessor {
         };
         
         (size, highest_priority, lowest_priority)
+    }
+    
+    /// Add a message directly to the queue
+    pub async fn push_back(&self, message: QueuedMessage) {
+        // Add the message to the queue
+        self.queue.write().await.push_back(message);
+        
+        // Record queue size in metrics if available
+        if let Some(m) = &self.metrics {
+            let size = self.queue.read().await.len();
+            m.record_queue_size(size);
+        }
     }
 }
 

@@ -188,10 +188,10 @@ enum Command {
     Stop(mpsc::Sender<NetworkResult<()>>),
 }
 
-/// The main P2P network service implementation
+/// P2P network implementation
 pub struct P2pNetwork {
     /// Storage for network data
-    storage: Arc<dyn Storage>,
+    storage: Arc<dyn Storage + Send + Sync>,
     /// libp2p key pair
     key_pair: Keypair,
     /// Local peer ID
@@ -201,7 +201,7 @@ pub struct P2pNetwork {
     /// Command sender
     command_tx: Arc<Mutex<mpsc::Sender<Command>>>,
     /// Background task handle
-    task_handle: Arc<Mutex<Option<JoinHandle<()>>>>>,
+    task_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     /// Message handlers
     handlers: Arc<RwLock<HashMap<String, Vec<Arc<dyn MessageHandler>>>>>,
     /// Known peers
@@ -265,7 +265,7 @@ impl P2pNetwork {
             ).await?;
             
             // Start decay task
-            manager.start_decay_task().await;
+            let _ = manager.start_decay_task().await;
             
             Some(Arc::new(manager))
         } else {
@@ -278,7 +278,7 @@ impl P2pNetwork {
         // Create circuit relay manager if enabled
         let circuit_relay = if config.enable_circuit_relay {
             let relay_config = config.circuit_relay_config.clone().unwrap_or_default();
-            let manager = CircuitRelayManager::new(relay_config, metrics.clone());
+            let manager = CircuitRelayManager::new(local_peer_id.clone(), relay_config, metrics.clone());
             
             // Initialize relay manager
             manager.initialize().await?;
@@ -375,7 +375,12 @@ impl P2pNetwork {
                 .multiplex(yamux::Config::default())
                 .timeout(config.keep_alive);
             
-            libp2p::Transport::boxed(tcp)
+            // Wrap in StreamMuxerBox to satisfy type requirements
+            let boxed = tcp.map(|(peer_id, muxer), _| {
+                (peer_id, libp2p::core::muxing::StreamMuxerBox::new(muxer))
+            });
+            
+            libp2p::Transport::boxed(boxed)
         };
         
         // We'll skip the relay transport for now since it's not fully implemented
@@ -433,15 +438,13 @@ impl P2pNetwork {
             gossipsub,
         };
         
-        let swarm = SwarmBuilder::with_existing_identity(key_pair.clone())
-            .with_tokio()
-            .with_tcp(
-                Default::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )?
-            .with_behaviour(|_| Ok(behaviour))?
-            .build();
+        // Create the swarm directly without using the builder pattern
+        let swarm = libp2p::Swarm::new(
+            transport,
+            behaviour,
+            local_peer_id,
+            libp2p::swarm::Config::with_tokio_executor()
+        );
         
         Ok(swarm)
     }

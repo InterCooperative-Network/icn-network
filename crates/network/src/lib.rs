@@ -283,7 +283,7 @@ pub trait MessageHandler: Send + Sync {
     async fn handle_message(&self, message: &NetworkMessage, peer: &PeerInfo) -> NetworkResult<()>;
 }
 
-/// Network service interface
+/// Network service trait
 #[async_trait]
 pub trait NetworkService: Send + Sync {
     /// Start the network service
