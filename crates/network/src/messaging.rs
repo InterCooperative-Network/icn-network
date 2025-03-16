@@ -3,7 +3,7 @@
 //! This module handles message encoding, decoding, and processing 
 //! for communication between nodes in the InterCooperative Network.
 
-use std::collections::{HashMap, BinaryHeap};
+use std::collections::{HashMap, BinaryHeap, VecDeque};
 use std::sync::Arc;
 use std::cmp::Ordering;
 use std::time::{Duration, Instant};
@@ -11,12 +11,49 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, warn, trace};
 use serde::{Serialize, Deserialize};
 
 use crate::{NetworkError, NetworkResult, NetworkMessage, MessageHandler, PeerInfo};
-use crate::reputation::ReputationManager;
+use crate::reputation::{ReputationManager, ReputationChange};
 use crate::metrics::NetworkMetrics;
+use libp2p::PeerId;
+use icn_core::storage::Storage;
+
+use crate::NetworkService;
+
+/// Maximum number of messages to process in a single batch
+const MAX_MESSAGES_PER_BATCH: usize = 10;
+
+/// Message type identifier
+pub type MessageType = String;
+
+/// Message handler function type
+pub type MessageHandlerFn = Arc<dyn MessageHandler>;
+
+/// Configuration for the message processor
+#[derive(Debug, Clone)]
+pub struct MessageProcessorConfig {
+    /// Maximum number of messages to process in a batch
+    pub batch_size: usize,
+    /// Interval between processing batches
+    pub process_interval: Duration,
+    /// Whether to persist messages
+    pub persist_messages: bool,
+    /// Storage key prefix for messages
+    pub storage_key_prefix: String,
+}
+
+impl Default for MessageProcessorConfig {
+    fn default() -> Self {
+        Self {
+            batch_size: 100,
+            process_interval: Duration::from_millis(100),
+            persist_messages: false,
+            storage_key_prefix: "messages:".to_string(),
+        }
+    }
+}
 
 /// Message envelope containing the message and metadata
 #[derive(Debug, Clone)]
@@ -106,24 +143,52 @@ impl Default for PriorityConfig {
     }
 }
 
-/// Message processor that handles messages with priority based on peer reputation
+/// A message queued for processing
+#[derive(Debug, Clone)]
+pub struct QueuedMessage {
+    /// Message type
+    pub message_type: MessageType,
+    /// Message data
+    pub data: Vec<u8>,
+    /// Sender peer ID
+    pub sender: Option<String>,
+    /// When the message was received
+    pub received_at: Instant,
+    /// Priority of the message (higher is more important)
+    pub priority: i32,
+}
+
+/// Message processor for handling incoming and outgoing messages
+#[derive(Debug)]
 pub struct MessageProcessor {
-    /// Handler registry
-    handlers: Arc<RwLock<HashMap<String, Vec<Arc<dyn MessageHandler>>>>>,
-    /// Message queue for prioritized processing
-    queue: Arc<RwLock<BinaryHeap<MessageEnvelope>>>,
-    /// Configuration for priority processing
-    config: PriorityConfig,
-    /// Reputation manager reference
-    reputation: Option<Arc<ReputationManager>>,
-    /// Metrics for monitoring
-    metrics: Option<NetworkMetrics>,
-    /// Command sender for controlling the processor
-    command_tx: mpsc::Sender<ProcessorCommand>,
-    /// Background task handle
+    /// Configuration
+    config: MessageProcessorConfig,
+    /// Network service for sending messages
+    network: Arc<dyn NetworkService>,
+    /// Storage for persisting messages
+    storage: Option<Arc<dyn Storage>>,
+    /// Message handlers
+    handlers: Arc<RwLock<HashMap<MessageType, Vec<MessageHandlerFn>>>>,
+    /// Queue of messages to process
+    queue: Arc<RwLock<VecDeque<QueuedMessage>>>,
+    /// Task handle for the background processor
     task_handle: RwLock<Option<JoinHandle<()>>>,
     /// Whether the processor is running
     running: RwLock<bool>,
+}
+
+impl Clone for MessageProcessor {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            network: self.network.clone(),
+            storage: self.storage.clone(),
+            handlers: self.handlers.clone(),
+            queue: self.queue.clone(),
+            task_handle: RwLock::new(None), // Don't clone the task handle
+            running: RwLock::new(*self.running.blocking_read()),
+        }
+    }
 }
 
 /// Command for controlling the message processor
@@ -146,7 +211,7 @@ impl MessageProcessor {
         
         let processor = Self {
             handlers,
-            queue: Arc::new(RwLock::new(BinaryHeap::new())),
+            queue: Arc::new(RwLock::new(VecDeque::new())),
             config,
             reputation,
             metrics,
@@ -163,21 +228,22 @@ impl MessageProcessor {
     
     /// Start the background processing task
     fn start_background_task(&self, mut command_rx: mpsc::Receiver<ProcessorCommand>) {
-        let handlers = self.handlers.clone();
-        let queue = self.queue.clone();
+        let handlers = Arc::clone(&self.handlers);
+        let queue = Arc::clone(&self.queue);
         let config = self.config.clone();
         let reputation = self.reputation.clone();
         let metrics = self.metrics.clone();
-        let running = self.running.clone();
+        let running = Arc::new(tokio::sync::RwLock::new(true));
+        let running_clone = Arc::clone(&running);
         
         let task = tokio::spawn(async move {
-            *running.write().await = true;
+            *running_clone.write().await = true;
             
             while let Some(command) = command_rx.recv().await {
                 match command {
                     ProcessorCommand::ProcessMessage(envelope) => {
                         // Add the message to the priority queue
-                        queue.write().await.push(envelope);
+                        queue.write().await.push_back(envelope);
                         
                         // Record queue size in metrics
                         if let Some(m) = &metrics {
@@ -186,14 +252,14 @@ impl MessageProcessor {
                         }
                     },
                     ProcessorCommand::Stop(response_tx) => {
-                        *running.write().await = false;
+                        *running_clone.write().await = false;
                         let _ = response_tx.send(Ok(())).await;
                         break;
                     }
                 }
                 
                 // Process messages from the queue while there are any
-                Self::process_queue(
+                self.process_queue(
                     &handlers,
                     &queue,
                     &reputation,
@@ -204,20 +270,30 @@ impl MessageProcessor {
             debug!("Message processor background task stopped");
         });
         
+        // Create new clones for the periodic task
+        let handlers_periodic = Arc::clone(&self.handlers);
+        let queue_periodic = Arc::clone(&self.queue);
+        let reputation_periodic = self.reputation.clone();
+        let metrics_periodic = self.metrics.clone();
+        let running_periodic = Arc::clone(&running);
+        let processor = self.clone();
+        
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(50));
             
-            while *running.read().await {
+            while *running_periodic.read().await {
                 interval.tick().await;
                 
                 // Process messages from the queue periodically
-                Self::process_queue(
-                    &handlers,
-                    &queue,
-                    &reputation,
-                    &metrics,
+                processor.process_queue(
+                    &handlers_periodic,
+                    &queue_periodic,
+                    &reputation_periodic,
+                    &metrics_periodic,
                 ).await;
             }
+            
+            debug!("Periodic message processor task stopped");
         });
         
         let mut handle = futures::executor::block_on(self.task_handle.write());
@@ -226,76 +302,83 @@ impl MessageProcessor {
     
     /// Process messages from the queue
     async fn process_queue(
+        &self,
         handlers: &Arc<RwLock<HashMap<String, Vec<Arc<dyn MessageHandler>>>>>,
-        queue: &Arc<RwLock<BinaryHeap<MessageEnvelope>>>,
+        queue: &Arc<RwLock<VecDeque<MessageEnvelope>>>,
         reputation: &Option<Arc<ReputationManager>>,
         metrics: &Option<NetworkMetrics>,
     ) {
         let mut processed = 0;
-        let start = Instant::now();
         
-        // Process up to 10 messages at a time
-        while processed < 10 {
-            // Get the highest priority message
+        // Process up to MAX_MESSAGES_PER_BATCH messages
+        for _ in 0..MAX_MESSAGES_PER_BATCH {
+            // Get the highest priority message from the queue
             let envelope = {
-                let mut queue_lock = queue.write().await;
-                queue_lock.pop()
+                let mut queue_write = queue.write().await;
+                if queue_write.is_empty() {
+                    break;
+                }
+                queue_write.pop_front().unwrap()
             };
             
-            if let Some(envelope) = envelope {
-                // Get the message type
-                let message_type = &envelope.message.message_type;
-                
-                // Start timing the message processing
-                let process_start = Instant::now();
-                
-                // Get handlers for this message type
-                let handlers_guard = handlers.read().await;
-                if let Some(type_handlers) = handlers_guard.get(message_type) {
-                    for handler in type_handlers {
-                        if let Err(e) = handler.handle_message(&envelope.message, &envelope.peer).await {
-                            error!("Handler error: {}", e);
-                            
-                            // Update reputation if available
-                            if let Some(rep) = reputation {
-                                // Convert PeerInfo to PeerId
-                                if let Ok(peer_id) = libp2p::PeerId::from_bytes(&envelope.peer.id) {
-                                    let _ = rep.record_change(&peer_id, crate::reputation::ReputationChange::MessageFailure).await;
-                                }
-                            }
-                        } else {
-                            // Update reputation for successful message handling
-                            if let Some(rep) = reputation {
-                                // Convert PeerInfo to PeerId
-                                if let Ok(peer_id) = libp2p::PeerId::from_bytes(&envelope.peer.id) {
-                                    let _ = rep.record_change(&peer_id, crate::reputation::ReputationChange::MessageSuccess).await;
+            // Extract message type and peer
+            let message_type = envelope.message.message_type();
+            let peer = &envelope.peer;
+            
+            // Start timing the message processing
+            let process_start = Instant::now();
+            
+            // Find handlers for this message type
+            let handlers = handlers.read().await
+                .get(&message_type)
+                .cloned();
+            
+            if let Some(type_handlers) = handlers {
+                for handler in type_handlers {
+                    if let Err(e) = handler.handle_message(&envelope.message, &envelope.peer).await {
+                        error!("Error handling message of type {}: {}", message_type, e);
+                        
+                        // Record failure in reputation system
+                        if let Some(rep) = reputation {
+                            if let Ok(peer_id) = PeerId::from_bytes(peer.id.as_bytes()) {
+                                if let Err(e) = rep.record_change(peer_id, ReputationChange::MessageFailure).await {
+                                    error!("Failed to update reputation: {}", e);
                                 }
                             }
                         }
                     }
                 }
                 
-                // Record message processing time
-                let elapsed = process_start.elapsed();
+                // Record success in reputation system
+                if let Some(rep) = reputation {
+                    if let Ok(peer_id) = PeerId::from_bytes(peer.id.as_bytes()) {
+                        if let Err(e) = rep.record_change(peer_id, ReputationChange::MessageSuccess).await {
+                            error!("Failed to update reputation: {}", e);
+                        }
+                    }
+                }
+                
+                // Record metrics
                 if let Some(m) = metrics {
-                    m.record_message_processing_time(elapsed);
+                    let process_time = process_start.elapsed();
+                    m.record_message_processing_time(process_time);
+                    m.record_message_received(message_type.as_str(), 0); // We don't have size info here
                 }
                 
                 processed += 1;
             } else {
-                // No more messages in the queue
-                break;
+                debug!("No handlers registered for message type: {}", message_type);
             }
         }
         
-        // Record batch processing time
+        // Update metrics with current queue size
+        if let Some(m) = metrics {
+            let size = queue.read().await.len();
+            m.record_queue_size(size);
+        }
+        
         if processed > 0 {
-            let batch_time = start.elapsed();
-            if let Some(m) = metrics {
-                m.record_operation_duration("message_batch_processing", batch_time);
-            }
-            
-            debug!("Processed {} messages in {:?}", processed, batch_time);
+            trace!("Processed {} messages from queue", processed);
         }
     }
     
@@ -313,8 +396,8 @@ impl MessageProcessor {
             PriorityMode::ReputationBased => {
                 // Base priority on peer reputation
                 let reputation_score = if let Some(rep) = &self.reputation {
-                    if let Ok(peer_id) = libp2p::PeerId::from_bytes(&peer.id) {
-                        rep.get_reputation(&peer_id).await
+                    if let Ok(peer_id) = libp2p::PeerId::from_bytes(peer.id.as_bytes()) {
+                        rep.get_reputation(peer_id).await
                             .map(|r| r.score())
                             .unwrap_or(0)
                     } else {
@@ -331,14 +414,14 @@ impl MessageProcessor {
             PriorityMode::TypeAndReputation => {
                 // Base priority on message type
                 let type_priority = self.config.type_priorities
-                    .get(&message.message_type)
+                    .get(&message.message_type())
                     .copied()
                     .unwrap_or(0);
                 
                 // Get reputation score
                 let reputation_score = if let Some(rep) = &self.reputation {
-                    if let Ok(peer_id) = libp2p::PeerId::from_bytes(&peer.id) {
-                        rep.get_reputation(&peer_id).await
+                    if let Ok(peer_id) = libp2p::PeerId::from_bytes(peer.id.as_bytes()) {
+                        rep.get_reputation(peer_id).await
                             .map(|r| r.score())
                             .unwrap_or(0)
                     } else {
@@ -425,15 +508,15 @@ impl MessageProcessor {
     
     /// Stop the message processor
     pub async fn stop(&self) -> NetworkResult<()> {
-        let (tx, rx) = mpsc::channel(1);
+        let (tx, mut rx) = mpsc::channel(1);
         
         if let Err(e) = self.command_tx.send(ProcessorCommand::Stop(tx)).await {
             return Err(NetworkError::ServiceError(format!("Failed to send stop command: {}", e)));
         }
         
-        match rx.await {
-            Ok(result) => result,
-            Err(e) => Err(NetworkError::ServiceError(format!("Failed to receive stop response: {}", e))),
+        match rx.recv().await {
+            Some(result) => result,
+            None => Err(NetworkError::ServiceError("Channel closed before receiving response".to_string())),
         }
     }
     
@@ -449,7 +532,7 @@ impl MessageProcessor {
         
         // Get highest and lowest priorities if queue is not empty
         let (highest_priority, lowest_priority) = if !queue.is_empty() {
-            // Convert the BinaryHeap to a Vec to access all elements
+            // Convert the VecDeque to a Vec to access all elements
             let vec: Vec<_> = queue.iter().collect();
             
             // Find highest and lowest priorities

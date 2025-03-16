@@ -13,7 +13,7 @@ async fn test_reputation_basic() {
     
     // Get the reputation
     let rep = manager.get_reputation(peer_id).await.unwrap();
-    println!("Current reputation: {}", rep);
+    println!("Current reputation: {:?}", rep);
     
     // Check if banned
     let banned = manager.is_banned(peer_id).await;

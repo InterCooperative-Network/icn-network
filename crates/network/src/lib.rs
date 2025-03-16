@@ -87,6 +87,22 @@ pub enum NetworkError {
     /// Maximum relay connections reached
     #[error("Maximum relay connections reached")]
     MaxRelayConnectionsReached,
+
+    /// Service stopped
+    #[error("Service stopped")]
+    ServiceStopped,
+    
+    /// Service error
+    #[error("Service error: {0}")]
+    ServiceError(String),
+    
+    /// Service not enabled
+    #[error("Service not enabled: {0}")]
+    ServiceNotEnabled(String),
+    
+    /// Connection failed
+    #[error("Connection failed")]
+    ConnectionFailed,
 }
 
 /// Result type for network operations
@@ -117,7 +133,7 @@ pub enum NetworkMessage {
     
     /// Custom message type
     #[serde(rename = "custom")]
-    CustomMessage(CustomMessage),
+    Custom(CustomMessage),
 }
 
 impl NetworkMessage {
@@ -129,7 +145,7 @@ impl NetworkMessage {
             Self::IdentityAnnouncement(_) => "identity.announcement".to_string(),
             Self::ProposalAnnouncement(_) => "governance.proposal".to_string(),
             Self::VoteAnnouncement(_) => "governance.vote".to_string(),
-            Self::CustomMessage(m) => m.message_type.clone(),
+            Self::Custom(m) => m.message_type.clone(),
         }
     }
 }
@@ -221,18 +237,24 @@ pub struct CustomMessage {
 /// Information about a peer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerInfo {
+    /// Unique identifier for the peer
+    pub id: String,
     /// Peer ID
     pub peer_id: String,
-    /// Legacy ID field for compatibility
-    pub id: String,
-    /// Addresses the peer is listening on
+    /// Addresses the peer can be reached at
     pub addresses: Vec<String>,
-    /// Supported protocols
+    /// Protocol versions supported by the peer
     pub protocols: Vec<String>,
+    /// Agent version string
+    pub agent_version: Option<String>,
+    /// Protocol version
+    pub protocol_version: Option<String>,
     /// Whether the peer is currently connected
     pub connected: bool,
     /// Last seen timestamp
-    pub last_seen: u64,
+    pub last_seen: Option<u64>,
+    /// Reputation score
+    pub reputation: Option<i32>,
 }
 
 impl fmt::Display for PeerInfo {
@@ -304,16 +326,19 @@ mod tests;
 
 // Public re-exports
 pub use crate::p2p::{P2pConfig, P2pNetwork};
-pub use crate::discovery::{DiscoveryConfig, DiscoveryService};
+pub use crate::discovery::DiscoveryConfig;
 pub use crate::messaging::{MessageProcessor, PriorityConfig};
-pub use crate::reputation::{ReputationConfig, ReputationManager};
+pub use crate::reputation::{ReputationConfig, ReputationManager, ReputationChange};
 pub use crate::circuit_relay::{CircuitRelayConfig, CircuitRelayManager};
 
 // Re-export the messaging types for convenience
 pub mod messages {
-    pub use crate::messaging::IdentityAnnouncement;
-    pub use crate::messaging::TransactionAnnouncement;
-    pub use crate::messaging::LedgerStateUpdate;
-    pub use crate::messaging::ProposalAnnouncement;
-    pub use crate::messaging::VoteAnnouncement;
+    pub use crate::{
+        IdentityAnnouncement,
+        TransactionAnnouncement,
+        LedgerStateUpdate,
+        ProposalAnnouncement,
+        VoteAnnouncement,
+        CustomMessage,
+    };
 } 

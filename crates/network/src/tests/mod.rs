@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
+use std::path::PathBuf;
 
 /// A mock storage implementation for testing
 #[derive(Default)]
@@ -19,14 +20,17 @@ impl MockStorage {
 
 #[async_trait]
 impl icn_core::storage::Storage for MockStorage {
-    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, icn_core::storage::StorageError> {
+    async fn get(&self, key: &str) -> Result<Vec<u8>, icn_core::storage::StorageError> {
         let data = self.data.lock().unwrap();
-        Ok(data.get(key).cloned())
+        match data.get(key) {
+            Some(value) => Ok(value.clone()),
+            None => Err(icn_core::storage::StorageError::NotFound(key.to_string())),
+        }
     }
 
-    async fn put(&self, key: &str, value: &[u8]) -> Result<(), icn_core::storage::StorageError> {
+    async fn put(&self, key: &str, value: Vec<u8>) -> Result<(), icn_core::storage::StorageError> {
         let mut data = self.data.lock().unwrap();
-        data.insert(key.to_string(), value.to_vec());
+        data.insert(key.to_string(), value);
         Ok(())
     }
 
@@ -41,7 +45,7 @@ impl icn_core::storage::Storage for MockStorage {
         Ok(data.contains_key(key))
     }
 
-    async fn keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>, icn_core::storage::StorageError> {
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, icn_core::storage::StorageError> {
         let data = self.data.lock().unwrap();
         let keys: Vec<String> = data
             .keys()
@@ -49,6 +53,10 @@ impl icn_core::storage::Storage for MockStorage {
             .cloned()
             .collect();
         Ok(keys)
+    }
+
+    fn base_path(&self) -> Option<PathBuf> {
+        None
     }
 }
 
@@ -61,9 +69,9 @@ mod tests {
         let storage = MockStorage::new();
         
         // Test put and get
-        storage.put("test_key", b"test_value").await.unwrap();
+        storage.put("test_key", b"test_value".to_vec()).await.unwrap();
         let value = storage.get("test_key").await.unwrap();
-        assert_eq!(value, Some(b"test_value".to_vec()));
+        assert_eq!(value, b"test_value".to_vec());
         
         // Test exists
         assert!(storage.exists("test_key").await.unwrap());
@@ -74,11 +82,11 @@ mod tests {
         assert!(!storage.exists("test_key").await.unwrap());
         
         // Test keys with prefix
-        storage.put("prefix1_key1", b"value1").await.unwrap();
-        storage.put("prefix1_key2", b"value2").await.unwrap();
-        storage.put("prefix2_key1", b"value3").await.unwrap();
+        storage.put("prefix1_key1", b"value1".to_vec()).await.unwrap();
+        storage.put("prefix1_key2", b"value2".to_vec()).await.unwrap();
+        storage.put("prefix2_key1", b"value3".to_vec()).await.unwrap();
         
-        let keys = storage.keys_with_prefix("prefix1_").await.unwrap();
+        let keys = storage.list("prefix1_").await.unwrap();
         assert_eq!(keys.len(), 2);
         assert!(keys.contains(&"prefix1_key1".to_string()));
         assert!(keys.contains(&"prefix1_key2".to_string()));

@@ -120,6 +120,12 @@ pub struct PeerReputation {
     pub avg_response_time: Duration,
 }
 
+impl Default for PeerReputation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PeerReputation {
     /// Create a new peer reputation with default values
     pub fn new() -> Self {
@@ -133,6 +139,11 @@ impl PeerReputation {
             response_times: Vec::new(),
             avg_response_time: Duration::from_millis(0),
         }
+    }
+
+    /// Get the reputation score
+    pub fn score(&self) -> i32 {
+        self.value
     }
 
     /// Record a change to the peer's reputation
@@ -315,12 +326,17 @@ impl ReputationManager {
             }
         }
         
-        // Start the background task
-        let task = manager.start_decay_task();
+        // Start the background task and store the task handle
+        let config_clone = config.clone();
+        let task = tokio::spawn(async move {
+            if let Err(e) = manager.start_decay_task().await {
+                error!("Failed to start reputation decay task: {}", e);
+            }
+        });
         
         // Store the task handle
         {
-            let mut handle = manager.task_handle.write();
+            let mut handle = manager.task_handle.write().await;
             *handle = Some(task);
         }
         
@@ -328,49 +344,46 @@ impl ReputationManager {
     }
     
     /// Start the reputation manager
-    pub async fn start(&self) -> NetworkResult<()> {
-        // Load stored reputation data if available
-        if let Some(storage) = &self.storage {
-            let storage_key = &self.config.storage_key;
-            if !storage_key.is_empty() {
-                if let Ok(data) = storage.get(storage_key).await {
-                    if !data.is_empty() {
-                        if let Ok(rep_data) = serde_json::from_slice::<HashMap<String, PeerReputation>>(&data) {
-                            let mut reputations = self.reputations.write().await;
-                            for (peer_id_str, reputation) in rep_data {
-                                // Convert the peer ID string to a PeerId
-                                let bytes = match bs58::decode(&peer_id_str).into_vec() {
-                                    Ok(bytes) => bytes,
-                                    Err(_) => {
-                                        debug!("Failed to decode peer ID: {}", peer_id_str);
-                                        continue;
-                                    }
-                                };
-                                
-                                if let Ok(peer_id) = PeerId::from_bytes(&bytes) {
-                                    reputations.insert(peer_id, reputation);
-                                    
-                                    // Update metrics
-                                    if let Some(metrics) = &self.metrics {
-                                        metrics.update_reputation_score(&peer_id.to_string(), reputation.value);
-                                        if reputation.banned {
-                                            metrics.record_peer_banned(&peer_id.to_string());
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            debug!("Loaded {} peer reputation records", reputations.len());
-                        }
-                    }
+    pub async fn start(
+        storage: Arc<dyn Storage>,
+        config: ReputationConfig,
+    ) -> NetworkResult<Self> {
+        debug!("Starting reputation manager with config: {:?}", config);
+        
+        // Create the manager instance
+        let manager = Self {
+            reputations: RwLock::new(HashMap::new()),
+            storage,
+            config: config.clone(), // Clone config here
+            task_handle: RwLock::new(None),
+            running: RwLock::new(false),
+        };
+
+        // Load existing reputations from storage
+        if let Ok(data) = storage.get(&config.storage_key).await {
+            if let Ok(stored_reputations) = serde_json::from_slice::<HashMap<PeerId, PeerReputation>>(&data) {
+                debug!("Loaded {} peer reputations from storage", stored_reputations.len());
+                let mut reputations = manager.reputations.write().await;
+                for (peer_id, reputation) in stored_reputations {
+                    reputations.insert(peer_id, reputation);
                 }
             }
         }
-        
-        // Start the background task
-        self.start_background_task().await?;
-        
-        Ok(())
+
+        // Start the background task for reputation decay
+        let manager_clone = manager.clone(); // Clone the manager for the task
+        let config_clone = config.clone();
+        let task = tokio::spawn(async move {
+            if let Err(e) = manager_clone.start_decay_task().await {
+                error!("Reputation decay task failed: {}", e);
+            }
+        });
+
+        // Store the task handle
+        let mut handle = manager.task_handle.write().await;
+        *handle = Some(task);
+
+        Ok(manager)
     }
     
     /// Start the background task for reputation management
@@ -884,7 +897,7 @@ impl ReputationManager {
     }
     
     /// Start the decay task
-    pub async fn start_decay_task(&self) -> JoinHandle<()> {
+    pub async fn start_decay_task(&self) -> NetworkResult<()> {
         let reputations = Arc::clone(&self.reputations);
         let metrics = self.metrics.clone();
         let storage = self.storage.clone();
@@ -904,7 +917,9 @@ impl ReputationManager {
             if let Err(e) = Self::run_background_task(command_rx, reputations, metrics, storage, config).await {
                 error!("Reputation decay task failed: {}", e);
             }
-        })
+        });
+        
+        Ok(())
     }
 
     /// Send a command to the background task

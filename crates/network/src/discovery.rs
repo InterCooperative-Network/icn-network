@@ -206,7 +206,7 @@ impl DiscoveryManager {
     async fn connect_to_peer(&self, peer_id: PeerId, addr: Multiaddr) -> NetworkResult<()> {
         // Check if we're already connected
         let peers = self.network.get_connected_peers().await?;
-        if peers.iter().any(|p| p.peer_id == peer_id) {
+        if peers.iter().any(|p| p.peer_id == peer_id.to_string()) {
             return Ok(());
         }
         
@@ -251,7 +251,7 @@ impl DiscoveryManager {
                 
                 // Try to connect to peers that are not already connected
                 for (peer_id, addr) in peers {
-                    if !connected.contains(&peer_id) {
+                    if !connected.contains(&peer_id.to_string()) {
                         debug!("Trying to connect to known peer {} at {}", peer_id, addr);
                         let _ = network.connect(&addr).await;
                     }
@@ -263,6 +263,24 @@ impl DiscoveryManager {
             
             info!("Connection task stopped");
         });
+    }
+
+    async fn announce_peers(&self) -> NetworkResult<()> {
+        let peers = self.known_peers.read().await;
+        
+        // Convert peer data to a serializable format
+        let peer_data: Vec<(String, String)> = peers
+            .iter()
+            .map(|(peer_id, addr)| (peer_id.to_string(), addr.clone()))
+            .collect();
+        
+        // Serialize the peer data
+        let data = serde_json::to_vec(&peer_data)
+            .map_err(|e| NetworkError::SerializationError(e.to_string()))?;
+        
+        // Publish the peer data
+        // ... existing code ...
+        Ok(())
     }
 }
 

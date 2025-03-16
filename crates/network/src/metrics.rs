@@ -407,9 +407,9 @@ impl NetworkMetrics {
         self.reputation_changes.with_label_values(&[peer_id, "action"]).inc();
     }
     
-    /// Update a peer's reputation score
+    /// Update the reputation score for a peer
     pub fn update_reputation_score(&self, peer_id: &str, score: i32) {
-        self.reputation_scores.with_label_values(&[peer_id]).set(score);
+        self.reputation_scores.with_label_values(&[peer_id]).set(score as i64);
     }
     
     /// Record that a peer was banned

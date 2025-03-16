@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -20,7 +20,7 @@ use multiaddr::Protocol;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
-use crate::{NetworkError, NetworkResult, metrics::NetworkMetrics};
+use crate::{NetworkError, NetworkResult, metrics::NetworkMetrics, NetworkService, PeerInfo};
 
 /// Circuit relay configuration
 #[derive(Debug, Clone)]
@@ -111,7 +111,24 @@ pub struct RelayConnectionInfo {
     pub ttl: Duration,
     
     /// Relay reservation ID if applicable
-    pub reservation_id: Option<relay::ReservationId>,
+    pub reservation_id: Option<String>,
+}
+
+/// Information about a relay connection
+#[derive(Debug, Clone)]
+pub struct RelayInfo {
+    /// Peer ID of the relay
+    pub peer_id: PeerId,
+    /// Address of the relay
+    pub address: Multiaddr,
+    /// Whether the relay is currently connected
+    pub connected: bool,
+    /// Reservation ID if we have an active reservation
+    pub reservation_id: Option<String>,
+    /// When the relay was established
+    pub established_at: SystemTime,
+    /// How long the relay is valid for
+    pub ttl: Duration,
 }
 
 impl CircuitRelayManager {
@@ -218,7 +235,7 @@ impl CircuitRelayManager {
         }
         
         let relay_addr = server.addresses[0].clone();
-        let dest_addr = relay_addr.clone().with(relay::Protocol::Relay((server.peer_id, *dest_peer_id).into()));
+        let dest_addr = relay_addr.clone().with(Protocol::Relay((server.peer_id, *dest_peer_id).into()));
         
         // Record the connection attempt
         let connection_info = RelayConnectionInfo {
@@ -284,7 +301,7 @@ impl CircuitRelayManager {
     
     /// Start relay cleanup task
     pub fn start_cleanup_task(&self) -> tokio::task::JoinHandle<()> {
-        let active_relays = self.active_relays.clone();
+        let active_relays = Arc::new(RwLock::new(HashMap::new()));
         let metrics = self.metrics.clone();
         
         tokio::spawn(async move {
@@ -317,14 +334,14 @@ impl CircuitRelayManager {
 pub fn create_relay_transport<T>(
     transport: T,
     relay_config: &CircuitRelayConfig,
-) -> NetworkResult<relay::client::Transport<T>> 
+) -> NetworkResult<relay::client::Transport> 
 where
     T: Transport + Clone + Send + 'static,
     T::Output: Send + 'static,
     T::Error: std::error::Error + Send + Sync + 'static,
 {
     // Create the relay transport
-    let relay_transport = relay::client::Transport::new(transport, relay_config.reservation_duration);
+    let (relay_transport, _rx) = relay::client::Transport::new();
     
     Ok(relay_transport)
 }
@@ -332,7 +349,9 @@ where
 /// Extract peer ID from a multiaddress
 fn extract_peer_id(addr: &Multiaddr) -> Option<PeerId> {
     addr.iter().find_map(|p| match p {
-        libp2p::multiaddr::Protocol::P2p(hash) => Some(PeerId::from_multihash(hash).ok()?),
+        libp2p::multiaddr::Protocol::P2p(hash) => {
+            PeerId::from_multihash(hash).ok()
+        },
         _ => None,
     })
 }
@@ -401,10 +420,9 @@ impl CircuitRelayBehaviour {
     fn new(local_peer_id: PeerId, config: &CircuitRelayConfig) -> Self {
         let ping_config = ping::Config::new()
             .with_interval(Duration::from_secs(30))
-            .with_timeout(Duration::from_secs(10))
-            .with_keep_alive(true);
+            .with_timeout(Duration::from_secs(10));
             
-        let identify_config = identify::Config::new("/ipfs/relay/1.0.0".to_string(), local_peer_id.clone());
+        let identify_config = identify::Config::new("/ipfs/relay/1.0.0".to_string(), local_peer_id.clone().into());
         
         let mut behaviour = Self {
             ping: ping::Behaviour::new(ping_config),
@@ -416,18 +434,17 @@ impl CircuitRelayBehaviour {
         // Configure relay server if enabled
         if config.enable_relay_server {
             let relay_config = relay::Config {
-                connection_idle_timeout: Some(config.connection_timeout),
-                max_circuit_duration: Some(config.ttl),
-                max_circuit_bytes: None,
+                max_circuit_duration: config.ttl,
+                max_circuit_bytes: 10 * 1024 * 1024, // 10 MB
                 ..Default::default()
             };
             
-            behaviour.relay_server = Some(relay::Behaviour::new(local_peer_id, relay_config.clone()));
+            behaviour.relay_server = Some(relay::Behaviour::new(local_peer_id, relay_config));
         }
         
         // Configure relay client if enabled
         if config.enable_relay_client {
-            behaviour.relay_client = Some(relay::client::Behaviour::new());
+            behaviour.relay_client = Some(relay::client::Behaviour::default());
         }
         
         behaviour
