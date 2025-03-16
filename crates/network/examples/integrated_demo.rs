@@ -24,7 +24,7 @@ struct Args {
     verbose: bool,
 
     /// Metrics server address
-    #[clap(short, long, default_value = "127.0.0.1:9090")]
+    #[clap(short, long, default_value = "[::1]:9090")]
     metrics_address: String,
 
     /// Demo mode to run
@@ -72,7 +72,7 @@ async fn run_integrated_demo(args: Args) -> anyhow::Result<()> {
     
     // Configure the network
     let mut config = P2pConfig::default();
-    config.listen_addresses = vec!["/ip4/127.0.0.1/tcp/0".parse()?]; // Use ephemeral port
+    config.listen_addresses = vec!["/ip6/::1/tcp/0".parse()?]; // Use ephemeral port
     config.enable_metrics = true;
     config.metrics_address = Some(args.metrics_address.clone());
     

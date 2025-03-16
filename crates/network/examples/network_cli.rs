@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
     
     // Configure the network
     let mut config = P2pConfig::default();
-    config.listen_addresses = vec![format!("/ip4/0.0.0.0/tcp/{}", args.port).parse()?];
+    config.listen_addresses = vec![format!("/ip6/::/tcp/{}", args.port).parse()?];
     config.enable_mdns = args.mdns;
     
     // Create the network

@@ -67,15 +67,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Create network configurations
     let mut config1 = P2pConfig::default();
-    config1.listen_addresses = vec!["/ip4/127.0.0.1/tcp/10001".parse()?];
+    config1.listen_addresses = vec!["/ip6/::1/tcp/10001".parse()?];
     config1.enable_reputation = true;
     
     let mut config2 = P2pConfig::default();
-    config2.listen_addresses = vec!["/ip4/127.0.0.1/tcp/10002".parse()?];
+    config2.listen_addresses = vec!["/ip6/::1/tcp/10002".parse()?];
     config2.enable_reputation = true;
     
     let mut config3 = P2pConfig::default();
-    config3.listen_addresses = vec!["/ip4/127.0.0.1/tcp/10003".parse()?];
+    config3.listen_addresses = vec!["/ip6/::1/tcp/10003".parse()?];
     config3.enable_reputation = true;
     
     // Create network instances
@@ -122,8 +122,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Node 3 peer ID: {}", peer_id3);
     
     // Connect node 1 to both 2 and 3
-    network1.connect(&format!("/ip4/127.0.0.1/tcp/10002/p2p/{}", peer_id2)).await?;
-    network1.connect(&format!("/ip4/127.0.0.1/tcp/10003/p2p/{}", peer_id3)).await?;
+    network1.connect(&format!("/ip6/::1/tcp/10002/p2p/{}", peer_id2)).await?;
+    network1.connect(&format!("/ip6/::1/tcp/10003/p2p/{}", peer_id3)).await?;
     
     // Wait for connections to establish
     time::sleep(Duration::from_secs(2)).await;
@@ -205,7 +205,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     
     // Try to connect to banned peer (should fail or be ignored)
-    let result = network1.connect(&format!("/ip4/127.0.0.1/tcp/10002/p2p/{}", peer_id2)).await;
+    let result = network1.connect(&format!("/ip6/::1/tcp/10002/p2p/{}", peer_id2)).await;
     match result {
         Ok(_) => info!("Connected to banned peer - connection was allowed but peer is still banned"),
         Err(e) => info!("Failed to connect to banned peer as expected: {}", e),
@@ -225,7 +225,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Node 2 banned status after unban: {}", is_banned);
     
     // Try to connect to unbanned peer
-    network1.connect(&format!("/ip4/127.0.0.1/tcp/10002/p2p/{}", peer_id2)).await?;
+    network1.connect(&format!("/ip6/::1/tcp/10002/p2p/{}", peer_id2)).await?;
     info!("Successfully connected to unbanned peer");
     
     // Demo 4: Reputation decay

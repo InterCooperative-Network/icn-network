@@ -31,10 +31,10 @@ async fn main() -> Result<()> {
     
     // Create network configurations
     let mut config1 = P2pConfig::default();
-    config1.listen_addresses = vec!["/ip4/127.0.0.1/tcp/9001".parse()?];
+    config1.listen_addresses = vec!["/ip6/::1/tcp/9001".parse()?];
     
     let mut config2 = P2pConfig::default();
-    config2.listen_addresses = vec!["/ip4/127.0.0.1/tcp/9002".parse()?];
+    config2.listen_addresses = vec!["/ip6/::1/tcp/9002".parse()?];
     
     // Create the networks
     let network1 = Arc::new(P2pNetwork::new(storage1.clone(), config1).await?);

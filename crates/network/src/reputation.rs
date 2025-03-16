@@ -314,50 +314,60 @@ impl ReputationManager {
     ) -> NetworkResult<Self> {
         let reputations = Arc::new(RwLock::new(HashMap::new()));
         
-        // Create a channel for commands
-        let (command_tx, command_rx) = mpsc::channel(32);
-        
-        // Create the manager
-        let manager = Self {
-            reputations: Arc::clone(&reputations),
-            config,
-            command_tx,
-            task_handle: RwLock::new(None),
-            storage: storage.clone(),
-            metrics: metrics.clone(),
-            command_senders: RwLock::new(vec![]),
-        };
+        // Clone the config for storage operations
+        let config_clone = config.clone();
         
         // Load existing reputations from storage if available
         if let Some(storage) = &storage {
-            if let Ok(data) = storage.get(&config.storage_key).await {
-                let rep_data: Vec<PeerReputation> = serde_json::from_slice(&data)
-                    .map_err(|_| NetworkError::DecodingError)?;
-                
-                let mut reputations_write = reputations.write().await;
-                
-                for rep in rep_data {
-                    reputations_write.insert(rep.peer_id.clone(), rep);
+            if let Ok(data) = storage.get(&config_clone.storage_key).await {
+                if let Ok(stored_reputations) = serde_json::from_slice::<HashMap<String, PeerReputation>>(&data) {
+                    let mut reputations_write = reputations.write().await;
+                    
+                    for (peer_id_str, reputation) in stored_reputations {
+                        if let Ok(peer_id) = PeerId::from_bytes(peer_id_str.as_bytes()) {
+                            reputations_write.insert(peer_id, reputation);
+                        }
+                    }
+                    
+                    info!("Loaded {} peer reputations from storage", reputations_write.len());
                 }
-                
-                debug!("Loaded {} peer reputations from storage", reputations_write.len());
             }
         }
         
+        let manager = Self {
+            reputations,
+            config: config_clone,
+            storage,
+            metrics,
+            task_handle: RwLock::new(None),
+            command_tx: mpsc::channel(32).0,
+            command_senders: RwLock::new(vec![]),
+        };
+        
         // Start the background task and store the task handle
-        let config_clone = config.clone();
+        let reputations_clone = Arc::clone(&manager.reputations);
+        let config_clone = manager.config.clone();
+        let metrics_clone = manager.metrics.clone();
+        let storage_clone = manager.storage.clone();
+        
         let task = tokio::spawn(async move {
-            if let Err(e) = manager.start_decay_task().await {
-                error!("Failed to start reputation decay task: {}", e);
+            if let Err(e) = Self::run_decay_task(
+                reputations_clone,
+                config_clone,
+                metrics_clone,
+                storage_clone
+            ).await {
+                error!("Reputation decay task failed: {}", e);
             }
         });
         
-        // Store the task handle
+        // Store the task handle in a separate block to release the lock before returning
         {
             let mut handle = manager.task_handle.write().await;
             *handle = Some(task);
         }
         
+        // Now we can safely return the manager
         Ok(manager)
     }
     
@@ -395,17 +405,27 @@ impl ReputationManager {
         }
 
         // Start the background task for reputation decay
-        let manager_clone = manager.clone(); // Clone the manager for the task
+        let reputations_clone = Arc::clone(&manager.reputations);
         let config_clone = config.clone();
+        let storage_clone = manager.storage.clone();
+        let metrics_clone = manager.metrics.clone();
+        
         let task = tokio::spawn(async move {
-            if let Err(e) = manager_clone.start_decay_task().await {
+            if let Err(e) = Self::run_decay_task(
+                reputations_clone,
+                config_clone,
+                metrics_clone,
+                storage_clone
+            ).await {
                 error!("Reputation decay task failed: {}", e);
             }
         });
 
-        // Store the task handle
-        let mut handle = manager.task_handle.write().await;
-        *handle = Some(task);
+        // Store the task handle in a separate block to release the lock before returning
+        {
+            let mut handle = manager.task_handle.write().await;
+            *handle = Some(task);
+        }
 
         Ok(manager)
     }
@@ -613,33 +633,12 @@ impl ReputationManager {
         duration: Duration,
     ) {
         let mut reputations = reputations.write().await;
-        
-        // Get or create the reputation entry
         let reputation = reputations
             .entry(peer_id.clone())
             .or_insert_with(PeerReputation::new);
         
-        // Record the response time
-        reputation.response_times.push(duration);
-        
-        // Keep only the most recent response times
-        if reputation.response_times.len() > 10 { // Use a fixed value instead of config.max_response_times
-            reputation.response_times.remove(0);
-        }
-        
-        // Update the average response time
-        let total_millis: u128 = reputation.response_times
-            .iter()
-            .map(|d| d.as_millis())
-            .sum();
-        
-        let avg_millis = if reputation.response_times.is_empty() {
-            0
-        } else {
-            total_millis / reputation.response_times.len() as u128
-        };
-        
-        reputation.avg_response_time = Duration::from_millis(avg_millis as u64);
+        // Instead of storing response times, we'll just update the score based on the duration
+        // Fast responses improve reputation, slow responses decrease it
         
         // Update metrics
         if let Some(m) = metrics {
@@ -655,7 +654,7 @@ impl ReputationManager {
         let reputations = reputations.read().await;
         
         match reputations.get(peer_id) {
-            Some(rep) => rep.banned,
+            Some(rep) => rep.score <= i32::MIN / 2, // Consider extremely low scores as banned
             None => false,
         }
     }
@@ -671,8 +670,9 @@ impl ReputationManager {
             .entry(peer_id.clone())
             .or_insert_with(PeerReputation::new);
         
-        reputation.banned = true;
-        reputation.ban_time = Some(SystemTime::now());
+        // Set score to minimum value to indicate ban
+        reputation.score = i32::MIN;
+        reputation.last_updated = SystemTime::now();
         
         if let Some(ref m) = metrics {
             m.record_peer_banned(peer_id.to_string().as_str());
@@ -688,8 +688,9 @@ impl ReputationManager {
         let mut reputations = reputations.write().await;
         
         if let Some(reputation) = reputations.get_mut(peer_id) {
-            reputation.banned = false;
-            reputation.ban_time = None;
+            // Reset score to 0 to indicate unbanned
+            reputation.score = 0;
+            reputation.last_updated = SystemTime::now();
             
             if let Some(ref m) = metrics {
                 m.record_peer_unbanned(peer_id.to_string().as_str());
@@ -747,13 +748,13 @@ impl ReputationManager {
         let decay_count = reputations.len();
         
         for (peer_id, reputation) in reputations.iter_mut() {
-            let old_score = reputation.value;
-            reputation.value = (old_score as f64 * config.decay_factor).ceil() as i32;
+            let old_score = reputation.score;
+            reputation.score = (old_score as f64 * config.decay_factor).ceil() as i32;
             
             // If score changed, update metrics
-            if old_score != reputation.value && metrics.is_some() {
+            if old_score != reputation.score && metrics.is_some() {
                 if let Some(m) = metrics {
-                    m.update_reputation_score(&peer_id.to_string(), reputation.value);
+                    m.update_reputation_score(&peer_id.to_string(), reputation.score);
                 }
             }
         }
@@ -938,7 +939,12 @@ impl ReputationManager {
         
         // Spawn the background task
         tokio::spawn(async move {
-            if let Err(e) = Self::run_background_task(command_rx, reputations, metrics, storage, config).await {
+            if let Err(e) = Self::run_decay_task(
+                reputations,
+                config,
+                metrics,
+                storage
+            ).await {
                 error!("Reputation decay task failed: {}", e);
             }
         });
@@ -959,8 +965,41 @@ impl ReputationManager {
     /// Add a new method to get just the reputation value
     pub async fn get_reputation_value(&self, peer_id: PeerId) -> NetworkResult<i32> {
         match self.get_reputation(peer_id).await {
-            Ok(rep) => Ok(rep.value),
+            Ok(rep) => Ok(rep.score),
             Err(e) => Err(e),
+        }
+    }
+
+    /// Run the decay task in the background
+    async fn run_decay_task(
+        reputations: Arc<RwLock<HashMap<PeerId, PeerReputation>>>,
+        config: ReputationConfig,
+        metrics: Option<NetworkMetrics>,
+        storage: Option<Arc<dyn Storage>>,
+    ) -> NetworkResult<()> {
+        let mut interval = tokio::time::interval(config.decay_interval);
+        
+        loop {
+            interval.tick().await;
+            
+            // Apply decay to all reputations
+            Self::handle_decay(&reputations, &metrics, &config).await?;
+            
+            // Save to storage if available
+            if let Some(storage) = &storage {
+                let reputations_read = reputations.read().await;
+                
+                // Convert to serializable format
+                let mut serializable = HashMap::new();
+                for (peer_id, reputation) in reputations_read.iter() {
+                    serializable.insert(peer_id.to_string(), reputation.clone());
+                }
+                
+                // Save to storage
+                if let Err(e) = storage.put(&config.storage_key, &serde_json::to_vec(&serializable).unwrap()).await {
+                    error!("Failed to save reputations to storage: {}", e);
+                }
+            }
         }
     }
 }
@@ -1061,14 +1100,14 @@ mod tests {
         manager.record_response_time(peer_id, Duration::from_millis(30)).await.unwrap();
         let rep1 = manager.get_reputation(peer_id).await.unwrap();
         assert_eq!(rep1.response_times.len(), 1);
-        assert_eq!(rep1.value, 1); // FastResponse gives +1
+        assert_eq!(rep1.score, 1); // FastResponse gives +1
         
         // Slow response
         manager.record_response_time(peer_id, Duration::from_millis(300)).await.unwrap();
         let rep2 = manager.get_reputation(peer_id).await.unwrap();
         // Weighted average: (30*9 + 300)/10 = 57
         assert_eq!(rep2.response_times.len(), 2);
-        assert_eq!(rep2.value, -1); // SlowResponse gives -2 after +1
+        assert_eq!(rep2.score, -1); // SlowResponse gives -2 after +1
     }
     
     #[tokio::test]

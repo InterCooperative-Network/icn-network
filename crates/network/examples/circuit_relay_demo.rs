@@ -24,7 +24,7 @@ struct Args {
     verbose: bool,
 
     /// Metrics server address
-    #[clap(short, long, default_value = "127.0.0.1:9090")]
+    #[clap(short, long, default_value = "[::1]:9090")]
     metrics_address: String,
 
     #[clap(subcommand)]
@@ -105,7 +105,7 @@ async fn run_relay_server(port: u16, metrics_address: String) -> anyhow::Result<
     
     // Configure the relay server
     let mut config = P2pConfig::default();
-    config.listen_addresses = vec![format!("/ip4/0.0.0.0/tcp/{}", port).parse()?];
+    config.listen_addresses = vec![format!("/ip6/::/tcp/{}", port).parse()?];
     config.enable_metrics = true;
     config.metrics_address = Some(metrics_address);
     config.enable_circuit_relay = true;
@@ -160,7 +160,7 @@ async fn run_public_node(port: u16, relay_addr: &str, metrics_address: String) -
     
     // Configure the public node
     let mut config = P2pConfig::default();
-    config.listen_addresses = vec![format!("/ip4/0.0.0.0/tcp/{}", port).parse()?];
+    config.listen_addresses = vec![format!("/ip6/::/tcp/{}", port).parse()?];
     config.enable_metrics = true;
     config.metrics_address = Some(metrics_address);
     config.enable_circuit_relay = true;
@@ -231,7 +231,7 @@ async fn run_private_node(relay_addr: &str, target_peer: &str, metrics_address: 
     
     // Configure the private node
     let mut config = P2pConfig::default();
-    config.listen_addresses = vec!["/ip4/127.0.0.1/tcp/0".parse()?]; // Ephemeral port, only local
+    config.listen_addresses = vec!["/ip6/::1/tcp/0".parse()?]; // Ephemeral port, only local
     config.enable_metrics = true;
     config.metrics_address = Some(metrics_address);
     config.enable_circuit_relay = true;

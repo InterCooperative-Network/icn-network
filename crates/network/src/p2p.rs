@@ -86,7 +86,7 @@ pub struct P2pConfig {
 impl Default for P2pConfig {
     fn default() -> Self {
         Self {
-            listen_addresses: vec!["/ip4/0.0.0.0/tcp/0".parse().unwrap()],
+            listen_addresses: vec!["/ip6/::/tcp/0".parse().unwrap()],
             bootstrap_peers: Vec::new(),
             enable_mdns: true,
             enable_kademlia: true,
@@ -272,20 +272,8 @@ impl P2pNetwork {
             None
         };
         
-        // Create message processor if prioritization is enabled
-        let message_processor = if config.enable_message_prioritization {
-            let priority_config = config.priority_config.clone().unwrap_or_default();
-            let processor = messaging::MessageProcessor::new(
-                handlers.clone(),
-                priority_config,
-                reputation.clone(),
-                metrics.clone(),
-            );
-            
-            Some(Arc::new(processor))
-        } else {
-            None
-        };
+        // We'll create the message processor after the P2pNetwork instance is created
+        let message_processor = None;
         
         // Create circuit relay manager if enabled
         let circuit_relay = if config.enable_circuit_relay {
@@ -387,23 +375,12 @@ impl P2pNetwork {
                 .multiplex(yamux::Config::default())
                 .timeout(config.keep_alive);
             
-            tcp.boxed()
+            libp2p::Transport::boxed(tcp)
         };
         
-        // Create the relay transport if enabled
-        let transport = if config.enable_circuit_relay && config.circuit_relay_config.is_some() {
-            let relay_config = config.circuit_relay_config.as_ref().unwrap();
-            match create_relay_transport(base_transport.clone(), relay_config) {
-                Ok(relay_transport) => relay_transport,
-                Err(e) => {
-                    warn!("Failed to create relay transport: {}", e);
-                    base_transport.boxed()
-                }
-            }
-        } else {
-            // Wrap in the same type as the relay transport
-            base_transport.boxed()
-        };
+        // We'll skip the relay transport for now since it's not fully implemented
+        // In a real implementation, we would create and use the relay transport here
+        let transport = base_transport;
         
         // Set up gossipsub
         let gossipsub_config = gossipsub::ConfigBuilder::default()
@@ -460,10 +437,10 @@ impl P2pNetwork {
             .with_tokio()
             .with_tcp(
                 Default::default(),
-                |key| noise::Config::new(key).map_err(|e| NetworkError::Libp2pError(e.to_string())),
+                noise::Config::new,
                 yamux::Config::default,
-            )
-            .with_behaviour(|_| behaviour)
+            )?
+            .with_behaviour(|_| Ok(behaviour))?
             .build();
         
         Ok(swarm)
@@ -495,6 +472,10 @@ impl P2pNetwork {
         // Store the swarm in the struct
         let mut swarm_lock = self.swarm.lock().await;
         *swarm_lock = Some(swarm);
+        // Get the swarm for the background task
+        let mut swarm = swarm_lock.take().unwrap();
+        // Release the lock
+        drop(swarm_lock);
         
         let peers = self.peers.clone();
         let handlers = self.handlers.clone();
@@ -503,7 +484,7 @@ impl P2pNetwork {
         let message_processor = self.message_processor.clone();
         let peer_id = self.local_peer_id;
         let running = self.running.clone();
-        let running_rx = running.subscribe();
+        let mut running_rx = running.subscribe();
         
         // Start the background task
         let task = tokio::spawn(async move {

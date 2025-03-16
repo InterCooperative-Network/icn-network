@@ -95,19 +95,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Setup network configs
     let mut config1 = P2pConfig::default();
-    config1.listen_addresses = vec!["/ip4/127.0.0.1/tcp/10101".parse()?];
+    config1.listen_addresses = vec!["/ip6/::1/tcp/10101".parse()?];
     config1.enable_reputation = true;
     config1.enable_message_prioritization = true;
     
-    // Create custom priority config
-    let mut priority_config = messaging::PriorityConfig::default();
-    priority_config.mode = messaging::PriorityMode::TypeAndReputation;
-    priority_config.high_priority_reputation = 10; // Lower threshold for demo
-    config1.priority_config = Some(priority_config);
+    let priority_config1 = messaging::PriorityConfig {
+        high_priority_queue_size: 100,
+        low_priority_queue_size: 10,
+        high_priority_allocation: 80, // 80% of processing for high priority
+    };
+    config1.priority_config = Some(priority_config1);
     
     // Node 2 doesn't need prioritization
     let mut config2 = P2pConfig::default();
-    config2.listen_addresses = vec!["/ip4/127.0.0.1/tcp/10102".parse()?];
+    config2.listen_addresses = vec!["/ip6/::1/tcp/10102".parse()?];
     
     // Create and start networks
     let network1 = Arc::new(P2pNetwork::new(storage1, config1).await?);
@@ -132,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Connect Node 2 to Node 1
     info!("Connecting node 2 to node 1...");
-    network2.connect(&format!("/ip4/127.0.0.1/tcp/10101/p2p/{}", peer_id1)).await?;
+    network2.connect(&format!("/ip6/::1/tcp/10101/p2p/{}", peer_id1)).await?;
     
     // Wait for connection to establish
     time::sleep(Duration::from_secs(1)).await;

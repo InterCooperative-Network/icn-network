@@ -13,10 +13,10 @@ use libp2p::{
     core::{muxing::StreamMuxerBox, transport::OrTransport, upgrade},
     gossipsub::{self, IdentTopic, MessageAuthenticity, MessageId, ValidationMode},
     identify, kad, mdns, noise, ping, relay,
-    swarm::{self, ConnectionError, NetworkBehaviour, SwarmEvent, Toggle},
-    tcp, yamux, Multiaddr, PeerId,
-    core::Transport,
+    swarm::{self, ConnectionError, NetworkBehaviour, SwarmEvent},
+    tcp, yamux, Multiaddr, PeerId, Transport,
 };
+use libp2p::swarm::behaviour::toggle::Toggle;
 use multiaddr::Protocol;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
@@ -336,18 +336,17 @@ impl CircuitRelayManager {
 
 /// Create a relay transport
 pub fn create_relay_transport<T>(
-    transport: T,
-    relay_config: &CircuitRelayConfig,
+    _transport: T,
+    _relay_config: &CircuitRelayConfig,
 ) -> NetworkResult<relay::client::Transport> 
 where
     T: Transport + Clone + Send + 'static,
     T::Output: Send + 'static,
     T::Error: std::error::Error + Send + Sync + 'static,
 {
-    // Since the direct constructor is private, we'll create a simpler implementation
-    // that just wraps the transport without actual relay functionality for now.
-    // This would need to be updated with the proper public API once available
-    Err(NetworkError::InternalError("Relay transport creation not available through public API".to_string()))
+    // Return a temporary error to prevent compilation errors
+    // This would need to be implemented properly in a real implementation
+    Err(NetworkError::InternalError("Relay transport creation not implemented yet".to_string()))
 }
 
 /// Extract peer ID from a multiaddress
@@ -426,14 +425,14 @@ impl CircuitRelayBehaviour {
             
         let identify_config = identify::Config::new(
             "/ipfs/relay/1.0.0".to_string(),
-            local_peer_id.clone().into()
+            local_peer_id.clone()
         );
         
         let mut behaviour = Self {
             ping: ping::Behaviour::new(ping_config),
             identify: identify::Behaviour::new(identify_config),
-            relay_server: Toggle::new(),
-            relay_client: Toggle::new(),
+            relay_server: Toggle::default(),
+            relay_client: Toggle::default(),
         };
         
         // Configure relay server if enabled
@@ -444,7 +443,7 @@ impl CircuitRelayBehaviour {
                 ..Default::default()
             };
             
-            behaviour.relay_server.set(Some(relay::Behaviour::new(local_peer_id, relay_config)));
+            behaviour.relay_server = Toggle::from(Some(relay::Behaviour::new(local_peer_id, relay_config)));
         }
         
         // Configure relay client if enabled

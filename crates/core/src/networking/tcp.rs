@@ -31,7 +31,7 @@ pub struct TcpNetworkConfig {
 impl Default for TcpNetworkConfig {
     fn default() -> Self {
         Self {
-            bind_address: "127.0.0.1:9000".parse().unwrap(),
+            bind_address: "[::1]:9000".parse().unwrap(),
             max_connection_attempts: 3,
             connection_timeout: 5,
             heartbeat_interval: 30,

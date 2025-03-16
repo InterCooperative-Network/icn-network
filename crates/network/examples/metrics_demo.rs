@@ -24,13 +24,15 @@ async fn main() -> anyhow::Result<()> {
     
     // Configure the first network node with metrics enabled
     let mut config1 = P2pConfig::default();
-    config1.listen_addresses = vec!["/ip4/127.0.0.1/tcp/10001".parse()?];
+    config1.listen_addresses = vec!["/ip6/::1/tcp/10001".parse()?];
     config1.enable_metrics = true;
-    config1.metrics_address = Some("127.0.0.1:9091".to_string());
+    config1.metrics_address = Some("::1:9091".to_string());
     
     // Configure the second network node without metrics
     let mut config2 = P2pConfig::default();
-    config2.listen_addresses = vec!["/ip4/127.0.0.1/tcp/10002".parse()?];
+    config2.listen_addresses = vec!["/ip6/::1/tcp/10002".parse()?];
+    config2.enable_metrics = true;
+    config2.metrics_address = Some("::1:9092".to_string());
     
     println!("Creating network nodes...");
     
@@ -73,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
     network2.connect(&node1_full_addr.parse()?).await?;
     
     println!("Connected! Starting message exchange...");
-    println!("Metrics available at http://127.0.0.1:9091");
+    println!("Metrics available at http://[::1]:9091");
     
     // Send messages in a loop to generate metrics
     for i in 1..=15 {
@@ -113,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
         sleep(Duration::from_secs(1)).await;
     }
     
-    println!("Demo completed. Metrics server still running at http://127.0.0.1:9091");
+    println!("Demo completed. Metrics server still running at http://[::1]:9091");
     println!("Press Ctrl+C to exit");
     
     // Keep the application running
