@@ -153,19 +153,19 @@ impl DiscoveryManager {
         }
         
         let peers = self.known_peers.read().await;
-        let mut peer_data = Vec::new();
+        // Collect peer data as strings for serialization
+        let mut peer_data: Vec<(String, String)> = Vec::new();
         
-        for (peer_id_str, addresses) in peers.iter() {
-            if !addresses.is_empty() {
-                for addr in addresses {
-                    peer_data.push((peer_id_str.clone(), addr.to_string()));
-                }
+        for (peer_id, addresses) in peers.iter() {
+            let peer_id_str = peer_id.to_string();
+            for addr in addresses {
+                peer_data.push((peer_id_str.clone(), addr.to_string()));
             }
         }
         
         // Serialize and save
         let data = serde_json::to_vec(&peer_data)
-            .map_err(|e| NetworkError::InternalError(format!("Failed to serialize peers: {}", e)))?;
+            .map_err(|e| NetworkError::InternalError(format!("Serialization error: {}", e)))?;
             
         self.storage.put(SAVED_PEERS_KEY, &data).await
             .map_err(|e| NetworkError::StorageError(e))?;
@@ -242,7 +242,7 @@ impl DiscoveryManager {
                 
                 // Get currently connected peers
                 let connected = match network.get_connected_peers().await {
-                    Ok(peers) => peers.iter().map(|p| p.peer_id).collect::<HashSet<_>>(),
+                    Ok(peers) => peers.iter().map(|p| p.peer_id.clone()).collect::<HashSet<_>>(),
                     Err(e) => {
                         error!("Failed to get connected peers: {}", e);
                         HashSet::new()
@@ -271,12 +271,12 @@ impl DiscoveryManager {
         // Convert peer data to a serializable format
         let peer_data: Vec<(String, String)> = peers
             .iter()
-            .map(|(peer_id, addr)| (peer_id.to_string(), addr.clone()))
+            .map(|(peer_id, addr)| (peer_id.to_string(), addr.to_string()))
             .collect();
         
         // Serialize the peer data
         let data = serde_json::to_vec(&peer_data)
-            .map_err(|e| NetworkError::SerializationError(e.to_string()))?;
+            .map_err(|e| NetworkError::InternalError(format!("Serialization error: {}", e)))?;
         
         // Publish the peer data
         // ... existing code ...

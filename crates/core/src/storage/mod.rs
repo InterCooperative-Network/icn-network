@@ -24,6 +24,18 @@ pub enum StorageError {
     Other(String),
 }
 
+impl Clone for StorageError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::IoError(e) => Self::Other(format!("IO error: {}", e)),
+            Self::SerializationError(e) => Self::Other(format!("Serialization error: {}", e)),
+            Self::KeyNotFound(s) => Self::KeyNotFound(s.clone()),
+            Self::NotADirectory(s) => Self::NotADirectory(s.clone()),
+            Self::Other(s) => Self::Other(s.clone()),
+        }
+    }
+}
+
 /// Result type for storage operations
 pub type StorageResult<T> = Result<T, StorageError>;
 

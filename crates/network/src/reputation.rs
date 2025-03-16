@@ -101,23 +101,46 @@ struct ReputationHistoryItem {
     score_after: i32,
 }
 
-/// Information about a peer's reputation
+/// Reputation score for a peer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerReputation {
-    /// Reputation score for this peer
-    pub value: i32,
-    /// Last time this peer was seen
-    pub last_seen: SystemTime,
+    /// Peer ID
+    #[serde(with = "crate::peer_id_serde")]
+    pub peer_id: PeerId,
+    /// Current reputation score
+    pub score: i32,
     /// Last time the reputation was updated
+    #[serde(with = "timestamp_serde")]
     pub last_updated: SystemTime,
-    /// Is this peer explicitly banned
-    pub banned: bool,
-    /// When the peer was banned (if applicable)
-    pub ban_time: Option<SystemTime>,
-    /// History of response times (for calculating averages)
-    pub response_times: Vec<Duration>,
-    /// Average response time
-    pub avg_response_time: Duration,
+    /// Number of positive actions
+    pub positive_actions: u32,
+    /// Number of negative actions
+    pub negative_actions: u32,
+}
+
+/// Serialization helpers for SystemTime
+mod timestamp_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    pub fn serialize<S>(time: &SystemTime, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let duration = time
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0));
+        let secs = duration.as_secs();
+        secs.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<SystemTime, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let secs = u64::deserialize(deserializer)?;
+        Ok(UNIX_EPOCH + Duration::from_secs(secs))
+    }
 }
 
 impl Default for PeerReputation {
@@ -131,25 +154,23 @@ impl PeerReputation {
     pub fn new() -> Self {
         let now = SystemTime::now();
         Self {
-            value: 0,
-            last_seen: now,
+            peer_id: PeerId::random(),
+            score: 0,
             last_updated: now,
-            banned: false,
-            ban_time: None,
-            response_times: Vec::new(),
-            avg_response_time: Duration::from_millis(0),
+            positive_actions: 0,
+            negative_actions: 0,
         }
     }
 
     /// Get the reputation score
     pub fn score(&self) -> i32 {
-        self.value
+        self.score
     }
 
     /// Record a change to the peer's reputation
     pub fn record_change(&mut self, change: ReputationChange) -> i32 {
-        let score = self.value + change.value();
-        self.value = score;
+        let score = self.score + change.value();
+        self.score = score;
         score
     }
 }
@@ -310,16 +331,13 @@ impl ReputationManager {
         // Load existing reputations from storage if available
         if let Some(storage) = &storage {
             if let Ok(data) = storage.get(&config.storage_key).await {
-                let rep_data: HashMap<String, PeerReputation> = serde_json::from_slice(&data)
+                let rep_data: Vec<PeerReputation> = serde_json::from_slice(&data)
                     .map_err(|_| NetworkError::DecodingError)?;
                 
                 let mut reputations_write = reputations.write().await;
                 
-                for (peer_id_str, reputation) in rep_data {
-                    // Convert string peer ID to PeerId
-                    if let Ok(peer_id) = PeerId::from_bytes(bs58::decode(&peer_id_str).into_vec().map_err(|_| NetworkError::DecodingError)?.as_slice()) {
-                        reputations_write.insert(peer_id, reputation);
-                    }
+                for rep in rep_data {
+                    reputations_write.insert(rep.peer_id.clone(), rep);
                 }
                 
                 debug!("Loaded {} peer reputations from storage", reputations_write.len());
@@ -351,22 +369,28 @@ impl ReputationManager {
         debug!("Starting reputation manager with config: {:?}", config);
         
         // Create the manager instance
+        let (command_tx, command_rx) = mpsc::channel(32);
+        
         let manager = Self {
-            reputations: RwLock::new(HashMap::new()),
-            storage,
+            reputations: Arc::new(RwLock::new(HashMap::new())),
+            storage: Some(storage.clone()),
             config: config.clone(), // Clone config here
             task_handle: RwLock::new(None),
-            running: RwLock::new(false),
+            command_tx,
+            metrics: None,
+            command_senders: RwLock::new(Vec::new()),
         };
 
         // Load existing reputations from storage
         if let Ok(data) = storage.get(&config.storage_key).await {
-            if let Ok(stored_reputations) = serde_json::from_slice::<HashMap<PeerId, PeerReputation>>(&data) {
+            if let Ok(stored_reputations) = serde_json::from_slice::<Vec<PeerReputation>>(&data) {
                 debug!("Loaded {} peer reputations from storage", stored_reputations.len());
                 let mut reputations = manager.reputations.write().await;
-                for (peer_id, reputation) in stored_reputations {
-                    reputations.insert(peer_id, reputation);
+                for rep in stored_reputations {
+                    reputations.insert(rep.peer_id.clone(), rep);
                 }
+            } else {
+                debug!("Failed to deserialize stored reputations");
             }
         }
 
@@ -693,10 +717,10 @@ impl ReputationManager {
             if !storage_key.is_empty() {
                 // Convert PeerId to string for serialization
                 let reputations_read = reputations.read().await;
-                let mut serializable_reputations = HashMap::new();
+                let mut serializable_reputations = Vec::new();
                 
                 for (peer_id, reputation) in reputations_read.iter() {
-                    serializable_reputations.insert(peer_id.to_string(), reputation.clone());
+                    serializable_reputations.push(reputation.clone());
                 }
                 
                 // Serialize and save
@@ -937,6 +961,20 @@ impl ReputationManager {
         match self.get_reputation(peer_id).await {
             Ok(rep) => Ok(rep.value),
             Err(e) => Err(e),
+        }
+    }
+}
+
+impl Clone for ReputationManager {
+    fn clone(&self) -> Self {
+        Self {
+            reputations: self.reputations.clone(),
+            config: self.config.clone(),
+            command_tx: self.command_tx.clone(),
+            task_handle: RwLock::new(None), // Don't clone the task handle
+            storage: self.storage.clone(),
+            metrics: self.metrics.clone(),
+            command_senders: RwLock::new(Vec::new()), // Don't clone command senders
         }
     }
 }

@@ -271,7 +271,7 @@ impl Synchronizer {
         let storage = self.storage.clone();
         let network = self.network.clone();
         
-        let command_rx = {
+        let mut command_rx = {
             let mut rx_guard = command_rx_lock.write().await;
             rx_guard.take().expect("Sync task already started")
         };

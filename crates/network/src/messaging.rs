@@ -159,22 +159,27 @@ pub struct QueuedMessage {
 }
 
 /// Message processor for handling incoming and outgoing messages
-#[derive(Debug)]
 pub struct MessageProcessor {
     /// Configuration
-    config: MessageProcessorConfig,
+    pub config: PriorityConfig,
     /// Network service for sending messages
-    network: Arc<dyn NetworkService>,
+    pub network: Arc<dyn NetworkService>,
     /// Storage for persisting messages
-    storage: Option<Arc<dyn Storage>>,
+    pub storage: Option<Arc<dyn Storage>>,
     /// Message handlers
-    handlers: Arc<RwLock<HashMap<MessageType, Vec<MessageHandlerFn>>>>,
+    pub handlers: Arc<RwLock<HashMap<MessageType, Vec<MessageHandlerFn>>>>,
     /// Queue of messages to process
-    queue: Arc<RwLock<VecDeque<QueuedMessage>>>,
+    pub queue: Arc<RwLock<VecDeque<QueuedMessage>>>,
     /// Task handle for the background processor
-    task_handle: RwLock<Option<JoinHandle<()>>>,
+    pub task_handle: RwLock<Option<JoinHandle<()>>>,
     /// Whether the processor is running
-    running: RwLock<bool>,
+    pub running: RwLock<bool>,
+    /// Reputation manager
+    pub reputation: Option<Arc<ReputationManager>>,
+    /// Network metrics
+    pub metrics: Option<NetworkMetrics>,
+    /// Command sender
+    pub command_tx: mpsc::Sender<ProcessorCommand>,
 }
 
 impl Clone for MessageProcessor {
@@ -187,6 +192,9 @@ impl Clone for MessageProcessor {
             queue: self.queue.clone(),
             task_handle: RwLock::new(None), // Don't clone the task handle
             running: RwLock::new(*self.running.blocking_read()),
+            reputation: self.reputation.clone(),
+            metrics: self.metrics.clone(),
+            command_tx: self.command_tx.clone(),
         }
     }
 }
@@ -304,7 +312,7 @@ impl MessageProcessor {
     async fn process_queue(
         &self,
         handlers: &Arc<RwLock<HashMap<String, Vec<Arc<dyn MessageHandler>>>>>,
-        queue: &Arc<RwLock<VecDeque<MessageEnvelope>>>,
+        queue: &Arc<RwLock<VecDeque<QueuedMessage>>>,
         reputation: &Option<Arc<ReputationManager>>,
         metrics: &Option<NetworkMetrics>,
     ) {

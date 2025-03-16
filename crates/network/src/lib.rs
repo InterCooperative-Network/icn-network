@@ -22,7 +22,7 @@ use libp2p::Multiaddr;
 use icn_core::storage::StorageError;
 
 /// Network error types
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum NetworkError {
     /// Storage error
     #[error("Storage error: {0}")]
@@ -101,8 +101,12 @@ pub enum NetworkError {
     ServiceNotEnabled(String),
     
     /// Connection failed
-    #[error("Connection failed")]
-    ConnectionFailed,
+    #[error("Connection failed: {0}")]
+    ConnectionFailed(String),
+    
+    /// Invalid address
+    #[error("Invalid address: {0}")]
+    InvalidAddress(String),
 }
 
 /// Result type for network operations
@@ -341,4 +345,26 @@ pub mod messages {
         VoteAnnouncement,
         CustomMessage,
     };
+}
+
+mod peer_id_serde {
+    use libp2p::PeerId;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::str::FromStr;
+
+    pub fn serialize<S>(peer_id: &PeerId, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let s = peer_id.to_string();
+        s.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<PeerId, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        PeerId::from_str(&s).map_err(serde::de::Error::custom)
+    }
 } 

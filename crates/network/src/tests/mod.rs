@@ -24,13 +24,13 @@ impl icn_core::storage::Storage for MockStorage {
         let data = self.data.lock().unwrap();
         match data.get(key) {
             Some(value) => Ok(value.clone()),
-            None => Err(icn_core::storage::StorageError::NotFound(key.to_string())),
+            None => Err(icn_core::storage::StorageError::KeyNotFound(key.to_string())),
         }
     }
 
-    async fn put(&self, key: &str, value: Vec<u8>) -> Result<(), icn_core::storage::StorageError> {
-        let mut data = self.data.lock().unwrap();
-        data.insert(key.to_string(), value);
+    async fn put(&self, key: &str, data: &[u8]) -> Result<(), icn_core::storage::StorageError> {
+        let mut data_map = self.data.lock().unwrap();
+        data_map.insert(key.to_string(), data.to_vec());
         Ok(())
     }
 
@@ -69,7 +69,7 @@ mod tests {
         let storage = MockStorage::new();
         
         // Test put and get
-        storage.put("test_key", b"test_value".to_vec()).await.unwrap();
+        storage.put("test_key", b"test_value").await.unwrap();
         let value = storage.get("test_key").await.unwrap();
         assert_eq!(value, b"test_value".to_vec());
         
@@ -82,9 +82,9 @@ mod tests {
         assert!(!storage.exists("test_key").await.unwrap());
         
         // Test keys with prefix
-        storage.put("prefix1_key1", b"value1".to_vec()).await.unwrap();
-        storage.put("prefix1_key2", b"value2".to_vec()).await.unwrap();
-        storage.put("prefix2_key1", b"value3".to_vec()).await.unwrap();
+        storage.put("prefix1_key1", b"value1").await.unwrap();
+        storage.put("prefix1_key2", b"value2").await.unwrap();
+        storage.put("prefix2_key1", b"value3").await.unwrap();
         
         let keys = storage.list("prefix1_").await.unwrap();
         assert_eq!(keys.len(), 2);
