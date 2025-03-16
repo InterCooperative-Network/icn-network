@@ -18,6 +18,8 @@ pub mod cross_federation_governance;
 pub mod federation_governance;
 pub mod federation;
 pub mod reputation;
+pub mod distributed_storage;
+pub mod federation_storage_router;
 
 // Temporarily disabled modules due to missing files
 // We'll address these in a future update
@@ -84,3 +86,5 @@ pub use federation_governance::*;
 pub use cross_federation_governance::*;
 pub use resource_sharing::ResourceSharingSystem;
 pub use reputation::ReputationSystem;
+pub use distributed_storage::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType};
+pub use federation_storage_router::{FederationStorageRouter, StorageRoute};
