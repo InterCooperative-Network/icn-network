@@ -1,0 +1,41 @@
+{
+  "network_name": "icn-testnet",
+  "creation_time": "2025-03-16T21:41:49Z",
+  "federation": {
+    "id": "genesis-federation",
+    "name": "Genesis Federation",
+    "founding_members": [
+      {
+        "id": "node-001",
+        "peer_id": "d60d72ef9a2deacd0139d61439f89942",
+        "addresses": ["/ip4/127.0.0.1/tcp/9001"],
+        "roles": ["validator", "relay"],
+        "voting_power": 1
+      },
+      {
+        "id": "node-002",
+        "peer_id": "18d96ed3ab37619d2917fd0af4b0e369",
+        "addresses": ["/ip4/127.0.0.1/tcp/9002"],
+        "roles": ["validator", "relay"],
+        "voting_power": 1
+      },
+      {
+        "id": "node-003",
+        "peer_id": "d992e7bf530e0c6d8230d8607c704c94",
+        "addresses": ["/ip4/127.0.0.1/tcp/9003"],
+        "roles": ["validator", "relay"],
+        "voting_power": 1
+      }
+    ],
+    "initial_governance_parameters": {
+      "voting_period_seconds": 86400,
+      "quorum_percentage": 66,
+      "proposal_threshold": 1
+    }
+  },
+  "initial_economic_parameters": {
+    "initial_credit": 1000,
+    "default_credit_limit": 5000,
+    "transaction_fee_percentage": 0.5
+  }
+}

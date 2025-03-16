@@ -1,11 +1,100 @@
 # ICN Testnet Configuration
 
-[network]
-name = "icn-testnet"
+[testnet]
+name = "icn-ipv6-testnet"
+description = "IPv6 Overlay Network Testnet for ICN"
 version = "0.1.0"
-bootstrap_nodes = 3
-relay_nodes = 2
-regular_nodes = 5
+
+# Network parameters
+[network]
+bootstrap_nodes = ["node-1"]
+min_peers = 3
+max_peers = 50
+connection_timeout_ms = 5000
+peer_discovery_interval_ms = 30000
+
+# IPv6 overlay configuration
+[network.overlay]
+address_space = "UniqueLocal"        # UniqueLocal, GlobalUnicast
+allocation_strategy = "FederationPrefixed"  # Random, NodeIdBased, FederationPrefixed
+federation_prefix_len = 48
+node_prefix_len = 64
+default_tunnel_type = "Direct"       # Direct, WireGuard, Tls, Onion
+
+# Federations in the testnet
+[federations]
+[federations.alpha]
+name = "Federation Alpha"
+description = "First test federation"
+bootstrap_nodes = ["node-1", "node-2"]
+min_nodes = 2
+forwarding_policy = "ForwardAll"     # ForwardAll, ForwardKnown, NoForwarding
+
+[federations.beta]
+name = "Federation Beta"
+description = "Second test federation"
+bootstrap_nodes = ["node-4"]
+min_nodes = 1
+forwarding_policy = "ForwardKnown"
+
+[federations.gamma]
+name = "Federation Gamma"
+description = "Third test federation (empty at start)"
+bootstrap_nodes = []
+min_nodes = 0
+forwarding_policy = "ForwardKnown"
+
+# Node configurations
+[nodes]
+
+[nodes.node-1]
+name = "Node 1"
+federation = "alpha"
+role = "bootstrap"
+listen_port = 9001
+forwarding_policy = "ForwardAll"
+log_level = "debug"
+
+[nodes.node-2]
+name = "Node 2"
+federation = "alpha"
+role = "member"
+listen_port = 9002
+forwarding_policy = "ForwardKnown"
+log_level = "debug"
+
+[nodes.node-3]
+name = "Node 3"
+federation = "alpha"
+role = "member"
+listen_port = 9003
+forwarding_policy = "ForwardKnown"
+log_level = "debug"
+
+[nodes.node-4]
+name = "Node 4"
+federation = "beta"
+role = "bootstrap"
+listen_port = 9004
+forwarding_policy = "ForwardAll"
+log_level = "debug"
+
+[nodes.node-5]
+name = "Node 5"
+federation = "beta"
+role = "member"
+listen_port = 9005
+forwarding_policy = "ForwardKnown"
+log_level = "debug"
+
+# Testnet simulation parameters
+[simulation]
+enabled = true
+duration_seconds = 600  # 10 minutes
+message_interval_ms = 5000
+failure_probability = 0.05
+latency_min_ms = 10
+latency_max_ms = 100
 
 [network.params]
 min_peers = 3

@@ -1,0 +1,109 @@
+---
+# ICN Network Configuration
+
+# Basic Network Settings
+network:
+  name: "icn-testnet"
+  version: "0.1.0"
+
+# P2P Network Configuration
+p2p:
+  # Local listening addresses
+  listen_addresses:
+    - "/ip4/0.0.0.0/tcp/9000"
+    - "/ip6/::/tcp/9000"
+  
+  # Bootstrap peers for initial network discovery
+  bootstrap_peers: ["/ip4/127.0.0.1/tcp/9001/p2p/d60d72ef9a2deacd0139d61439f89942","/ip4/127.0.0.1/tcp/9002/p2p/18d96ed3ab37619d2917fd0af4b0e369","/ip4/127.0.0.1/tcp/9003/p2p/d992e7bf530e0c6d8230d8607c704c94"]
+  
+  # Enable mDNS for local peer discovery
+  enable_mdns: true
+  
+  # Enable Kademlia DHT for distributed peer discovery
+  enable_kademlia: true
+  
+  # Gossipsub validation mode (Strict, Permissive)
+  gossipsub_validation: "Strict"
+  
+  # Timeouts and intervals
+  message_timeout: 10 # seconds
+  keep_alive: 120 # seconds
+  
+  # Peer persistence
+  peer_store_path: "/var/lib/icn/peers"
+  
+  # Metrics collection
+  enable_metrics: true
+  metrics_address: "0.0.0.0:9090"
+  
+  # Reputation system
+  enable_reputation: true
+  reputation_config:
+    decay_interval: 300 # seconds
+    max_reputation: 100
+    min_reputation: -100
+    penalties:
+      invalid_message: -10
+      connection_failure: -2
+      timeout: -5
+    rewards:
+      valid_message: 1
+      relay_message: 2
+  
+  # Message prioritization
+  enable_message_prioritization: true
+  priority_config:
+    high_priority_weight: 3
+    medium_priority_weight: 2
+    low_priority_weight: 1
+    max_queue_size: 10000
+  
+  # Circuit relay for NAT traversal
+  enable_circuit_relay: true
+  circuit_relay_config:
+    max_connections: 50
+    max_circuit_duration: 3600 # seconds
+    reserved_relay_memory: 1073741824 # 1GB
+
+# Federation settings
+federation:
+  name: "Test Federation"
+  id: "test-federation-001"
+  bootstrap_members:
+    - id: "node-001"
+      addr: "/ip4/127.0.0.1/tcp/9001"
+    - id: "node-002"
+      addr: "/ip4/127.0.0.1/tcp/9002"
+  
+  # Governance settings
+  governance:
+    # Minimum proposals required for voting
+    min_proposals: 3
+    # Quorum percentage required (0-100)
+    quorum_percentage: 66
+    # Minimum voting period (seconds)
+    min_voting_period: 86400 # 24 hours
+    # Maximum voting period (seconds)
+    max_voting_period: 604800 # 7 days
+
+# Identity settings
+identity:
+  # W3C DID method to use
+  did_method: "icn"
+  # Key types supported
+  key_types:
+    - "Ed25519"
+    - "X25519"
+  # Enable WebAuthn
+  enable_webauthn: true
+
+# Economic settings
+economic:
+  # Initial credit balance for new members
+  initial_credit: 1000
+  # Credit limit for members
+  default_credit_limit: 5000
+  # Transaction fee percentage
+  transaction_fee_percentage: 0.5
+  # Enable reputation-based limits
+  enable_reputation_limits: true 

@@ -1,0 +1,98 @@
+---
+# ICN Network IPv6 Configuration
+
+# Basic Network Settings
+network:
+  name: "icn-testnet-ipv6"
+  version: "0.1.0"
+
+# Transport configuration
+transport:
+  # Dual-stack configuration
+  dual_stack:
+    # IPv4 configuration (can be disabled by setting to null)
+    ipv4:
+      address: "0.0.0.0"  # Listen on all interfaces
+      port: 9000
+    
+    # IPv6 configuration
+    ipv6:
+      address: "::"  # Listen on all interfaces
+      port: 9000
+    
+    # Prefer IPv6 connections when available
+    prefer_ipv6: true
+  
+  # QUIC transport configuration
+  quic:
+    enabled: true
+    keep_alive_interval_secs: 30
+  
+  # WebRTC configuration
+  webrtc:
+    enabled: false
+    stun_servers:
+      - "stun:stun.l.google.com:19302"
+      - "stun:stun1.l.google.com:19302"
+
+# Discovery configuration
+discovery:
+  enable_mdns: true
+  enable_kademlia: true
+  bootstrap_peers: []
+  discovery_interval_secs: 60
+
+# Metrics configuration
+metrics:
+  enabled: true
+  prometheus_endpoint: "[::]:9090"  # Listen on all IPv6 interfaces
+
+# Circuit relay for NAT traversal
+enable_circuit_relay: true
+
+# Connection settings
+max_connections_per_peer: 50
+connection_timeout_secs: 30
+
+# Federation settings
+federation:
+  name: "IPv6 Test Federation"
+  id: "ipv6-federation-001"
+  bootstrap_members:
+    - id: "node-001"
+      addr: "/ip6/::1/tcp/9001"
+    - id: "node-002"
+      addr: "/ip6/::1/tcp/9002"
+  
+  # Governance settings
+  governance:
+    # Minimum proposals required for voting
+    min_proposals: 3
+    # Quorum percentage required (0-100)
+    quorum_percentage: 66
+    # Minimum voting period (seconds)
+    min_voting_period: 86400 # 24 hours
+    # Maximum voting period (seconds)
+    max_voting_period: 604800 # 7 days
+
+# Identity settings
+identity:
+  # W3C DID method to use
+  did_method: "icn"
+  # Key types supported
+  key_types:
+    - "Ed25519"
+    - "X25519"
+  # Enable WebAuthn
+  enable_webauthn: true
+
+# Economic settings
+economic:
+  # Initial credit balance for new members
+  initial_credit: 1000
+  # Credit limit for members
+  default_credit_limit: 5000
+  # Transaction fee percentage
+  transaction_fee_percentage: 0.5
+  # Enable reputation-based limits
+  enable_reputation_limits: true 

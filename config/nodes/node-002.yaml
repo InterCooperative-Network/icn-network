@@ -1,0 +1,8 @@
+# Node Configuration for node-002
+node_id: "node-002"
+node_type: "full"
+listen_addr: "/ip6/::1/tcp/9002"
+peer_id: "a357a80a82f60a9ed6c848fcfa42f16b"
+data_dir: "./data/icn/node-002"
+log_dir: "./data/log/icn"
+network_config_path: "./config/icn-testnet-ipv6.yaml"

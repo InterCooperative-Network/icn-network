@@ -1,0 +1,8 @@
+# Node Configuration for node-001
+node_id: "node-001"
+node_type: "full"
+listen_addr: "/ip6/::1/tcp/9001"
+peer_id: "b7028fef5f5236b654a880eb4e31925e"
+data_dir: "./data/icn/node-001"
+log_dir: "./data/log/icn"
+network_config_path: "./config/icn-testnet-ipv6.yaml"
