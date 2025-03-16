@@ -389,17 +389,12 @@ impl NetworkMetrics {
         // We don't reset counters as they should be monotonic
     }
     
-    /// Record a reputation change for a peer
+    /// Record a reputation change
     pub fn record_reputation_change(&self, peer_id: &str, change: i32) {
-        let change_type = if change > 0 {
-            "positive"
-        } else if change < 0 {
-            "negative"
-        } else {
-            "neutral"
-        };
+        self.reputation_changes.with_label_values(&[peer_id]).inc();
         
-        self.reputation_changes.with_label_values(&[peer_id, change_type]).inc();
+        // Update the reputation score
+        self.reputation_scores.with_label_values(&[peer_id]).set(change as i64);
     }
     
     /// Record a positive action from a peer

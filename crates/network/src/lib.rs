@@ -21,44 +21,12 @@ use libp2p::PeerId;
 use libp2p::Multiaddr;
 use icn_core::storage::StorageError;
 
-/// Error types for network operations
-#[derive(Error, Debug)]
+/// Network error types
+#[derive(Debug, Error)]
 pub enum NetworkError {
-    /// Error in the network protocol
-    #[error("Protocol error: {0}")]
-    ProtocolError(String),
-    
-    /// Internal error
-    #[error("Internal error: {0}")]
-    InternalError(String),
-    
-    /// Peer not found
-    #[error("Peer not found: {0}")]
-    PeerNotFound(String),
-    
-    /// Connection error
-    #[error("Connection error: {0}")]
-    ConnectionError(String),
-    
-    /// Connection failed
-    #[error("Connection failed")]
-    ConnectionFailed,
-    
-    /// Configuration error
-    #[error("Configuration error: {0}")]
-    ConfigurationError(String),
-    
-    /// Service stopped
-    #[error("Service is stopped")]
-    ServiceStopped,
-    
-    /// Service error
-    #[error("Service error: {0}")]
-    ServiceError(String),
-    
-    /// Service not enabled
-    #[error("Service not enabled: {0}")]
-    ServiceNotEnabled(String),
+    /// Storage error
+    #[error("Storage error: {0}")]
+    StorageError(#[from] StorageError),
     
     /// Encoding error
     #[error("Encoding error")]
@@ -68,13 +36,29 @@ pub enum NetworkError {
     #[error("Decoding error")]
     DecodingError,
     
+    /// Peer not found
+    #[error("Peer not found: {0}")]
+    PeerNotFound(String),
+    
+    /// Connection error
+    #[error("Connection error: {0}")]
+    ConnectionError(String),
+    
+    /// Message error
+    #[error("Message error: {0}")]
+    MessageError(String),
+    
+    /// Internal error
+    #[error("Internal error: {0}")]
+    InternalError(String),
+    
+    /// Channel closed
+    #[error("Channel closed: {0}")]
+    ChannelClosed(String),
+    
     /// Other error
     #[error("Other error: {0}")]
     Other(String),
-    
-    /// Storage error
-    #[error("Storage error: {0}")]
-    StorageError(#[from] StorageError),
     
     /// Libp2p error
     #[error("Libp2p error: {0}")]
@@ -313,8 +297,9 @@ pub mod metrics;
 pub mod reputation;
 pub mod circuit_relay;
 
-// Testing modules
 #[cfg(test)]
+mod test_reputation;
+
 mod tests;
 
 // Public re-exports
