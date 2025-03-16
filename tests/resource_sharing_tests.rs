@@ -4,6 +4,13 @@ use tempfile::tempdir;
 use icn_node::storage::Storage;
 use icn_node::identity::Identity;
 use icn_node::resource_sharing::*;
+use crate::federation::coordination::{
+    FederationCoordinator,
+    FederationInfo,
+    FederationPolicy,
+    ResourceUsageLimits,
+};
+use tokio::sync::Arc as TokioArc;
 
 fn setup_test() -> (ResourceSharingSystem, tempfile::TempDir) {
     let temp_dir = tempdir().unwrap();
@@ -635,4 +642,221 @@ fn test_get_resource_utilization_by_period() {
     assert_eq!(metrics["total_usage"], 300);
     assert_eq!(metrics["allocation_count"], 2);
     assert!(metrics["average_usage"].as_f64().unwrap() > 0.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::federation::coordination::{
+        FederationCoordinator,
+        FederationInfo,
+        FederationPolicy,
+        ResourceUsageLimits,
+    };
+    use tokio::sync::Arc;
+
+    #[tokio::test]
+    async fn test_cross_federation_resource_sharing() -> Result<(), Box<dyn Error>> {
+        let federation_coordinator = Arc::new(FederationCoordinator::new());
+        let resource_system = ResourceSharingSystem::new(federation_coordinator.clone());
+
+        // Register test federations
+        let federation1 = FederationInfo {
+            id: "fed1".to_string(),
+            name: "Federation 1".to_string(),
+            description: "Test federation 1".to_string(),
+            members: vec!["node1".to_string(), "node2".to_string()],
+            resources: vec![],
+            policies: FederationPolicy::default(),
+            trust_score: 1.0,
+            last_active: SystemTime::now(),
+            metadata: serde_json::json!({}),
+        };
+
+        let federation2 = FederationInfo {
+            id: "fed2".to_string(),
+            name: "Federation 2".to_string(),
+            description: "Test federation 2".to_string(),
+            members: vec!["node3".to_string(), "node4".to_string()],
+            resources: vec![],
+            policies: FederationPolicy::default(),
+            trust_score: 1.0,
+            last_active: SystemTime::now(),
+            metadata: serde_json::json!({}),
+        };
+
+        federation_coordinator.register_federation(federation1).await?;
+        federation_coordinator.register_federation(federation2).await?;
+
+        // Set up resource sharing agreement
+        let resource_id = "test-resource";
+        let usage_limits = ResourceUsageLimits {
+            max_concurrent_allocations: 2,
+            max_duration_per_allocation: 3600,
+            max_total_duration_per_day: 86400,
+            restricted_hours: vec![],
+        };
+
+        federation_coordinator.create_resource_agreement(
+            "fed1",
+            "fed2",
+            resource_id,
+            0.3, // 30% share
+            usage_limits.clone(),
+            false, // no priority access
+        ).await?;
+
+        // Test resource request within limits
+        let allocation = resource_system.request_federation_resource(
+            resource_id,
+            100,
+            1800,
+            "fed2",
+            serde_json::json!({"purpose": "testing"}),
+        ).await?;
+
+        assert_eq!(allocation.federation_id, "fed2");
+        assert_eq!(allocation.resource_id, resource_id);
+        assert!(allocation.amount <= 100);
+        assert_eq!(allocation.status, AllocationStatus::Pending);
+
+        // Test exceeding concurrent allocation limit
+        let result1 = resource_system.request_federation_resource(
+            resource_id,
+            100,
+            1800,
+            "fed2",
+            serde_json::json!({}),
+        ).await?;
+        
+        let result2 = resource_system.request_federation_resource(
+            resource_id,
+            100,
+            1800,
+            "fed2",
+            serde_json::json!({}),
+        ).await;
+
+        assert!(result2.is_err());
+        assert!(matches!(
+            result2.unwrap_err().downcast_ref::<ResourceSharingError>(),
+            Some(ResourceSharingError::UsageLimitExceeded(_))
+        ));
+
+        // Test duration limit
+        let result = resource_system.request_federation_resource(
+            resource_id,
+            100,
+            5000, // Exceeds max duration
+            "fed2",
+            serde_json::json!({}),
+        ).await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err().downcast_ref::<ResourceSharingError>(),
+            Some(ResourceSharingError::UsageLimitExceeded(_))
+        ));
+
+        // Test unauthorized federation
+        let result = resource_system.request_federation_resource(
+            resource_id,
+            100,
+            1800,
+            "fed3", // Unregistered federation
+            serde_json::json!({}),
+        ).await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err().downcast_ref::<ResourceSharingError>(),
+            Some(ResourceSharingError::Unauthorized(_))
+        ));
+
+        // Test trust score impact
+        let initial_trust = federation_coordinator.get_federation("fed2").await?.trust_score;
+        
+        // Complete an allocation efficiently
+        let allocation = result1;
+        resource_system.complete_allocation(&allocation.id).await?;
+        
+        let updated_trust = federation_coordinator.get_federation("fed2").await?.trust_score;
+        assert!(updated_trust >= initial_trust);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_federation_resource_optimization() -> Result<(), Box<dyn Error>> {
+        let federation_coordinator = Arc::new(FederationCoordinator::new());
+        let resource_system = ResourceSharingSystem::new(federation_coordinator.clone());
+
+        // Register test federation with priority access
+        let federation = FederationInfo {
+            id: "fed_priority".to_string(),
+            name: "Priority Federation".to_string(),
+            description: "Test federation with priority access".to_string(),
+            members: vec!["node1".to_string()],
+            resources: vec![],
+            policies: FederationPolicy::default(),
+            trust_score: 1.0,
+            last_active: SystemTime::now(),
+            metadata: serde_json::json!({}),
+        };
+
+        federation_coordinator.register_federation(federation).await?;
+
+        // Set up resource sharing agreement with priority access
+        let resource_id = "priority-resource";
+        let usage_limits = ResourceUsageLimits {
+            max_concurrent_allocations: 5,
+            max_duration_per_allocation: 7200,
+            max_total_duration_per_day: 86400,
+            restricted_hours: vec![],
+        };
+
+        federation_coordinator.create_resource_agreement(
+            "owner_fed",
+            "fed_priority",
+            resource_id,
+            0.5, // 50% share
+            usage_limits,
+            true, // priority access
+        ).await?;
+
+        // Test ML-optimized allocation with priority
+        let allocation = resource_system.request_federation_resource(
+            resource_id,
+            200,
+            3600,
+            "fed_priority",
+            serde_json::json!({"workload_type": "high_priority"}),
+        ).await?;
+
+        assert_eq!(allocation.priority, AllocationPriority::High);
+        
+        // Verify ML optimizer was used effectively
+        let (amount, duration) = resource_system.ml_optimizer.get_last_optimization()?;
+        assert!(amount <= 200);
+        assert!(duration <= 3600);
+        
+        // Test allocation adjustment based on usage patterns
+        for _ in 0..5 {
+            let alloc = resource_system.request_federation_resource(
+                resource_id,
+                100,
+                1800,
+                "fed_priority",
+                serde_json::json!({"workload_type": "regular"}),
+            ).await?;
+            
+            resource_system.complete_allocation(&alloc.id).await?;
+        }
+
+        // Verify usage patterns are being learned
+        let patterns = resource_system.ml_optimizer.get_usage_patterns(resource_id)?;
+        assert!(!patterns.is_empty());
+
+        Ok(())
+    }
 } 

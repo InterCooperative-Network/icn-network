@@ -3,7 +3,7 @@
 //! This module implements a circuit relay protocol that enables nodes behind NATs 
 //! to connect to other nodes through publicly accessible relay nodes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -20,69 +20,120 @@ use libp2p::swarm::behaviour::toggle::Toggle;
 use multiaddr::Protocol;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
+use rand::seq::SliceRandom;
 
 use crate::{NetworkError, NetworkResult, metrics::NetworkMetrics, NetworkService, PeerInfo};
+use crate::reputation::{ReputationManager, ReputationChange};
 
-/// Circuit relay configuration
+/// Configuration for circuit relay
 #[derive(Debug, Clone)]
 pub struct CircuitRelayConfig {
-    /// Enable relay server functionality - makes this node a relay
-    pub enable_relay_server: bool,
-    
-    /// Enable relay client functionality - allows this node to connect through relays
-    pub enable_relay_client: bool,
-    
-    /// Maximum number of inbound relay connections to accept
-    pub max_inbound_relay_connections: usize,
-    
-    /// Maximum number of outbound relay connections to establish
-    pub max_outbound_relay_connections: usize,
-    
-    /// List of known relay servers to use (multiaddresses)
-    pub known_relay_servers: Vec<Multiaddr>,
-    
-    /// Connection timeout for relay connections
-    pub connection_timeout: Duration,
-    
-    /// Time to keep relay connections alive
-    pub ttl: Duration,
+    /// Maximum number of relay connections per peer
+    pub max_connections: usize,
+    /// Maximum number of circuits per relay
+    pub max_circuits: usize,
+    /// Circuit timeout duration
+    pub circuit_timeout: Duration,
+    /// Connection pool size per relay
+    pub pool_size: usize,
+    /// Pool connection timeout
+    pub pool_timeout: Duration,
+    /// Minimum number of available relays
+    pub min_relays: usize,
+    /// Maximum latency for relay selection (ms)
+    pub max_relay_latency: u64,
+    /// Enable automatic relay failover
+    pub enable_failover: bool,
+    /// Failover timeout duration
+    pub failover_timeout: Duration,
+    /// Maximum retry attempts for failover
+    pub max_retry_attempts: u32,
 }
 
 impl Default for CircuitRelayConfig {
     fn default() -> Self {
         Self {
-            enable_relay_server: false,
-            enable_relay_client: true,
-            max_inbound_relay_connections: 10,
-            max_outbound_relay_connections: 5,
-            known_relay_servers: Vec::new(),
-            connection_timeout: Duration::from_secs(30),
-            ttl: Duration::from_secs(3600),
+            max_connections: 50,
+            max_circuits: 20,
+            circuit_timeout: Duration::from_secs(60),
+            pool_size: 10,
+            pool_timeout: Duration::from_secs(30),
+            min_relays: 3,
+            max_relay_latency: 200,
+            enable_failover: true,
+            failover_timeout: Duration::from_secs(10),
+            max_retry_attempts: 3,
         }
     }
 }
 
-/// Manager for circuit relay functionality
+/// Status of a relay connection
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayStatus {
+    /// Connection is available
+    Available,
+    /// Connection is in use
+    InUse,
+    /// Connection is being established
+    Connecting,
+    /// Connection failed
+    Failed,
+}
+
+/// A pooled relay connection
+#[derive(Debug)]
+struct PooledConnection {
+    /// Relay peer ID
+    relay_id: PeerId,
+    /// Connection status
+    status: RelayStatus,
+    /// When the connection was created
+    created_at: Instant,
+    /// Last time the connection was used
+    last_used: Instant,
+    /// Number of circuits using this connection
+    circuit_count: usize,
+    /// Average latency in milliseconds
+    avg_latency: u64,
+    /// Number of failed operations
+    failure_count: u32,
+}
+
+/// A relay server with its connection pool
+#[derive(Debug)]
+struct RelayServer {
+    /// Relay peer ID
+    peer_id: PeerId,
+    /// Relay addresses
+    addresses: Vec<Multiaddr>,
+    /// Connection pool
+    pool: VecDeque<PooledConnection>,
+    /// Total number of active circuits
+    active_circuits: usize,
+    /// Last health check time
+    last_health_check: Instant,
+    /// Success rate (0.0 - 1.0)
+    success_rate: f32,
+    /// Average latency in milliseconds
+    avg_latency: u64,
+    /// Whether this relay is currently available
+    is_available: bool,
+}
+
+/// Circuit relay manager
 pub struct CircuitRelayManager {
-    /// Circuit relay configuration
+    /// Configuration
     config: CircuitRelayConfig,
-    
-    /// Local peer ID
-    local_peer_id: PeerId,
-    
-    /// Relay server
-    #[allow(dead_code)]
-    relay_server: Option<relay::Behaviour>,
-    
-    /// Relay client
-    #[allow(dead_code)]
-    relay_client: Option<relay::client::Behaviour>,
-    
-    /// Known relay peers
-    relay_peers: Arc<RwLock<HashMap<PeerId, RelayServerInfo>>>,
-    
-    /// Metrics
-    metrics: Option<NetworkMetrics>,
+    /// Available relay servers
+    relays: Arc<RwLock<HashMap<PeerId, RelayServer>>>,
+    /// Active circuits
+    circuits: Arc<RwLock<HashMap<(PeerId, PeerId), Instant>>>,
+    /// Failed relays with their failure time
+    failed_relays: Arc<RwLock<HashMap<PeerId, Instant>>>,
+    /// Reputation manager
+    reputation: Arc<ReputationManager>,
+    /// Metrics collection
+    metrics: Option<Arc<NetworkMetrics>>,
 }
 
 // Add this impl to ensure CircuitRelayManager is Send + Sync
@@ -147,287 +198,436 @@ pub struct RelayInfo {
 impl CircuitRelayManager {
     /// Create a new circuit relay manager
     pub fn new(
-        local_peer_id: PeerId,
         config: CircuitRelayConfig,
-        metrics: Option<NetworkMetrics>,
+        reputation: Arc<ReputationManager>,
+        metrics: Option<Arc<NetworkMetrics>>,
     ) -> Self {
-        // Create relay server if enabled
-        let relay_server = if config.enable_relay_server {
-            let relay_config = relay::Config {
-                max_circuit_duration: config.ttl,
-                max_circuit_bytes: 10 * 1024 * 1024, // 10 MB
-                ..Default::default()
-            };
-            
-            Some(relay::Behaviour::new(local_peer_id.clone(), relay_config))
-        } else {
-            None
-        };
-        
-        // Create relay client if enabled
-        let relay_client = if config.enable_relay_client {
-            // For now, we'll just create a placeholder
-            // In a real implementation, we would use the correct constructor
-            // based on the libp2p version
-            None
-        } else {
-            None
-        };
-        
         Self {
             config,
-            local_peer_id,
-            relay_server,
-            relay_client,
-            relay_peers: Arc::new(RwLock::new(HashMap::new())),
+            relays: Arc::new(RwLock::new(HashMap::new())),
+            circuits: Arc::new(RwLock::new(HashMap::new())),
+            failed_relays: Arc::new(RwLock::new(HashMap::new())),
+            reputation,
             metrics,
         }
     }
     
-    /// Create the circuit relay behaviour
-    fn create_behaviour(local_peer_id: &PeerId, _config: &CircuitRelayConfig) -> CircuitRelayBehaviour {
-        // Configure ping behaviour with the available interface
-        let ping_config = ping::Config::new();
+    /// Add a relay server
+    pub async fn add_relay(
+        &self,
+        peer_id: PeerId,
+        addresses: Vec<Multiaddr>,
+    ) -> NetworkResult<()> {
+        let mut relays = self.relays.write().await;
         
-        // Configure identify behaviour with the available interface
-        let identify_config = identify::Config::new(
-            "icn-network/1.0.0".to_string(), 
-            libp2p::identity::Keypair::generate_ed25519().public()
-        );
-        
-        // Create the behaviour
-        let behaviour = CircuitRelayBehaviour {
-            ping: ping::Behaviour::new(ping_config),
-            identify: identify::Behaviour::new(identify_config),
+        // Create new relay server with empty pool
+        let relay = RelayServer {
+            peer_id,
+            addresses,
+            pool: VecDeque::with_capacity(self.config.pool_size),
+            active_circuits: 0,
+            last_health_check: Instant::now(),
+            success_rate: 1.0,
+            avg_latency: 0,
+            is_available: true,
         };
-                
-        behaviour
+        
+        relays.insert(peer_id, relay);
+        
+        // Initialize connection pool
+        self.initialize_pool(peer_id).await?;
+        
+        Ok(())
     }
     
-    /// Initialize the circuit relay functionality
-    pub async fn initialize(&self) -> NetworkResult<()> {
-        // Add known relay servers
-        for addr in &self.config.known_relay_servers {
-            if let Some(peer_id) = extract_peer_id(addr) {
-                let server_info = RelayServerInfo {
-                    peer_id,
-                    addresses: vec![addr.clone()],
+    /// Initialize connection pool for a relay
+    async fn initialize_pool(&self, relay_id: PeerId) -> NetworkResult<()> {
+        let mut relays = self.relays.write().await;
+        
+        if let Some(relay) = relays.get_mut(&relay_id) {
+            // Create initial pool connections
+            for _ in 0..self.config.pool_size {
+                let conn = PooledConnection {
+                    relay_id,
+                    status: RelayStatus::Available,
+                    created_at: Instant::now(),
                     last_used: Instant::now(),
-                    successful_connections: 0,
-                    failed_connections: 0,
+                    circuit_count: 0,
+                    avg_latency: 0,
+                    failure_count: 0,
                 };
-                self.relay_peers.write().await.insert(peer_id, server_info);
-            } else {
-                warn!("Ignoring relay server without peer ID: {}", addr);
+                
+                relay.pool.push_back(conn);
             }
         }
         
-        if let Some(metrics) = &self.metrics {
-            metrics.record_relay_servers(self.relay_peers.read().await.len());
+        Ok(())
+    }
+    
+    /// Get the best available relay for a circuit
+    pub async fn select_relay(&self, target: PeerId) -> NetworkResult<PeerId> {
+        let relays = self.relays.read().await;
+        let failed = self.failed_relays.read().await;
+        
+        // Filter available relays
+        let available: Vec<_> = relays.values()
+            .filter(|relay| {
+                relay.is_available &&
+                relay.active_circuits < self.config.max_circuits &&
+                relay.avg_latency <= self.config.max_relay_latency &&
+                !failed.contains_key(&relay.peer_id)
+            })
+            .collect();
+            
+        if available.is_empty() {
+            return Err(NetworkError::NoRelaysAvailable);
+        }
+        
+        // Sort by score (combination of latency and success rate)
+        let mut scored: Vec<_> = available.iter()
+            .map(|relay| {
+                let latency_score = 1.0 - (relay.avg_latency as f32 / self.config.max_relay_latency as f32);
+                let score = relay.success_rate * latency_score;
+                (relay, score)
+            })
+            .collect();
+            
+        scored.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap());
+        
+        // Select randomly from top 3 relays
+        let top_relays = scored.iter().take(3).collect::<Vec<_>>();
+        if let Some((relay, _)) = top_relays.choose(&mut rand::thread_rng()) {
+            Ok(relay.peer_id)
+        } else {
+            Err(NetworkError::NoRelaysAvailable)
+        }
+    }
+    
+    /// Get an available connection from a relay's pool
+    pub async fn get_connection(&self, relay_id: PeerId) -> NetworkResult<PooledConnection> {
+        let mut relays = self.relays.write().await;
+        
+        if let Some(relay) = relays.get_mut(&relay_id) {
+            // Try to get an available connection
+            for _ in 0..relay.pool.len() {
+                if let Some(mut conn) = relay.pool.pop_front() {
+                    if conn.status == RelayStatus::Available {
+                        // Update connection state
+                        conn.status = RelayStatus::InUse;
+                        conn.last_used = Instant::now();
+                        conn.circuit_count += 1;
+                        
+                        // Put connection back at end of queue
+                        relay.pool.push_back(conn.clone());
+                        return Ok(conn);
+                    } else {
+                        // Put unavailable connection back
+                        relay.pool.push_back(conn);
+                    }
+                }
+            }
+            
+            // No available connections, create new one if possible
+            if relay.pool.len() < self.config.pool_size {
+                let conn = PooledConnection {
+                    relay_id,
+                    status: RelayStatus::InUse,
+                    created_at: Instant::now(),
+                    last_used: Instant::now(),
+                    circuit_count: 1,
+                    avg_latency: relay.avg_latency,
+                    failure_count: 0,
+                };
+                
+                relay.pool.push_back(conn.clone());
+                return Ok(conn);
+            }
+        }
+        
+        Err(NetworkError::NoConnectionsAvailable)
+    }
+    
+    /// Release a connection back to the pool
+    pub async fn release_connection(
+        &self,
+        relay_id: PeerId,
+        mut conn: PooledConnection,
+    ) -> NetworkResult<()> {
+        let mut relays = self.relays.write().await;
+        
+        if let Some(relay) = relays.get_mut(&relay_id) {
+            // Update connection state
+            conn.status = RelayStatus::Available;
+            conn.circuit_count -= 1;
+            
+            // Update relay metrics
+            relay.active_circuits -= 1;
+            
+            // Put connection back in pool
+            relay.pool.push_back(conn);
         }
         
         Ok(())
     }
     
-    /// Add a relay server to the list of available relays
-    pub async fn add_relay_server(&self, peer_id: PeerId, addresses: Vec<Multiaddr>) -> NetworkResult<()> {
-        let server_info = RelayServerInfo {
-            peer_id,
-            addresses,
-            last_used: Instant::now(),
-            successful_connections: 0,
-            failed_connections: 0,
-        };
+    /// Handle relay failure and initiate failover if enabled
+    pub async fn handle_relay_failure(
+        &self,
+        relay_id: PeerId,
+        error: NetworkError,
+    ) -> NetworkResult<Option<PeerId>> {
+        let mut relays = self.relays.write().await;
+        let mut failed = self.failed_relays.write().await;
         
-        self.relay_peers.write().await.insert(peer_id, server_info);
+        // Mark relay as failed
+        if let Some(relay) = relays.get_mut(&relay_id) {
+            relay.is_available = false;
+            relay.success_rate *= 0.9; // Decay success rate
+            failed.insert(relay_id, Instant::now());
+            
+            // Update reputation
+            self.reputation.record_change(relay_id, ReputationChange::RelayFailure).await?;
+        }
         
-        if let Some(metrics) = &self.metrics {
-            metrics.record_relay_servers(self.relay_peers.read().await.len());
+        // Attempt failover if enabled
+        if self.config.enable_failover {
+            for _ in 0..self.config.max_retry_attempts {
+                if let Ok(new_relay) = self.select_relay(relay_id).await {
+                    return Ok(Some(new_relay));
+                }
+                tokio::time::sleep(self.config.failover_timeout).await;
+            }
+        }
+        
+        Ok(None)
+    }
+    
+    /// Perform health check on relay servers
+    pub async fn health_check(&self) -> NetworkResult<()> {
+        let mut relays = self.relays.write().await;
+        let mut failed = self.failed_relays.write().await;
+        
+        // Check each relay
+        for relay in relays.values_mut() {
+            if Instant::now().duration_since(relay.last_health_check) >= Duration::from_secs(60) {
+                // Perform health check (ping, measure latency, etc)
+                let (is_healthy, latency) = self.check_relay_health(relay.peer_id).await?;
+                
+                relay.is_available = is_healthy;
+                if is_healthy {
+                    // Update metrics
+                    relay.avg_latency = (relay.avg_latency + latency) / 2;
+                    relay.success_rate = 0.9 * relay.success_rate + 0.1; // Slowly recover
+                    failed.remove(&relay.peer_id);
+                    
+                    // Update reputation
+                    self.reputation.record_change(relay.peer_id, ReputationChange::RelaySuccess).await?;
+                } else {
+                    failed.insert(relay.peer_id, Instant::now());
+                }
+                
+                relay.last_health_check = Instant::now();
+            }
         }
         
         Ok(())
     }
     
-    /// Remove a relay server from the list
-    pub async fn remove_relay_server(&self, peer_id: &PeerId) -> NetworkResult<()> {
-        self.relay_peers.write().await.remove(peer_id);
+    /// Check health of a specific relay
+    async fn check_relay_health(&self, relay_id: PeerId) -> NetworkResult<(bool, u64)> {
+        // TODO: Implement actual health check
+        // For now, return dummy values
+        Ok((true, 50))
+    }
+    
+    /// Clean up expired circuits and connections
+    pub async fn cleanup(&self) -> NetworkResult<()> {
+        let mut relays = self.relays.write().await;
+        let mut circuits = self.circuits.write().await;
+        let mut failed = self.failed_relays.write().await;
         
-        if let Some(metrics) = &self.metrics {
-            metrics.record_relay_servers(self.relay_peers.read().await.len());
+        // Clean up expired circuits
+        circuits.retain(|_, created_at| {
+            created_at.elapsed() < self.config.circuit_timeout
+        });
+        
+        // Clean up failed relays
+        failed.retain(|_, failed_at| {
+            failed_at.elapsed() < Duration::from_secs(300) // Remove after 5 minutes
+        });
+        
+        // Clean up expired connections and rebalance pools
+        for relay in relays.values_mut() {
+            // Remove expired connections
+            relay.pool.retain(|conn| {
+                conn.created_at.elapsed() < Duration::from_secs(3600) && // Max 1 hour old
+                conn.failure_count < 5 // Max 5 failures
+            });
+            
+            // Add new connections if pool is depleted
+            while relay.pool.len() < self.config.pool_size {
+                let conn = PooledConnection {
+                    relay_id: relay.peer_id,
+                    status: RelayStatus::Available,
+                    created_at: Instant::now(),
+                    last_used: Instant::now(),
+                    circuit_count: 0,
+                    avg_latency: relay.avg_latency,
+                    failure_count: 0,
+                };
+                
+                relay.pool.push_back(conn);
+            }
         }
         
         Ok(())
     }
-    
-    /// Get a list of available relay servers
-    pub async fn get_relay_servers(&self) -> Vec<RelayServerInfo> {
-        self.relay_peers.read().await.values().cloned().collect()
-    }
-    
-    /// Create the relay client behaviour
-    fn create_relay_client(&self) -> NetworkResult<relay::client::Behaviour> {
-        let relay_config = relay::client::Config::default();
-        Ok(relay::client::Behaviour::new(self.local_peer_id.clone(), relay_config))
-    }
-    
-    /// Connect to a peer through a relay
-    pub async fn connect_via_relay(&self, dest_peer_id: &PeerId) -> NetworkResult<Multiaddr> {
-        let relay_peers = self.relay_peers.read().await;
-        
-        // Find the best relay to use
-        let best_relay = self.select_best_relay(&relay_peers).ok_or_else(|| {
-            NetworkError::RelayError("No suitable relay servers available".to_string())
-        })?;
-        
-        // Create relay address
-        let relay_addr = best_relay.addresses.first().ok_or_else(|| {
-            NetworkError::RelayError("Relay server has no addresses".to_string())
-        })?;
 
-        // Create the relayed address
-        let relayed_addr = relay_addr
-            .clone()
-            .with(Protocol::P2pCircuit)
-            .with(Protocol::P2p(dest_peer_id.clone().into()));
+    /// Establish a circuit to a target peer through a relay
+    pub async fn establish_circuit(
+        &self,
+        target: PeerId,
+        relay_hint: Option<PeerId>,
+    ) -> NetworkResult<RelayConnectionInfo> {
+        // Try specified relay first if provided
+        if let Some(relay_id) = relay_hint {
+            if let Ok(conn) = self.try_establish_circuit(target, relay_id).await {
+                return Ok(conn);
+            }
+        }
 
-        // Update metrics
+        // Otherwise select best available relay
+        let relay_id = self.select_relay(target).await?;
+        self.try_establish_circuit(target, relay_id).await
+    }
+
+    /// Try to establish a circuit through a specific relay
+    async fn try_establish_circuit(
+        &self,
+        target: PeerId,
+        relay_id: PeerId,
+    ) -> NetworkResult<RelayConnectionInfo> {
+        // Get a connection from the relay's pool
+        let conn = self.get_connection(relay_id).await?;
+        
+        // Track circuit establishment start time
+        let start_time = Instant::now();
+        
+        // Create circuit key
+        let circuit_key = (target, relay_id);
+        
+        // Record circuit attempt in metrics
         if let Some(metrics) = &self.metrics {
             metrics.record_relay_connection_attempt();
         }
-
-        // Attempt to establish the relay connection
-        match self.establish_relay_connection(&relayed_addr, &best_relay.peer_id).await {
-            Ok(()) => {
-                // Record successful connection
-                self.record_successful_connection(dest_peer_id, &best_relay.peer_id).await?;
-                
-                if let Some(metrics) = &self.metrics {
-                    metrics.record_relay_connection_success();
-                }
-                
-                Ok(relayed_addr)
-            }
-            Err(e) => {
-                // Record failed connection
-                self.record_failed_connection(dest_peer_id, &best_relay.peer_id).await?;
-                
-                if let Some(metrics) = &self.metrics {
-                    metrics.record_relay_connection_failure();
-                }
-                
-                Err(e)
-            }
-        }
-    }
-    
-    /// Select the best relay server based on past performance
-    fn select_best_relay(&self, relay_peers: &HashMap<PeerId, RelayServerInfo>) -> Option<RelayServerInfo> {
-        relay_peers.values()
-            .max_by(|a, b| {
-                let a_score = self.calculate_relay_score(a);
-                let b_score = self.calculate_relay_score(b);
-                a_score.partial_cmp(&b_score).unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .cloned()
-    }
-    
-    /// Calculate a score for a relay based on its performance
-    fn calculate_relay_score(&self, relay: &RelayServerInfo) -> f64 {
-        let total_connections = relay.successful_connections + relay.failed_connections;
-        if total_connections == 0 {
-            return 0.0;
-        }
-
-        let success_rate = relay.successful_connections as f64 / total_connections as f64;
-        let time_factor = 1.0 / (1.0 + relay.last_used.elapsed().as_secs_f64() / 3600.0);
         
-        success_rate * time_factor
-    }
-    
-    /// Establish a relay connection
-    async fn establish_relay_connection(&self, addr: &Multiaddr, relay_peer_id: &PeerId) -> NetworkResult<()> {
-        // Create reservation with the relay
-        let reservation = self.create_relay_reservation(relay_peer_id).await?;
+        // Add to active circuits
+        let mut circuits = self.circuits.write().await;
+        circuits.insert(circuit_key, Instant::now());
         
-        // Store the relay connection info
-        let connection_info = RelayConnectionInfo {
-            dest_peer_id: PeerId::random(), // This should be the actual destination peer
-            relay_peer_id: relay_peer_id.clone(),
+        // Create connection info
+        let info = RelayConnectionInfo {
+            dest_peer_id: target,
+            relay_peer_id: relay_id,
             established_at: Instant::now(),
-            ttl: self.config.ttl,
-            reservation_id: Some(reservation.to_string()),
+            ttl: self.config.circuit_timeout,
+            reservation_id: None, // TODO: Implement relay reservations
         };
-
-        // Update active connections
-        self.update_active_connections(connection_info).await?;
-
-        Ok(())
-    }
-    
-    /// Create a reservation with a relay server
-    async fn create_relay_reservation(&self, relay_peer_id: &PeerId) -> NetworkResult<String> {
-        // This would interact with the actual relay server to create a reservation
-        // For now, we'll just generate a random ID
-        Ok(format!("reservation-{}", uuid::Uuid::new_v4()))
-    }
-    
-    /// Update the list of active relay connections
-    async fn update_active_connections(&self, connection_info: RelayConnectionInfo) -> NetworkResult<()> {
-        // This would update the internal state of active connections
-        // For now, we'll just update metrics
-        if let Some(metrics) = &self.metrics {
-            metrics.record_active_relay_connections(1);
-        }
-        Ok(())
-    }
-    
-    /// Record a successful relay connection
-    pub async fn record_successful_connection(&self, dest_peer_id: &PeerId, relay_peer_id: &PeerId) -> NetworkResult<()> {
-        // Update relay server stats
-        if let Some(server) = self.relay_peers.write().await.get_mut(relay_peer_id) {
-            server.successful_connections += 1;
-            server.last_used = Instant::now();
+        
+        // Update relay metrics
+        let mut relays = self.relays.write().await;
+        if let Some(relay) = relays.get_mut(&relay_id) {
+            relay.active_circuits += 1;
+            relay.avg_latency = (relay.avg_latency + start_time.elapsed().as_millis() as u64) / 2;
+            relay.success_rate = 0.9 * relay.success_rate + 0.1;
         }
         
+        // Update reputation
+        self.reputation.record_change(relay_id, ReputationChange::RelaySuccess).await?;
+        
+        // Record success in metrics
         if let Some(metrics) = &self.metrics {
             metrics.record_relay_connection_success();
         }
         
-        Ok(())
+        Ok(info)
     }
-    
-    /// Record a failed relay connection
-    pub async fn record_failed_connection(&self, dest_peer_id: &PeerId, relay_peer_id: &PeerId) -> NetworkResult<()> {
-        // Update relay server stats
-        if let Some(server) = self.relay_peers.write().await.get_mut(relay_peer_id) {
-            server.failed_connections += 1;
+
+    /// Close a circuit
+    pub async fn close_circuit(
+        &self,
+        target: PeerId,
+        relay_id: PeerId,
+    ) -> NetworkResult<()> {
+        // Remove from active circuits
+        let mut circuits = self.circuits.write().await;
+        circuits.remove(&(target, relay_id));
+        
+        // Get relay connection
+        if let Ok(conn) = self.get_connection(relay_id).await {
+            // Release connection back to pool
+            self.release_connection(relay_id, conn).await?;
         }
         
-        // Remove the active connection since it failed
-        self.relay_peers.write().await.remove(dest_peer_id);
-        
-        if let Some(metrics) = &self.metrics {
-            metrics.record_relay_connection_failure();
-            metrics.record_active_relay_connections(self.relay_peers.read().await.len());
+        // Update relay metrics
+        let mut relays = self.relays.write().await;
+        if let Some(relay) = relays.get_mut(&relay_id) {
+            relay.active_circuits = relay.active_circuits.saturating_sub(1);
         }
         
         Ok(())
     }
-    
-    /// Check if a connection to a peer is relayed
-    pub async fn is_relayed_connection(&self, peer_id: &PeerId) -> bool {
-        self.relay_peers.read().await.contains_key(peer_id)
+
+    /// Get information about active circuits
+    pub async fn get_active_circuits(&self) -> Vec<RelayConnectionInfo> {
+        let circuits = self.circuits.read().await;
+        let mut active = Vec::new();
+        
+        for ((dest, relay), established) in circuits.iter() {
+            active.push(RelayConnectionInfo {
+                dest_peer_id: *dest,
+                relay_peer_id: *relay,
+                established_at: *established,
+                ttl: self.config.circuit_timeout,
+                reservation_id: None,
+            });
+        }
+        
+        active
     }
-    
-    /// Get the relay used for a connection
-    pub async fn get_relay_for_connection(&self, peer_id: &PeerId) -> Option<PeerId> {
-        self.relay_peers.read().await.get(peer_id).map(|info| info.peer_id)
+
+    /// Get statistics about relay usage
+    pub async fn get_relay_stats(&self) -> HashMap<PeerId, RelayServerInfo> {
+        let relays = self.relays.read().await;
+        let mut stats = HashMap::new();
+        
+        for relay in relays.values() {
+            let successful = relay.pool.iter()
+                .filter(|conn| conn.failure_count == 0)
+                .count();
+                
+            let failed = relay.pool.iter()
+                .map(|conn| conn.failure_count as usize)
+                .sum();
+                
+            stats.insert(relay.peer_id, RelayServerInfo {
+                peer_id: relay.peer_id,
+                addresses: relay.addresses.clone(),
+                last_used: relay.pool.iter()
+                    .map(|conn| conn.last_used)
+                    .max()
+                    .unwrap_or_else(Instant::now),
+                successful_connections: successful,
+                failed_connections: failed,
+            });
+        }
+        
+        stats
     }
-    
-    /// Start relay cleanup task
-    pub fn start_cleanup_task(&self) -> tokio::task::JoinHandle<()> {
-        let active_relays = Arc::new(RwLock::new(HashMap::<PeerId, RelayConnectionInfo>::new()));
-        let metrics = self.metrics.clone();
+
+    /// Start periodic maintenance tasks
+    pub async fn start_maintenance(&self) {
+        let manager = self.clone();
         
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -435,42 +635,53 @@ impl CircuitRelayManager {
             loop {
                 interval.tick().await;
                 
-                // Clean up expired relay connections
-                let now = Instant::now();
-                let mut relays = active_relays.write().await;
+                // Perform health checks
+                if let Err(e) = manager.health_check().await {
+                    error!("Relay health check failed: {}", e);
+                }
                 
-                let before_len = relays.len();
-                relays.retain(|_, info| {
-                    let elapsed = now.duration_since(info.established_at);
-                    elapsed < info.ttl
-                });
-                let after_len = relays.len();
+                // Clean up expired circuits and connections
+                if let Err(e) = manager.cleanup().await {
+                    error!("Relay cleanup failed: {}", e);
+                }
                 
-                if before_len != after_len {
-                    debug!("Cleaned up {} expired relay connections", before_len - after_len);
+                // Update metrics
+                if let Some(metrics) = &manager.metrics {
+                    let relays = manager.relays.read().await;
+                    metrics.record_relay_servers(relays.len());
                     
-                    if let Some(m) = &metrics {
-                        m.record_active_relay_connections(after_len);
-                    }
+                    let circuits = manager.circuits.read().await;
+                    metrics.record_active_relay_connections(circuits.len());
                 }
             }
-        })
+        });
     }
 }
 
 /// Create a relay transport
 pub fn create_relay_transport<T>(
-    _transport: T,
-    _relay_config: &CircuitRelayConfig,
+    transport: T,
+    relay_config: &CircuitRelayConfig,
 ) -> NetworkResult<relay::client::Transport> 
 where
     T: Transport + Clone + Send + 'static,
     T::Output: Send + 'static,
     T::Error: std::error::Error + Send + Sync + 'static,
 {
-    // Return a temporary error to prevent compilation errors
-    // This would need to be implemented properly in a real implementation
-    Err(NetworkError::InternalError("Relay transport creation not implemented yet".to_string()))
+    // Create relay config
+    let relay_config = relay::Config {
+        connection_timeout: relay_config.circuit_timeout,
+        max_circuits: relay_config.max_circuits,
+        ..Default::default()
+    };
+
+    // Create relay transport
+    let relay_transport = relay::client::Transport::new(
+        transport,
+        relay_config,
+    ).map_err(|e| NetworkError::TransportError(e.to_string()))?;
+
+    Ok(relay_transport)
 }
 
 /// Extract peer ID from a multiaddress
@@ -483,25 +694,37 @@ fn extract_peer_id(addr: &Multiaddr) -> Option<PeerId> {
     })
 }
 
-/// Circuit relay behaviour that combines server and client capabilities
+/// Circuit relay network behavior
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "CircuitRelayEvent")]
-struct CircuitRelayBehaviour {
+pub struct CircuitRelayBehaviour {
+    /// Relay protocol
+    relay: relay::Behaviour,
     /// Ping protocol for measuring latency
     ping: ping::Behaviour,
-    
     /// Identify protocol for exchanging node information
     identify: identify::Behaviour,
+    /// Kademlia DHT for peer discovery
+    kad: kad::Behaviour<kad::store::MemoryStore>,
 }
 
 /// Events from the circuit relay behaviour
 #[derive(Debug)]
-enum CircuitRelayEvent {
-    /// Event from the ping behavior
+pub enum CircuitRelayEvent {
+    /// Relay event
+    Relay(relay::Event),
+    /// Ping event
     Ping(ping::Event),
-    
-    /// Event from the identify behavior
+    /// Identify event
     Identify(identify::Event),
+    /// Kademlia event
+    Kad(kad::Event),
+}
+
+impl From<relay::Event> for CircuitRelayEvent {
+    fn from(event: relay::Event) -> Self {
+        CircuitRelayEvent::Relay(event)
+    }
 }
 
 impl From<ping::Event> for CircuitRelayEvent {
@@ -516,25 +739,114 @@ impl From<identify::Event> for CircuitRelayEvent {
     }
 }
 
+impl From<kad::Event> for CircuitRelayEvent {
+    fn from(event: kad::Event) -> Self {
+        CircuitRelayEvent::Kad(event)
+    }
+}
+
 impl CircuitRelayBehaviour {
     /// Create a new circuit relay behaviour
-    fn new(local_peer_id: PeerId, config: &CircuitRelayConfig) -> Self {
+    pub fn new(
+        local_peer_id: PeerId,
+        config: &CircuitRelayConfig,
+    ) -> NetworkResult<Self> {
+        // Create relay config
+        let relay_config = relay::Config {
+            connection_timeout: config.circuit_timeout,
+            max_circuits: config.max_circuits,
+            ..Default::default()
+        };
+
+        // Create ping config
         let ping_config = ping::Config::new()
             .with_interval(Duration::from_secs(30))
             .with_timeout(Duration::from_secs(10));
-            
-        // Create a temporary keypair for identify
-        let key_pair = libp2p::identity::Keypair::generate_ed25519();
-        
+
+        // Create identify config
         let identify_config = identify::Config::new(
             "/ipfs/relay/1.0.0".to_string(),
-            key_pair.public()
+            local_peer_id
         );
-        
-        Self {
+
+        // Create Kademlia config
+        let kad_config = kad::Config::default();
+        let kad_store = kad::store::MemoryStore::new(local_peer_id);
+
+        Ok(Self {
+            relay: relay::Behaviour::new(relay_config),
             ping: ping::Behaviour::new(ping_config),
             identify: identify::Behaviour::new(identify_config),
+            kad: kad::Behaviour::new(local_peer_id, kad_store, kad_config),
+        })
+    }
+
+    /// Handle incoming relay events
+    pub async fn handle_event(
+        &mut self,
+        event: CircuitRelayEvent,
+        manager: &CircuitRelayManager,
+    ) -> NetworkResult<()> {
+        match event {
+            CircuitRelayEvent::Relay(event) => {
+                match event {
+                    relay::Event::ReservationReqAccepted { .. } => {
+                        // Handle successful relay reservation
+                        debug!("Relay reservation accepted");
+                    }
+                    relay::Event::ReservationReqFailed { .. } => {
+                        // Handle failed relay reservation
+                        warn!("Relay reservation failed");
+                    }
+                    relay::Event::CircuitReqAccepted { .. } => {
+                        // Handle successful circuit establishment
+                        debug!("Circuit established successfully");
+                    }
+                    relay::Event::CircuitReqFailed { .. } => {
+                        // Handle failed circuit establishment
+                        warn!("Circuit establishment failed");
+                    }
+                    _ => {}
+                }
+            }
+            CircuitRelayEvent::Ping(event) => {
+                if let ping::Event::Result(peer, latency) = event {
+                    // Update relay latency metrics
+                    let mut relays = manager.relays.write().await;
+                    if let Some(relay) = relays.get_mut(&peer) {
+                        relay.avg_latency = (relay.avg_latency + latency.as_millis() as u64) / 2;
+                    }
+                }
+            }
+            CircuitRelayEvent::Identify(event) => {
+                if let identify::Event::Received { peer_id, info } = event {
+                    // Check if peer supports relay protocol
+                    if info.protocols.iter().any(|p| p.contains("/relay")) {
+                        // Add as potential relay if not already known
+                        if !manager.relays.read().await.contains_key(&peer_id) {
+                            manager.add_relay(peer_id, info.listen_addrs).await?;
+                        }
+                    }
+                }
+            }
+            CircuitRelayEvent::Kad(event) => {
+                match event {
+                    kad::Event::OutboundQueryCompleted { result, .. } => {
+                        if let kad::QueryResult::GetClosestPeers(Ok(peers)) = result {
+                            // Add discovered peers that support relay protocol
+                            for peer in peers {
+                                if !manager.relays.read().await.contains_key(&peer) {
+                                    // Query peer info through identify protocol
+                                    self.identify.send_identify_request(&peer);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
+        Ok(())
     }
 }
 
@@ -559,28 +871,129 @@ pub trait CircuitRelayMetricsExt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     
     #[tokio::test]
-    async fn test_relay_manager_initialization() {
+    async fn test_relay_manager() {
         let config = CircuitRelayConfig {
-            known_relay_servers: vec![
-                "/ip4/127.0.0.1/tcp/9000/p2p/QmTest1".parse().unwrap(),
-                "/ip4/127.0.0.1/tcp/9001/p2p/QmTest2".parse().unwrap(),
-            ],
+            max_connections: 5,
+            max_circuits: 10,
+            circuit_timeout: Duration::from_secs(60),
+            pool_size: 3,
             ..Default::default()
         };
         
-        let manager = CircuitRelayManager::new(PeerId::random(), config, None);
-        manager.initialize().await.unwrap();
+        let reputation = Arc::new(ReputationManager::new(Default::default()));
+        let manager = CircuitRelayManager::new(config, reputation, None);
         
-        let servers = manager.get_relay_servers().await;
-        assert_eq!(servers.len(), 2);
+        // Add some test relays
+        let relay1 = PeerId::random();
+        let relay2 = PeerId::random();
+        
+        manager.add_relay(relay1, vec!["/ip4/127.0.0.1/tcp/10000".parse().unwrap()]).await.unwrap();
+        manager.add_relay(relay2, vec!["/ip4/127.0.0.1/tcp/10001".parse().unwrap()]).await.unwrap();
+        
+        // Test relay selection
+        let target = PeerId::random();
+        let selected = manager.select_relay(target).await.unwrap();
+        assert!(selected == relay1 || selected == relay2);
+        
+        // Test circuit establishment
+        let circuit = manager.establish_circuit(target, None).await.unwrap();
+        assert_eq!(circuit.dest_peer_id, target);
+        assert!(circuit.relay_peer_id == relay1 || circuit.relay_peer_id == relay2);
+        
+        // Test active circuits
+        let active = manager.get_active_circuits().await;
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].dest_peer_id, target);
+        
+        // Test circuit closure
+        manager.close_circuit(target, circuit.relay_peer_id).await.unwrap();
+        let active = manager.get_active_circuits().await;
+        assert_eq!(active.len(), 0);
     }
     
     #[tokio::test]
-    async fn test_extract_peer_id() {
-        let addr = "/ip4/127.0.0.1/tcp/9000/p2p/QmTest1".parse::<Multiaddr>().unwrap();
-        let peer_id = extract_peer_id(&addr);
-        assert!(peer_id.is_some());
+    async fn test_relay_failover() {
+        let config = CircuitRelayConfig {
+            enable_failover: true,
+            max_retry_attempts: 2,
+            failover_timeout: Duration::from_millis(100),
+            ..Default::default()
+        };
+        
+        let reputation = Arc::new(ReputationManager::new(Default::default()));
+        let manager = CircuitRelayManager::new(config, reputation, None);
+        
+        // Add test relays
+        let relay1 = PeerId::random();
+        let relay2 = PeerId::random();
+        let relay3 = PeerId::random();
+        
+        manager.add_relay(relay1, vec!["/ip4/127.0.0.1/tcp/10000".parse().unwrap()]).await.unwrap();
+        manager.add_relay(relay2, vec!["/ip4/127.0.0.1/tcp/10001".parse().unwrap()]).await.unwrap();
+        manager.add_relay(relay3, vec!["/ip4/127.0.0.1/tcp/10002".parse().unwrap()]).await.unwrap();
+        
+        // Simulate relay failure
+        let target = PeerId::random();
+        manager.handle_relay_failure(relay1, NetworkError::ConnectionFailed).await.unwrap();
+        
+        // Test failover
+        let circuit = manager.establish_circuit(target, None).await.unwrap();
+        assert!(circuit.relay_peer_id == relay2 || circuit.relay_peer_id == relay3);
+        assert_ne!(circuit.relay_peer_id, relay1);
+    }
+    
+    #[tokio::test]
+    async fn test_connection_pool() {
+        let config = CircuitRelayConfig {
+            pool_size: 2,
+            max_connections: 4,
+            ..Default::default()
+        };
+        
+        let reputation = Arc::new(ReputationManager::new(Default::default()));
+        let manager = CircuitRelayManager::new(config, reputation, None);
+        
+        // Add test relay
+        let relay = PeerId::random();
+        manager.add_relay(relay, vec!["/ip4/127.0.0.1/tcp/10000".parse().unwrap()]).await.unwrap();
+        
+        // Get connections from pool
+        let conn1 = manager.get_connection(relay).await.unwrap();
+        let conn2 = manager.get_connection(relay).await.unwrap();
+        
+        // Pool should be at capacity
+        assert!(manager.get_connection(relay).await.is_err());
+        
+        // Release connection
+        manager.release_connection(relay, conn1).await.unwrap();
+        
+        // Should be able to get another connection
+        let conn3 = manager.get_connection(relay).await.unwrap();
+        assert_eq!(conn3.relay_id, relay);
+    }
+    
+    #[tokio::test]
+    async fn test_relay_health_check() {
+        let config = CircuitRelayConfig::default();
+        let reputation = Arc::new(ReputationManager::new(Default::default()));
+        let manager = CircuitRelayManager::new(config, reputation, None);
+        
+        // Add test relay
+        let relay = PeerId::random();
+        manager.add_relay(relay, vec!["/ip4/127.0.0.1/tcp/10000".parse().unwrap()]).await.unwrap();
+        
+        // Perform health check
+        manager.health_check().await.unwrap();
+        
+        // Get relay stats
+        let stats = manager.get_relay_stats().await;
+        assert!(stats.contains_key(&relay));
+        
+        let relay_info = stats.get(&relay).unwrap();
+        assert_eq!(relay_info.successful_connections, 0);
+        assert_eq!(relay_info.failed_connections, 0);
     }
 } 
