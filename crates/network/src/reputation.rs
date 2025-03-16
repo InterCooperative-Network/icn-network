@@ -827,20 +827,20 @@ impl ReputationManager {
     }
     
     /// Get the current reputation value for a peer
-    pub async fn get_reputation(&self, peer_id: PeerId) -> NetworkResult<i32> {
+    pub async fn get_reputation(&self, peer_id: PeerId) -> NetworkResult<PeerReputation> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        
         let cmd = ReputationCommand::GetReputation {
             peer_id,
             response_tx: Some(tx),
         };
         
-        self.send_command(cmd).await?;
-        
-        match rx.await {
-            Ok(Some(rep)) => Ok(rep.value),
-            Ok(None) => Ok(0), // Default to 0 for unknown peers
-            Err(e) => Err(NetworkError::Other(format!("Failed to get reputation: {}", e))),
+        match self.send_command(cmd).await {
+            Ok(_) => match rx.await {
+                Ok(Some(rep)) => Ok(rep),
+                Ok(None) => Ok(PeerReputation::default()), // Default reputation for unknown peers
+                Err(e) => Err(NetworkError::Other(format!("Failed to get reputation: {}", e))),
+            },
+            Err(e) => Err(e),
         }
     }
     
@@ -916,6 +916,14 @@ impl ReputationManager {
         
         Ok(())
     }
+
+    /// Add a new method to get just the reputation value
+    pub async fn get_reputation_value(&self, peer_id: PeerId) -> NetworkResult<i32> {
+        match self.get_reputation(peer_id).await {
+            Ok(rep) => Ok(rep.value),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -941,7 +949,7 @@ mod tests {
         assert_eq!(score3, -5);
         
         // Get the reputation and check it
-        let rep = manager.get_reputation(peer_id).await.unwrap();
+        let rep = manager.get_reputation_value(peer_id).await.unwrap();
         assert_eq!(rep, -5);
     }
     
@@ -952,18 +960,18 @@ mod tests {
         let peer_id = PeerId::random();
         
         // Check initial state
-        assert!(!manager.is_banned(peer_id));
+        assert!(!manager.is_banned(peer_id).await);
         
         // Ban the peer
         manager.ban_peer(peer_id).await.unwrap();
-        assert!(manager.is_banned(peer_id));
+        assert!(manager.is_banned(peer_id).await);
         
         // Unban the peer
         manager.unban_peer(peer_id).await.unwrap();
-        assert!(!manager.is_banned(peer_id));
+        assert!(!manager.is_banned(peer_id).await);
         
         // Check score was reset to 0
-        let rep = manager.get_reputation(peer_id).await.unwrap();
+        let rep = manager.get_reputation_value(peer_id).await.unwrap();
         assert_eq!(rep, 0);
     }
     
@@ -979,11 +987,11 @@ mod tests {
         // Record changes until ban
         let score1 = manager.record_change(peer_id, ReputationChange::InvalidMessage).await.unwrap(); // -20
         assert_eq!(score1, -20);
-        assert!(!manager.is_banned(peer_id));
+        assert!(!manager.is_banned(peer_id).await);
         
         let score2 = manager.record_change(peer_id, ReputationChange::MessageFailure).await.unwrap(); // -10
         assert_eq!(score2, -30);
-        assert!(manager.is_banned(peer_id));
+        assert!(manager.is_banned(peer_id).await);
     }
     
     #[tokio::test]
@@ -1000,14 +1008,14 @@ mod tests {
         manager.record_response_time(peer_id, Duration::from_millis(30)).await.unwrap();
         let rep1 = manager.get_reputation(peer_id).await.unwrap();
         assert_eq!(rep1.response_times.len(), 1);
-        assert_eq!(rep1, 1); // FastResponse gives +1
+        assert_eq!(rep1.value, 1); // FastResponse gives +1
         
         // Slow response
         manager.record_response_time(peer_id, Duration::from_millis(300)).await.unwrap();
         let rep2 = manager.get_reputation(peer_id).await.unwrap();
         // Weighted average: (30*9 + 300)/10 = 57
         assert_eq!(rep2.response_times.len(), 2);
-        assert_eq!(rep2, -1); // SlowResponse gives -2 after +1
+        assert_eq!(rep2.value, -1); // SlowResponse gives -2 after +1
     }
     
     #[tokio::test]
@@ -1065,7 +1073,7 @@ mod tests {
         manager2.start().await.unwrap();
         
         // Check that data was loaded
-        let rep = manager2.get_reputation(peer_id).await.unwrap();
+        let rep = manager2.get_reputation_value(peer_id).await.unwrap();
         assert_eq!(rep, 10);
         
         manager2.stop().await.unwrap();
