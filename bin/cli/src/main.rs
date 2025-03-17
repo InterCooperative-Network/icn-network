@@ -10,6 +10,9 @@ use storage::StorageService;
 mod governance;
 use governance::{GovernanceService, ProposalType, ProposalStatus, Vote};
 
+mod governance_storage;
+use governance_storage::{GovernanceStorageService, StoragePolicyType};
+
 #[derive(Parser, Debug)]
 #[clap(author, version, about = "ICN Command Line Interface")]
 struct Cli {
@@ -43,6 +46,12 @@ enum Commands {
     Governance {
         #[clap(subcommand)]
         command: GovernanceCommands,
+    },
+
+    /// Governance-controlled storage operations
+    GovernedStorage {
+        #[clap(subcommand)]
+        command: GovernedStorageCommands,
     },
 }
 
@@ -329,6 +338,126 @@ enum GovernanceCommands {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum GovernedStorageCommands {
+    /// Store a file with governance permission checks
+    StoreFile {
+        /// File to store
+        #[clap(short, long)]
+        file: String,
+        
+        /// Storage key (defaults to filename)
+        #[clap(short, long)]
+        key: Option<String>,
+        
+        /// Member ID performing the action
+        #[clap(short, long)]
+        member: String,
+        
+        /// Enable encryption for this file
+        #[clap(short, long)]
+        encrypted: bool,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// Retrieve a file with governance permission checks
+    GetFile {
+        /// Storage key to retrieve
+        #[clap(short, long)]
+        key: String,
+        
+        /// Member ID performing the action
+        #[clap(short, long)]
+        member: String,
+        
+        /// Output file path (defaults to key name)
+        #[clap(short, long)]
+        output: Option<String>,
+        
+        /// Specific version to retrieve (defaults to latest)
+        #[clap(short, long)]
+        version: Option<String>,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// List files with governance permission checks
+    ListFiles {
+        /// Member ID performing the action
+        #[clap(short, long)]
+        member: String,
+        
+        /// Filter by prefix
+        #[clap(short, long)]
+        prefix: Option<String>,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// Propose a new storage policy
+    ProposePolicy {
+        /// Member ID of the proposer
+        #[clap(short, long)]
+        proposer: String,
+        
+        /// Proposal title
+        #[clap(short, long)]
+        title: String,
+        
+        /// Proposal description
+        #[clap(short, long)]
+        description: String,
+        
+        /// Policy type (federation-quota, member-quota, access-control, retention, encryption, replication)
+        #[clap(short, long)]
+        policy_type: String,
+        
+        /// JSON file containing policy content
+        #[clap(short, long)]
+        content_file: String,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// Apply an approved storage policy
+    ApplyPolicy {
+        /// Proposal ID to apply
+        #[clap(short, long)]
+        proposal_id: String,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// List active storage policies
+    ListPolicies {
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+        
+        /// Filter by policy type
+        #[clap(short, long)]
+        policy_type: Option<String>,
+    },
+    
+    /// Show JSON schema for a policy type
+    ShowSchema {
+        /// Policy type (federation-quota, member-quota, access-control, retention)
+        #[clap(short, long)]
+        policy_type: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -352,6 +481,7 @@ async fn main() -> Result<()> {
         },
         Commands::Storage { command } => handle_storage_command(command).await?,
         Commands::Governance { command } => handle_governance_command(command).await?,
+        Commands::GovernedStorage { command } => handle_governed_storage_command(command).await?,
     }
     
     Ok(())
@@ -862,6 +992,194 @@ async fn handle_governance_command(command: GovernanceCommands) -> Result<()> {
             service.execute_proposal(&id).await?;
             
             println!("Proposal executed successfully");
+        },
+    }
+    
+    Ok(())
+}
+
+async fn handle_governed_storage_command(command: GovernedStorageCommands) -> Result<()> {
+    match command {
+        GovernedStorageCommands::StoreFile { file, key, member, encrypted, federation } => {
+            let key = key.unwrap_or_else(|| file.split('/').last().unwrap_or(&file).to_string());
+            println!("Storing file {} with key {} as member {} in federation {} (encryption: {})", 
+                file, key, member, federation, if encrypted { "enabled" } else { "disabled" });
+            
+            // Initialize governance storage service
+            let service = GovernanceStorageService::new(&federation, "./data").await?;
+            
+            // Store the file with governance checks
+            service.store_file(&member, &file, &key, encrypted).await?;
+            
+            println!("File stored successfully");
+        },
+        GovernedStorageCommands::GetFile { key, member, output, version, federation } => {
+            let output = output.unwrap_or_else(|| key.clone());
+            println!("Retrieving key {} as member {} from federation {} to {}{}", 
+                key, member, federation, output, 
+                if let Some(ver) = &version { format!(" (version: {})", ver) } else { String::new() });
+            
+            // Initialize governance storage service
+            let service = GovernanceStorageService::new(&federation, "./data").await?;
+            
+            // Retrieve the file with governance checks
+            service.retrieve_file(&member, &key, &output, version.as_deref()).await?;
+            
+            println!("File retrieved successfully");
+        },
+        GovernedStorageCommands::ListFiles { member, prefix, federation } => {
+            println!("Listing files in federation {} accessible by member {}{}", 
+                federation, member,
+                if let Some(pre) = &prefix { format!(" with prefix {}", pre) } else { String::new() });
+            
+            // Initialize governance storage service
+            let service = GovernanceStorageService::new(&federation, "./data").await?;
+            
+            // List files with governance checks
+            let files = service.list_files(&member, prefix.as_deref()).await?;
+            
+            if files.is_empty() {
+                println!("No files found");
+            } else {
+                println!("Found {} files:", files.len());
+                println!("{:<30} {:<20} {:<10} {:<20}", "Key", "Current Version", "Versions", "Last Modified");
+                println!("{:-<30} {:-<20} {:-<10} {:-<20}", "", "", "", "");
+                
+                for file in files {
+                    // Extract the key from metadata key (remove "meta:" prefix)
+                    let key = file.filename;
+                    
+                    // Format timestamp as ISO date
+                    let modified = chrono::DateTime::from_timestamp(file.modified_at as i64, 0)
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    
+                    println!("{:<30} {:<20} {:<10} {:<20}", 
+                        key, 
+                        &file.current_version[0..8], // Show first 8 chars of version ID
+                        file.versions.len(),
+                        modified
+                    );
+                }
+            }
+        },
+        GovernedStorageCommands::ProposePolicy { proposer, title, description, policy_type, content_file, federation } => {
+            println!("Proposing storage policy '{}' in federation {}", title, federation);
+            
+            // Parse policy type
+            let parsed_type = match policy_type.as_str() {
+                "federation-quota" => StoragePolicyType::FederationQuota,
+                "member-quota" => StoragePolicyType::MemberQuota,
+                "access-control" => StoragePolicyType::AccessControl,
+                "retention" => StoragePolicyType::RetentionPolicy,
+                "encryption" => StoragePolicyType::EncryptionAlgorithms,
+                "replication" => StoragePolicyType::ReplicationPolicy,
+                _ => return Err(anyhow::anyhow!("Invalid policy type: {}", policy_type)),
+            };
+            
+            // Read the content file
+            let content = tokio::fs::read_to_string(&content_file).await?;
+            let policy_content: serde_json::Value = serde_json::from_str(&content)?;
+            
+            // Initialize governance storage service
+            let mut service = GovernanceStorageService::new(&federation, "./data").await?;
+            
+            // Create the policy proposal
+            let proposal_id = service.propose_storage_policy(
+                &proposer,
+                &title,
+                &description,
+                parsed_type,
+                policy_content,
+            ).await?;
+            
+            println!("Storage policy proposal created with ID: {}", proposal_id);
+        },
+        GovernedStorageCommands::ApplyPolicy { proposal_id, federation } => {
+            println!("Applying storage policy from proposal {} in federation {}", proposal_id, federation);
+            
+            // Initialize governance storage service
+            let mut service = GovernanceStorageService::new(&federation, "./data").await?;
+            
+            // Apply the policy
+            service.apply_approved_policy(&proposal_id).await?;
+            
+            println!("Storage policy applied successfully");
+        },
+        GovernedStorageCommands::ListPolicies { federation, policy_type } => {
+            println!("Listing storage policies in federation {}", federation);
+            
+            // Initialize governance storage service
+            let service = GovernanceStorageService::new(&federation, "./data").await?;
+            
+            // Get the policies
+            let policies = service.get_policies();
+            
+            // Filter by policy type if specified
+            let filtered_policies = if let Some(type_str) = policy_type {
+                policies.iter()
+                    .filter(|p| match (&p.policy_type, type_str.as_str()) {
+                        (StoragePolicyType::FederationQuota, "federation-quota") => true,
+                        (StoragePolicyType::MemberQuota, "member-quota") => true,
+                        (StoragePolicyType::AccessControl, "access-control") => true,
+                        (StoragePolicyType::RetentionPolicy, "retention") => true,
+                        (StoragePolicyType::EncryptionAlgorithms, "encryption") => true,
+                        (StoragePolicyType::ReplicationPolicy, "replication") => true,
+                        _ => false,
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                policies.iter().collect()
+            };
+            
+            if filtered_policies.is_empty() {
+                println!("No policies found");
+            } else {
+                println!("Found {} policies:", filtered_policies.len());
+                println!("{:<36} {:<20} {:<15} {:<15}", "ID", "Type", "Created At", "Active");
+                println!("{:-<36} {:-<20} {:-<15} {:-<15}", "", "", "", "");
+                
+                for policy in filtered_policies {
+                    // Format policy type
+                    let type_str = match policy.policy_type {
+                        StoragePolicyType::FederationQuota => "Federation Quota",
+                        StoragePolicyType::MemberQuota => "Member Quota",
+                        StoragePolicyType::AccessControl => "Access Control",
+                        StoragePolicyType::RetentionPolicy => "Retention",
+                        StoragePolicyType::EncryptionAlgorithms => "Encryption",
+                        StoragePolicyType::ReplicationPolicy => "Replication",
+                    };
+                    
+                    // Format timestamp
+                    let created_at = chrono::DateTime::from_timestamp(policy.created_at as i64, 0)
+                        .map(|dt| dt.format("%Y-%m-%d").to_string())
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    
+                    println!("{:<36} {:<20} {:<15} {:<15}", 
+                        &policy.id[0..8], // Show first 8 chars of ID
+                        type_str,
+                        created_at,
+                        if policy.active { "Yes" } else { "No" }
+                    );
+                }
+                
+                println!("\nUse 'icn-cli governed-storage show-policy <id>' to see full policy details");
+            }
+        },
+        GovernedStorageCommands::ShowSchema { policy_type } => {
+            println!("Showing JSON schema for policy type: {}", policy_type);
+            
+            // Get the schema
+            let schema = match policy_type.as_str() {
+                "federation-quota" => governance_storage::schema::federation_quota_schema(),
+                "member-quota" => governance_storage::schema::member_quota_schema(),
+                "access-control" => governance_storage::schema::access_control_schema(),
+                "retention" => governance_storage::schema::retention_policy_schema(),
+                _ => return Err(anyhow::anyhow!("Unknown policy type: {}", policy_type)),
+            };
+            
+            // Pretty-print the schema
+            println!("{}", serde_json::to_string_pretty(&schema)?);
         },
     }
     

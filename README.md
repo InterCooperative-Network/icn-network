@@ -15,6 +15,7 @@ A comprehensive peer-to-peer networking solution for distributed applications, w
 - **Priority Message Processing**: Smart message queue that prioritizes important messages and high-reputation peers
 - **Metrics and Monitoring**: Comprehensive metrics collection for network performance tracking
 - **End-to-End Encrypted Storage**: Versioned storage system with federation-based encryption and fine-grained access control
+- **Governance-Controlled Storage**: Democratic policy management for storage with access control and quotas
 
 ## Architecture Overview
 
@@ -24,7 +25,9 @@ The ICN Network employs a layered architecture:
 2. **Transport Layer**: Manages secure connections via libp2p and WireGuard
 3. **Discovery Layer**: Provides peer discovery and service resolution
 4. **Messaging Layer**: Handles message exchange and prioritization
-5. **Application Layer**: Domain-specific logic built on top of the network
+5. **Governance Layer**: Enables democratic decision-making through proposals and voting
+6. **Storage Layer**: Provides secure, versioned, governed storage
+7. **Application Layer**: Domain-specific logic built on top of the network
 
 ## Authentication & Identity
 
@@ -61,6 +64,16 @@ Users authenticate using:
 - **DID-to-IP Mapping**: DIDs are mapped to IPv6 addresses via the DHT
 - **Cross-Coop Routing**: Seamless routing between cooperative networks
 
+## Democratic Governance
+
+The ICN Network includes a democratic governance system that enables federation members to collectively make decisions:
+
+- **Proposal System**: Members can create proposals for policy changes, resource allocations, etc.
+- **Deliberation Period**: Time for discussion and refinement of proposals
+- **Voting Mechanism**: Secure, transparent voting with configurable quorum and approval thresholds
+- **Execution**: Automatic execution of approved proposals
+- **Policy Management**: Governance of network rules, access controls, and resource allocation
+
 ## Name Resolution & Service Discovery
 
 ### DHT-based Name Resolution
@@ -88,6 +101,16 @@ The ICN Network includes a secure, versioned storage system that supports both s
 - **Key Management**: Secure key storage, federation key sharing, and key rotation
 - **Password-derived Keys**: Support for password-based encryption using Argon2 key derivation
 
+### Governance-Controlled Storage Policies
+
+The storage system is integrated with the governance system, allowing democratic control over:
+
+- **Access Control Policies**: Who can access which files, with pattern-based rules
+- **Storage Quotas**: Federation-wide and per-member storage limits
+- **Encryption Requirements**: Mandating encryption for specific file types
+- **Retention Policies**: Rules for version history management
+- **Replication Policies**: How data is replicated across storage nodes
+
 ### Usage via CLI
 
 ```bash
@@ -112,11 +135,11 @@ icn-cli storage encrypt-for --input sensitive.doc --output sensitive.enc --recip
 # Decrypt file with your private key
 icn-cli storage decrypt-with --input sensitive.enc --output decrypted.doc --private-key ./my_keys/private.key
 
-# Export federation key for sharing
-icn-cli storage export-key --federation finance --output finance_key.json
+# Store file with governance permission checks
+icn-cli governed-storage store-file --file document.pdf --member alice@example.org
 
-# Import federation key
-icn-cli storage import-key --federation finance --key-file received_key.json
+# Propose a new storage policy
+icn-cli governed-storage propose-policy --proposer alice@example.org --title "New Access Controls" --policy-type access-control --content-file policy.json
 ```
 
 ### Storage Implementation
@@ -128,6 +151,7 @@ The storage system implements:
 - **Key Isolation**: Separate key stores with memory protection
 - **Secure Key Derivation**: Argon2id for password-based encryption
 - **Multiple Recipient Support**: Encrypting for multiple recipients without re-encrypting content
+- **Democratic Policy Enforcement**: Governance-based access control and quota management
 
 ## Project Structure
 
@@ -168,6 +192,12 @@ cargo run --example did_auth_demo
 
 # Start a basic ICN node
 cargo run --example icn_node -- --listen /ip4/0.0.0.0/tcp/9000
+
+# Run the storage encryption demo
+./examples/storage_encryption_demo.sh
+
+# Run the governance-controlled storage demo
+./examples/governed_storage_demo.sh
 ```
 
 ## Testing
@@ -192,6 +222,8 @@ The project includes several demos:
 - **WireGuard Demo**: Shows dynamic WireGuard tunnel configuration
 - **DHT Resolution Demo**: Demonstrates peer and service discovery
 - **Federation Demo**: Shows cross-cooperative communication
+- **Storage Encryption Demo**: Demonstrates the secure storage capabilities
+- **Governed Storage Demo**: Shows governance-controlled storage policies
 - **Integrated Demo**: Combines all features into a single application
 
 Run any demo using:
@@ -208,6 +240,7 @@ For more detailed documentation, see:
 - [DID Implementation](docs/identity/did-implementation.md) - Details on the DID system
 - [WireGuard Integration](docs/networking/wireguard-integration.md) - WireGuard overlay network
 - [Secure Storage](docs/storage/secure-storage.md) - Encrypted federation-based storage
+- [Governance-Controlled Storage](docs/storage/governance-controlled-storage.md) - Democratic storage management
 - API Documentation (generate with `cargo doc --open`)
 
 ## Development Roadmap
@@ -238,6 +271,18 @@ For more detailed documentation, see:
    - Enable secure key management
    - Support recipient-specific encryption
    - Add secure key sharing mechanisms
+
+6. **Phase 6: Governance & Democracy**
+   - Implement proposal and voting system
+   - Create policy enforcement framework
+   - Integrate governance with storage
+   - Add distributed execution of approved proposals
+
+7. **Phase 7: Distributed Applications**
+   - Create application hosting framework
+   - Implement service discovery for applications
+   - Add secure inter-application communication
+   - Develop application governance mechanisms
 
 ## License
 
