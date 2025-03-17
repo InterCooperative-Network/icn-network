@@ -8,6 +8,9 @@ use crate::storage::{Storage, StorageOptions, StorageError};
 use crate::storage::{VersionInfo, VersionHistory, VersioningManager, VersioningError};
 use crate::networking::overlay::dht::DistributedHashTable;
 use crate::crypto::{StorageEncryptionService, EncryptionMetadata, EncryptionError};
+use crate::storage::{
+    QuotaManager, OperationScheduler, QuotaOperation
+};
 
 // Storage peer information with proximity scoring
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +90,10 @@ pub struct DistributedStorage {
     // Local node information
     node_id: String,
     federation_id: String,
+    /// Quota manager for resource allocation
+    pub quota_manager: Option<Arc<QuotaManager>>,
+    /// Operation scheduler for priority-based processing
+    pub operation_scheduler: Option<Arc<OperationScheduler>>,
 }
 
 impl DistributedStorage {
@@ -111,6 +118,8 @@ impl DistributedStorage {
             data_locations: RwLock::new(HashMap::new()),
             node_id,
             federation_id,
+            quota_manager: None,
+            operation_scheduler: None,
         }
     }
     
@@ -135,6 +144,8 @@ impl DistributedStorage {
             data_locations: RwLock::new(HashMap::new()),
             node_id,
             federation_id,
+            quota_manager: None,
+            operation_scheduler: None,
         }
     }
     
@@ -251,6 +262,27 @@ impl DistributedStorage {
         data: &[u8],
         policy: DataAccessPolicy,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // Check quota for the current federation
+        if let Some(quota_manager) = &self.quota_manager {
+            let quota_check = self.check_quota(
+                &self.federation_id,
+                QuotaOperation::Put { size_bytes: data.len() as u64 },
+            ).await;
+            
+            if let Err(result) = quota_check {
+                match result {
+                    QuotaCheckResult::Throttled { reason, retry_after_secs } => {
+                        return Err(format!("Operation throttled: {}. Retry after {} seconds.", 
+                            reason, retry_after_secs).into());
+                    },
+                    QuotaCheckResult::Denied { reason } => {
+                        return Err(format!("Operation denied: {}", reason).into());
+                    },
+                    _ => {} // Should not happen
+                }
+            }
+        }
+        
         // Check if we have write access for this key
         if !policy.write_federations.contains(&self.federation_id) {
             return Err(Box::new(StorageError::PermissionDenied(
@@ -451,6 +483,18 @@ impl DistributedStorage {
         let location_bytes = serde_json::to_vec(&data_location)?;
         self.dht.store(key.as_bytes().to_vec(), location_bytes)?;
         
+        // Successfully stored the data, update quota usage
+        if let Some(quota_manager) = &self.quota_manager {
+            // Update usage statistics
+            let _ = quota_manager.update_usage(
+                &self.federation_id,
+                data.len() as i64,  // Storage increased
+                1,                  // Key count increased
+                1,                  // One operation
+                data.len() as u64,  // Bandwidth used
+            ).await;
+        }
+
         Ok(())
     }
     
@@ -784,6 +828,44 @@ impl DistributedStorage {
         // Update in DHT
         let location_bytes = serde_json::to_vec(&updated_location)?;
         self.dht.store(key.as_bytes().to_vec(), location_bytes)?;
+        
+        Ok(())
+    }
+
+    /// Set the quota manager for this storage instance
+    pub fn with_quota_manager(mut self, quota_manager: Arc<QuotaManager>) -> Self {
+        self.quota_manager = Some(quota_manager.clone());
+        self.operation_scheduler = Some(Arc::new(OperationScheduler::new(quota_manager)));
+        self
+    }
+
+    /// Start the operation scheduler
+    pub async fn start_scheduler(&self) -> Result<(), String> {
+        if let Some(scheduler) = &self.operation_scheduler {
+            scheduler.start().await?;
+            Ok(())
+        } else {
+            Err("No operation scheduler configured".to_string())
+        }
+    }
+
+    /// Check quota before operating on data
+    pub async fn check_quota(
+        &self, 
+        entity_id: &str, 
+        operation: QuotaOperation
+    ) -> Result<(), QuotaCheckResult> {
+        if let Some(scheduler) = &self.operation_scheduler {
+            if !scheduler.can_execute_immediately(entity_id, operation).await {
+                // Check the specific reason for denial
+                if let Some(quota_manager) = &self.quota_manager {
+                    let result = quota_manager.check_quota(entity_id, operation).await;
+                    if result != QuotaCheckResult::Allowed {
+                        return Err(result);
+                    }
+                }
+            }
+        }
         
         Ok(())
     }

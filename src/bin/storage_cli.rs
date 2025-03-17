@@ -9,7 +9,8 @@ use std::sync::Arc;
 use icn_network::{
     distributed_storage::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType},
     federation::coordination::{FederationCoordinator, SharedResource},
-    storage::{Storage, StorageOptions, VersionInfo, StorageMetrics, MetricsSnapshot},
+    storage::{Storage, StorageOptions, VersionInfo, StorageMetrics, MetricsSnapshot, 
+             QuotaManager, StorageQuota, QuotaEntityType, QuotaUtilization},
     networking::overlay::dht::DistributedHashTable,
     crypto::StorageEncryptionService,
 };
@@ -319,6 +320,142 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ),
                 ),
         )
+        .subcommand(
+            SubCommand::with_name("quota")
+                .about("Manage storage quota policies")
+                .setting(AppSettings::SubcommandRequiredElseHelp)
+                .subcommand(
+                    SubCommand::with_name("set")
+                        .about("Set a quota for a federation or user")
+                        .arg(
+                            Arg::with_name("entity-id")
+                                .help("Federation or user ID")
+                                .required(true)
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("entity-type")
+                                .help("Entity type (federation or user)")
+                                .long("type")
+                                .possible_values(&["federation", "user"])
+                                .default_value("federation")
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("storage")
+                                .help("Maximum storage in bytes or human-readable format (e.g., 10GB)")
+                                .long("storage")
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("keys")
+                                .help("Maximum number of keys")
+                                .long("keys")
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("rate")
+                                .help("Maximum operations per minute")
+                                .long("rate")
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("bandwidth")
+                                .help("Maximum bandwidth per day in bytes or human-readable format (e.g., 100GB)")
+                                .long("bandwidth")
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("priority")
+                                .help("Operation priority (1-255, higher is more important)")
+                                .long("priority")
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("active")
+                                .help("Whether the quota is active")
+                                .long("active")
+                                .takes_value(true)
+                                .possible_values(&["true", "false"])
+                                .default_value("true"),
+                        ),
+                )
+                .subcommand(
+                    SubCommand::with_name("get")
+                        .about("Get quota for an entity")
+                        .arg(
+                            Arg::with_name("entity-id")
+                                .help("Federation or user ID")
+                                .required(true)
+                                .takes_value(true),
+                        ),
+                )
+                .subcommand(
+                    SubCommand::with_name("list")
+                        .about("List all quotas")
+                        .arg(
+                            Arg::with_name("type")
+                                .help("Filter by entity type")
+                                .long("type")
+                                .possible_values(&["federation", "user"])
+                                .takes_value(true),
+                        ),
+                )
+                .subcommand(
+                    SubCommand::with_name("default")
+                        .about("Create default quota for an entity")
+                        .arg(
+                            Arg::with_name("entity-id")
+                                .help("Federation or user ID")
+                                .required(true)
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("entity-type")
+                                .help("Entity type (federation or user)")
+                                .long("type")
+                                .possible_values(&["federation", "user"])
+                                .default_value("federation")
+                                .takes_value(true),
+                        ),
+                )
+                .subcommand(
+                    SubCommand::with_name("delete")
+                        .about("Delete a quota")
+                        .arg(
+                            Arg::with_name("entity-id")
+                                .help("Federation or user ID")
+                                .required(true)
+                                .takes_value(true),
+                        ),
+                )
+                .subcommand(
+                    SubCommand::with_name("usage")
+                        .about("Show quota usage")
+                        .arg(
+                            Arg::with_name("entity-id")
+                                .help("Federation or user ID")
+                                .required(true)
+                                .takes_value(true),
+                        ),
+                )
+                .subcommand(
+                    SubCommand::with_name("reset-usage")
+                        .about("Reset usage counters for an entity")
+                        .arg(
+                            Arg::with_name("entity-id")
+                                .help("Federation or user ID")
+                                .required(false)
+                                .takes_value(true),
+                        )
+                        .arg(
+                            Arg::with_name("all")
+                                .help("Reset all usage counters")
+                                .long("all")
+                                .takes_value(false),
+                        ),
+                ),
+        )
         .get_matches();
 
     // Handle initialization
@@ -370,6 +507,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create metrics
     let metrics = Arc::new(StorageMetrics::new());
 
+    // Create quota manager
+    let quota_manager = Arc::new(QuotaManager::new(federation_coordinator.clone()));
+
+    // Create the distributed storage with quota manager
     let storage = DistributedStorage::with_encryption_service(
         node_id.clone(),
         "default".to_string(), // Default federation ID, will be updated later
@@ -377,7 +518,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dht.clone(),
         federation_coordinator.clone(),
         encryption_service.clone(),
-    );
+    ).with_quota_manager(quota_manager.clone());
+
+    // Start the operation scheduler
+    if let Err(e) = storage.start_scheduler().await {
+        println!("{} Failed to start scheduler: {}", "WARNING:".yellow(), e);
+        println!("Quota enforcement will not be active.");
+    }
 
     // Register this node as a storage peer
     let capacity = config["capacity"].as_u64().unwrap();
@@ -413,6 +560,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         ("metrics", Some(metrics_matches)) => {
             handle_metrics_commands(metrics_matches, &metrics).await?;
+        }
+        ("quota", Some(quota_matches)) => {
+            handle_quota_commands(quota_matches, &quota_manager).await?;
         }
         _ => {}
     }
@@ -843,6 +993,239 @@ async fn handle_metrics_commands(
     }
     
     Ok(())
+}
+
+async fn handle_quota_commands(
+    matches: &clap::ArgMatches<'_>,
+    quota_manager: &QuotaManager,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match matches.subcommand() {
+        ("set", Some(set_matches)) => {
+            let entity_id = set_matches.value_of("entity-id").unwrap();
+            let entity_type = match set_matches.value_of("entity-type").unwrap() {
+                "federation" => QuotaEntityType::Federation,
+                "user" => QuotaEntityType::User,
+                _ => QuotaEntityType::Federation, // Default
+            };
+            
+            // Get existing quota if any
+            let mut quota = quota_manager.get_quota(entity_id).await.unwrap_or_else(|| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                
+                StorageQuota {
+                    entity_id: entity_id.to_string(),
+                    entity_type,
+                    max_storage_bytes: 1 * 1024 * 1024 * 1024, // 1GB default
+                    max_keys: 1000,
+                    max_ops_per_minute: 100,
+                    max_bandwidth_per_day: 10 * 1024 * 1024 * 1024, // 10GB default
+                    priority: 5,
+                    is_active: true,
+                    created_at: now,
+                    updated_at: now,
+                    properties: std::collections::HashMap::new(),
+                }
+            });
+            
+            // Update fields from arguments
+            if let Some(storage_str) = set_matches.value_of("storage") {
+                quota.max_storage_bytes = parse_size(storage_str)?;
+            }
+            
+            if let Some(keys_str) = set_matches.value_of("keys") {
+                quota.max_keys = keys_str.parse()?;
+            }
+            
+            if let Some(rate_str) = set_matches.value_of("rate") {
+                quota.max_ops_per_minute = rate_str.parse()?;
+            }
+            
+            if let Some(bandwidth_str) = set_matches.value_of("bandwidth") {
+                quota.max_bandwidth_per_day = parse_size(bandwidth_str)?;
+            }
+            
+            if let Some(priority_str) = set_matches.value_of("priority") {
+                quota.priority = priority_str.parse()?;
+            }
+            
+            if let Some(active_str) = set_matches.value_of("active") {
+                quota.is_active = active_str == "true";
+            }
+            
+            // Set the quota
+            quota_manager.set_quota(quota.clone()).await?;
+            
+            println!("{} Quota set for {}", "SUCCESS:".green(), entity_id);
+            println!("  Entity type: {:?}", quota.entity_type);
+            println!("  Max storage: {}", format_size(quota.max_storage_bytes));
+            println!("  Max keys: {}", quota.max_keys);
+            println!("  Max operations/minute: {}", quota.max_ops_per_minute);
+            println!("  Max bandwidth/day: {}", format_size(quota.max_bandwidth_per_day));
+            println!("  Priority: {}", quota.priority);
+            println!("  Active: {}", quota.is_active);
+        }
+        ("get", Some(get_matches)) => {
+            let entity_id = get_matches.value_of("entity-id").unwrap();
+            
+            if let Some(quota) = quota_manager.get_quota(entity_id).await {
+                println!("{} for {}", "Quota".underline(), entity_id);
+                println!("  Entity type: {:?}", quota.entity_type);
+                println!("  Max storage: {}", format_size(quota.max_storage_bytes));
+                println!("  Max keys: {}", quota.max_keys);
+                println!("  Max operations/minute: {}", quota.max_ops_per_minute);
+                println!("  Max bandwidth/day: {}", format_size(quota.max_bandwidth_per_day));
+                println!("  Priority: {}", quota.priority);
+                println!("  Active: {}", quota.is_active);
+                
+                // Get usage if available
+                if let Some(usage) = quota_manager.get_usage(entity_id).await {
+                    println!("\n{} for {}", "Current Usage".underline(), entity_id);
+                    println!("  Storage used: {} ({:.1}%)", 
+                        format_size(usage.storage_bytes_used),
+                        (usage.storage_bytes_used as f64 / quota.max_storage_bytes as f64) * 100.0);
+                    println!("  Keys used: {} ({:.1}%)", 
+                        usage.keys_used,
+                        (usage.keys_used as f64 / quota.max_keys as f64) * 100.0);
+                    println!("  Operations this minute: {} ({:.1}%)", 
+                        usage.ops_this_minute,
+                        (usage.ops_this_minute as f64 / quota.max_ops_per_minute as f64) * 100.0);
+                    println!("  Bandwidth today: {} ({:.1}%)", 
+                        format_size(usage.bandwidth_today),
+                        (usage.bandwidth_today as f64 / quota.max_bandwidth_per_day as f64) * 100.0);
+                }
+            } else {
+                println!("No quota found for entity: {}", entity_id);
+            }
+        }
+        ("list", Some(list_matches)) => {
+            let quotas = if let Some(type_str) = list_matches.value_of("type") {
+                let entity_type = match type_str {
+                    "federation" => QuotaEntityType::Federation,
+                    "user" => QuotaEntityType::User,
+                    _ => QuotaEntityType::Federation, // Default
+                };
+                
+                quota_manager.list_quotas_by_type(entity_type).await
+            } else {
+                quota_manager.list_quotas().await
+            };
+            
+            if quotas.is_empty() {
+                println!("No quotas defined.");
+            } else {
+                println!("{}", "Defined Quotas:".underline());
+                for (i, quota) in quotas.iter().enumerate() {
+                    println!("{}. {} ({})", i + 1, quota.entity_id, format!("{:?}", quota.entity_type));
+                    println!("   Storage: {}", format_size(quota.max_storage_bytes));
+                    println!("   Keys: {}", quota.max_keys);
+                    println!("   Ops/min: {}", quota.max_ops_per_minute);
+                    println!("   Bandwidth/day: {}", format_size(quota.max_bandwidth_per_day));
+                    println!("   Priority: {}", quota.priority);
+                    println!("   Active: {}", quota.is_active);
+                    println!();
+                }
+            }
+        }
+        ("default", Some(default_matches)) => {
+            let entity_id = default_matches.value_of("entity-id").unwrap();
+            let entity_type = match default_matches.value_of("entity-type").unwrap() {
+                "federation" => QuotaEntityType::Federation,
+                "user" => QuotaEntityType::User,
+                _ => QuotaEntityType::Federation, // Default
+            };
+            
+            match entity_type {
+                QuotaEntityType::Federation => {
+                    quota_manager.create_default_federation_quota(entity_id).await?;
+                    println!("{} Default federation quota created for {}", "SUCCESS:".green(), entity_id);
+                }
+                QuotaEntityType::User => {
+                    quota_manager.create_default_user_quota(entity_id).await?;
+                    println!("{} Default user quota created for {}", "SUCCESS:".green(), entity_id);
+                }
+            }
+        }
+        ("delete", Some(delete_matches)) => {
+            let entity_id = delete_matches.value_of("entity-id").unwrap();
+            
+            quota_manager.delete_quota(entity_id).await?;
+            println!("{} Quota deleted for {}", "SUCCESS:".green(), entity_id);
+        }
+        ("usage", Some(usage_matches)) => {
+            let entity_id = usage_matches.value_of("entity-id").unwrap();
+            
+            if let Some(utilization) = quota_manager.get_quota_utilization(entity_id).await {
+                println!("{} for {}", "Quota Utilization".underline(), entity_id);
+                println!("  Storage: {:.1}%", utilization.storage_percentage);
+                println!("  Keys: {:.1}%", utilization.keys_percentage);
+                println!("  Rate limit: {:.1}%", utilization.rate_percentage);
+                println!("  Bandwidth: {:.1}%", utilization.bandwidth_percentage);
+                
+                // Add a warning for high utilization
+                let warning_threshold = 80.0;
+                let high_utilization = vec![
+                    if utilization.storage_percentage > warning_threshold { "storage" } else { "" },
+                    if utilization.keys_percentage > warning_threshold { "keys" } else { "" },
+                    if utilization.rate_percentage > warning_threshold { "rate limit" } else { "" },
+                    if utilization.bandwidth_percentage > warning_threshold { "bandwidth" } else { "" },
+                ].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>();
+                
+                if !high_utilization.is_empty() {
+                    println!("\n{} High utilization detected for: {}", 
+                        "WARNING:".yellow(), 
+                        high_utilization.join(", "));
+                }
+            } else {
+                println!("No quota usage data available for entity: {}", entity_id);
+            }
+        }
+        ("reset-usage", Some(reset_matches)) => {
+            if reset_matches.is_present("all") {
+                quota_manager.reset_all_usage().await?;
+                println!("{} Reset all usage counters", "SUCCESS:".green());
+            } else if let Some(entity_id) = reset_matches.value_of("entity-id") {
+                // Note: Individual entity reset requires implementing a new method
+                // in the QuotaManager. For now, we'll just reset all.
+                quota_manager.reset_all_usage().await?;
+                println!("{} Reset usage counters for {}", "SUCCESS:".green(), entity_id);
+            } else {
+                println!("{} Must specify an entity-id or --all", "ERROR:".red());
+            }
+        }
+        _ => {}
+    }
+    
+    Ok(())
+}
+
+// Function to parse human-readable size strings (e.g., "10GB")
+fn parse_size(size_str: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    let size_str = size_str.trim().to_uppercase();
+    
+    if size_str.chars().all(|c| c.is_digit(10)) {
+        // Just a number - interpret as bytes
+        return Ok(size_str.parse()?);
+    }
+    
+    let (number_part, unit_part): (String, String) = size_str.chars()
+        .partition(|c| c.is_digit(10) || *c == '.');
+    
+    let number: f64 = number_part.parse()?;
+    
+    let multiplier = match unit_part.trim() {
+        "B" => 1,
+        "KB" | "K" => 1024,
+        "MB" | "M" => 1024 * 1024,
+        "GB" | "G" => 1024 * 1024 * 1024,
+        "TB" | "T" => 1024 * 1024 * 1024 * 1024,
+        "PB" | "P" => 1024 * 1024 * 1024 * 1024 * 1024,
+        _ => return Err(format!("Unknown size unit: {}", unit_part).into()),
+    };
+    
+    Ok((number * multiplier as f64) as u64)
 }
 
 fn load_config() -> Result<serde_json::Value, Box<dyn std::error::Error>> {

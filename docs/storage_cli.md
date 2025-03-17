@@ -22,6 +22,7 @@ The CLI offers the following main command categories:
 - `version`: Manage data versions
 - `encryption`: Manage encryption
 - `metrics`: View and manage metrics
+- `quota`: Manage storage quota policies
 - `status`: Show storage system status
 
 ## Initialize Storage
@@ -163,6 +164,80 @@ The metrics system tracks:
 - Version statistics (counts, sizes, overhead)
 
 This data helps you monitor performance, identify bottlenecks, and understand storage usage patterns over time.
+
+## Resource Quota Management
+
+The storage system includes a comprehensive quota management system to control and monitor resource usage by different federations and users:
+
+```bash
+# Set quota for a federation
+storage-cli quota set fed-123456 --storage 50GB --keys 5000 --rate 500 --bandwidth 200GB --priority 10
+
+# Set quota for a user with reduced limits
+storage-cli quota set user-123 --type user --storage 5GB --keys 1000 --rate 100 --bandwidth 20GB
+
+# Create default quota based on entity type
+storage-cli quota default fed-123456 --type federation
+storage-cli quota default user-123 --type user
+
+# View quota information for an entity
+storage-cli quota get fed-123456
+
+# List all quotas
+storage-cli quota list
+
+# List quotas for a specific entity type
+storage-cli quota list --type federation
+
+# Show current usage against quota
+storage-cli quota usage fed-123456
+
+# Reset usage counters
+storage-cli quota reset-usage --all
+storage-cli quota reset-usage fed-123456
+
+# Delete a quota
+storage-cli quota delete fed-123456
+```
+
+### Quota Attributes
+
+Each quota defines the following limits:
+
+- **Storage**: Maximum storage space allowed (e.g., 10GB)
+- **Keys**: Maximum number of storage keys/objects
+- **Rate**: Maximum operations per minute
+- **Bandwidth**: Maximum data transfer per day
+- **Priority**: Operation priority level (higher values get priority)
+- **Active**: Whether the quota is currently enforced
+
+### Priority-Based Scheduling
+
+Operations are scheduled based on priority levels defined in quotas. When the system is under load, operations from higher-priority entities are processed first.
+
+### Human-Readable Size Formats
+
+The CLI accepts human-readable size formats when setting quotas:
+
+- `B` for bytes
+- `KB` or `K` for kilobytes
+- `MB` or `M` for megabytes
+- `GB` or `G` for gigabytes
+- `TB` or `T` for terabytes
+- `PB` or `P` for petabytes
+
+For example: `--storage 10GB` or `--bandwidth 500MB`
+
+### Usage Monitoring
+
+The quota system continuously tracks:
+
+- Current storage utilization
+- Number of keys used
+- Operation rate
+- Bandwidth consumption
+
+Use the `quota usage` command to monitor utilization and receive warnings when approaching quota limits.
 
 ## Examples
 

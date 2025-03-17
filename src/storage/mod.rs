@@ -1,5 +1,6 @@
 pub mod versioning;
 pub mod metrics;
+pub mod quota;
 
 // Re-export commonly used types and functions
 pub use versioning::{
@@ -14,4 +15,14 @@ pub use metrics::{
     MetricsSnapshot,
     MetricsTimer,
     OperationType,
+};
+
+pub use quota::{
+    QuotaManager,
+    OperationScheduler,
+    StorageQuota,
+    QuotaOperation,
+    QuotaEntityType,
+    QuotaCheckResult,
+    QuotaUtilization,
 }; 
