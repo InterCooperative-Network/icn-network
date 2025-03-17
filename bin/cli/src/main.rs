@@ -7,17 +7,13 @@ use std::path::PathBuf;
 mod storage;
 use storage::StorageService;
 
+mod networking;
+mod identity;
 mod governance;
-use governance::{GovernanceService, ProposalType, ProposalStatus, Vote};
-
 mod governance_storage;
-use governance_storage::{GovernanceStorageService, StoragePolicyType};
-
 mod identity_storage;
-use identity_storage::{IdentityStorageService, MockIdentityProvider, DidVerificationStatus};
-
 mod credential_storage;
-use credential_storage::{CredentialStorageService, MockCredentialProvider, CredentialVerificationStatus, VerifiableCredential, CredentialAccessRule};
+mod compute;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about = "ICN Command Line Interface")]
@@ -71,6 +67,10 @@ enum Commands {
         #[clap(subcommand)]
         command: CredentialStorageCommands,
     },
+    
+    /// Distributed compute operations
+    #[command(subcommand)]
+    Compute(ComputeCommands),
 }
 
 #[derive(Subcommand, Debug)]
@@ -826,6 +826,276 @@ enum CredentialStorageCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum ComputeCommands {
+    /// Initialize compute environment
+    Init {
+        /// Workspace directory for compute jobs
+        #[arg(long)]
+        workspace: String,
+
+        /// Federation name
+        #[arg(long)]
+        federation: String,
+    },
+
+    /// Submit a compute job
+    SubmitJob {
+        /// DID identifier
+        #[arg(long)]
+        did: String,
+
+        /// Authentication challenge
+        #[arg(long)]
+        challenge: String,
+
+        /// Signature for authentication
+        #[arg(long)]
+        signature: String,
+
+        /// Credential ID for authorization
+        #[arg(long)]
+        credential_id: String,
+
+        /// Job name
+        #[arg(long)]
+        name: String,
+
+        /// Command to execute
+        #[arg(long)]
+        command: String,
+
+        /// Command arguments (comma-separated)
+        #[arg(long)]
+        args: String,
+
+        /// CPU cores required
+        #[arg(long, default_value = "1")]
+        cpu: u32,
+
+        /// Memory required (MB)
+        #[arg(long, default_value = "512")]
+        memory: u32,
+
+        /// GPU memory required (MB, optional)
+        #[arg(long)]
+        gpu_memory: Option<u32>,
+
+        /// Input files (format: storage_path:workspace_path,storage_path2:workspace_path2)
+        #[arg(long)]
+        input_files: String,
+
+        /// Output files (format: workspace_path:storage_path,workspace_path2:storage_path2)
+        #[arg(long)]
+        output_files: String,
+
+        /// Federation name
+        #[arg(long)]
+        federation: String,
+    },
+
+    /// Process data with simplified interface
+    ProcessData {
+        /// DID identifier
+        #[arg(long)]
+        did: String,
+
+        /// Authentication challenge
+        #[arg(long)]
+        challenge: String,
+
+        /// Signature for authentication
+        #[arg(long)]
+        signature: String,
+
+        /// Credential ID for authorization
+        #[arg(long)]
+        credential_id: String,
+
+        /// Job name
+        #[arg(long)]
+        name: String,
+
+        /// Command to execute
+        #[arg(long)]
+        command: String,
+
+        /// Command arguments (comma-separated)
+        #[arg(long)]
+        args: String,
+
+        /// Input files (format: storage_path:workspace_path,storage_path2:workspace_path2)
+        #[arg(long)]
+        input_files: String,
+
+        /// Output files (format: workspace_path:storage_path,workspace_path2:storage_path2)
+        #[arg(long)]
+        output_files: String,
+
+        /// Federation name
+        #[arg(long)]
+        federation: String,
+    },
+
+    /// Get job status
+    GetJobStatus {
+        /// DID identifier
+        #[arg(long)]
+        did: String,
+
+        /// Authentication challenge
+        #[arg(long)]
+        challenge: String,
+
+        /// Signature for authentication
+        #[arg(long)]
+        signature: String,
+
+        /// Credential ID for authorization
+        #[arg(long)]
+        credential_id: String,
+
+        /// Job ID
+        #[arg(long)]
+        job_id: String,
+
+        /// Federation name
+        #[arg(long)]
+        federation: String,
+    },
+
+    /// Get job details
+    GetJob {
+        /// DID identifier
+        #[arg(long)]
+        did: String,
+
+        /// Authentication challenge
+        #[arg(long)]
+        challenge: String,
+
+        /// Signature for authentication
+        #[arg(long)]
+        signature: String,
+
+        /// Credential ID for authorization
+        #[arg(long)]
+        credential_id: String,
+
+        /// Job ID
+        #[arg(long)]
+        job_id: String,
+
+        /// Federation name
+        #[arg(long)]
+        federation: String,
+    },
+
+    /// List jobs
+    ListJobs {
+        /// DID identifier
+        #[arg(long)]
+        did: String,
+
+        /// Authentication challenge
+        #[arg(long)]
+        challenge: String,
+
+        /// Signature for authentication
+        #[arg(long)]
+        signature: String,
+
+        /// Credential ID for authorization
+        #[arg(long)]
+        credential_id: String,
+
+        /// Federation name
+        #[arg(long)]
+        federation: String,
+    },
+
+    /// Cancel a job
+    CancelJob {
+        /// DID identifier
+        #[arg(long)]
+        did: String,
+
+        /// Authentication challenge
+        #[arg(long)]
+        challenge: String,
+
+        /// Signature for authentication
+        #[arg(long)]
+        signature: String,
+
+        /// Credential ID for authorization
+        #[arg(long)]
+        credential_id: String,
+
+        /// Job ID
+        #[arg(long)]
+        job_id: String,
+
+        /// Federation name
+        #[arg(long)]
+        federation: String,
+    },
+
+    /// Get job logs
+    GetJobLogs {
+        /// DID identifier
+        #[arg(long)]
+        did: String,
+
+        /// Authentication challenge
+        #[arg(long)]
+        challenge: String,
+
+        /// Signature for authentication
+        #[arg(long)]
+        signature: String,
+
+        /// Credential ID for authorization
+        #[arg(long)]
+        credential_id: String,
+
+        /// Job ID
+        #[arg(long)]
+        job_id: String,
+
+        /// Federation name
+        #[arg(long)]
+        federation: String,
+    },
+
+    /// Upload job outputs to storage
+    UploadJobOutputs {
+        /// DID identifier
+        #[arg(long)]
+        did: String,
+
+        /// Authentication challenge
+        #[arg(long)]
+        challenge: String,
+
+        /// Signature for authentication
+        #[arg(long)]
+        signature: String,
+
+        /// Credential ID for authorization
+        #[arg(long)]
+        credential_id: String,
+
+        /// Job ID
+        #[arg(long)]
+        job_id: String,
+
+        /// Federation name
+        #[arg(long)]
+        federation: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -841,17 +1111,29 @@ async fn main() -> Result<()> {
     
     match cli.command {
         Commands::Status {} => {
-            println!("Node status: OK");
+            println!("ICN Network CLI - Status OK");
         },
         Commands::Network { server } => {
-            println!("Testing network connectivity to {}", server);
-            println!("Network test completed successfully");
+            handle_network_command(&server).await?;
         },
-        Commands::Storage { command } => handle_storage_command(command).await?,
-        Commands::Governance { command } => handle_governance_command(command).await?,
-        Commands::GovernedStorage { command } => handle_governed_storage_command(command).await?,
-        Commands::IdentityStorage { command } => handle_identity_storage_command(command).await?,
-        Commands::CredentialStorage { command } => handle_credential_storage_command(command).await?,
+        Commands::Storage { command } => {
+            handle_storage_command(command).await?;
+        },
+        Commands::Governance { command } => {
+            handle_governance_command(command).await?;
+        },
+        Commands::GovernedStorage { command } => {
+            handle_governed_storage_command(command).await?;
+        },
+        Commands::IdentityStorage { command } => {
+            handle_identity_storage_command(command).await?;
+        },
+        Commands::CredentialStorage { command } => {
+            handle_credential_storage_command(command).await?;
+        },
+        Commands::Compute(compute_cmd) => {
+            handle_compute_command(compute_cmd).await
+        },
     }
     
     Ok(())
@@ -1935,4 +2217,624 @@ async fn handle_credential_storage_command(command: CredentialStorageCommands) -
     }
     
     Ok(())
+}
+
+async fn handle_compute_command(command: ComputeCommands) -> Result<()> {
+    match command {
+        ComputeCommands::Init { workspace, federation } => {
+            // Create a mock identity provider and credential provider for demo
+            let mock_identity = identity_storage::MockIdentityProvider::new();
+            let mock_credential = credential_storage::MockCredentialProvider::new();
+            
+            // Create an identity storage service for authentication
+            let identity_storage = identity_storage::IdentityStorageService::new(
+                PathBuf::from(&workspace),
+                federation.clone(),
+                3600, // Default cache TTL
+                mock_identity,
+            );
+            
+            // Create a credential storage service for authorization
+            let credential_storage = credential_storage::CredentialStorageService::new(
+                identity_storage.clone(),
+                mock_credential,
+            );
+            
+            // Create and initialize the compute storage service
+            let compute_service = compute::ComputeStorageService::new(
+                PathBuf::from(&workspace),
+                federation,
+                identity_storage,
+                credential_storage,
+            );
+            
+            compute_service.init()?;
+            Ok(())
+        },
+
+        ComputeCommands::SubmitJob {
+            did,
+            challenge,
+            signature,
+            credential_id,
+            name,
+            command,
+            args,
+            cpu,
+            memory,
+            gpu_memory,
+            input_files,
+            output_files,
+            federation,
+        } => {
+            // Create a mock identity provider and credential provider for demo
+            let mut mock_identity = identity_storage::MockIdentityProvider::new();
+            let mut mock_credential = credential_storage::MockCredentialProvider::new();
+            
+            // Set up mock identity
+            mock_identity.add_did(&did, "mock_public_key");
+            mock_identity.set_verification_result(
+                &did, 
+                &challenge, 
+                &signature, 
+                identity_storage::DIDVerificationStatus::Verified
+            );
+            
+            // Set up mock credential
+            let mock_credential_data = credential_storage::VerifiableCredential {
+                id: credential_id.clone(),
+                types: vec!["VerifiableCredential".to_string(), "ComputeCredential".to_string()],
+                issuer: "did:icn:issuer".to_string(),
+                issuance_date: "2023-01-01T00:00:00Z".to_string(),
+                expiration_date: Some("2030-01-01T00:00:00Z".to_string()),
+                subject: credential_storage::CredentialSubject {
+                    id: did.clone(),
+                    role: Some("DataScientist".to_string()),
+                    permissions: Some(vec!["data_processing".to_string(), "compute".to_string()]),
+                    attributes: HashMap::new(),
+                },
+                proof: credential_storage::CredentialProof {
+                    type_: "Ed25519Signature2020".to_string(),
+                    created: "2023-01-01T00:00:00Z".to_string(),
+                    verification_method: "did:icn:issuer#key-1".to_string(),
+                    proof_purpose: "assertionMethod".to_string(),
+                    jws: "mock_signature".to_string(),
+                },
+            };
+            mock_credential.add_credential(credential_id.clone(), mock_credential_data);
+            mock_credential.set_verification_result(
+                &did, 
+                &credential_id, 
+                credential_storage::CredentialVerificationStatus::Verified
+            );
+            
+            // Create storage services
+            let identity_storage = identity_storage::IdentityStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation.clone(),
+                3600,
+                mock_identity,
+            );
+            
+            let credential_storage = credential_storage::CredentialStorageService::new(
+                identity_storage.clone(),
+                mock_credential,
+            );
+            
+            // Create compute service
+            let compute_service = compute::ComputeStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation,
+                identity_storage,
+                credential_storage,
+            );
+            
+            // Parse args
+            let args_vec: Vec<String> = args.split(',').map(|s| s.to_string()).collect();
+            
+            // Parse input files
+            let input_files_map: HashMap<String, String> = input_files
+                .split(',')
+                .filter_map(|pair| {
+                    let parts: Vec<&str> = pair.split(':').collect();
+                    if parts.len() == 2 {
+                        Some((parts[0].to_string(), parts[1].to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            
+            // Parse output files
+            let output_files_map: HashMap<String, String> = output_files
+                .split(',')
+                .filter_map(|pair| {
+                    let parts: Vec<&str> = pair.split(':').collect();
+                    if parts.len() == 2 {
+                        Some((parts[0].to_string(), parts[1].to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            
+            // Create resource requirements
+            let resources = compute::ResourceRequirements {
+                cpu_cores: cpu,
+                memory_mb: memory,
+                gpu_memory_mb: gpu_memory,
+            };
+            
+            // Submit job
+            let job_id = compute_service.submit_job(
+                &did,
+                &challenge,
+                &signature,
+                &credential_id,
+                &name,
+                &command,
+                args_vec,
+                resources,
+                input_files_map,
+                output_files_map,
+            ).await?;
+            
+            println!("Job submitted successfully. ID: {}", job_id);
+            Ok(())
+        },
+
+        ComputeCommands::ProcessData {
+            did,
+            challenge,
+            signature,
+            credential_id,
+            name,
+            command,
+            args,
+            input_files,
+            output_files,
+            federation,
+        } => {
+            // Create a mock identity provider and credential provider for demo
+            let mut mock_identity = identity_storage::MockIdentityProvider::new();
+            let mut mock_credential = credential_storage::MockCredentialProvider::new();
+            
+            // Set up mock identity
+            mock_identity.add_did(&did, "mock_public_key");
+            mock_identity.set_verification_result(
+                &did, 
+                &challenge, 
+                &signature, 
+                identity_storage::DIDVerificationStatus::Verified
+            );
+            
+            // Set up mock credential
+            let mock_credential_data = credential_storage::VerifiableCredential {
+                id: credential_id.clone(),
+                types: vec!["VerifiableCredential".to_string(), "ComputeCredential".to_string()],
+                issuer: "did:icn:issuer".to_string(),
+                issuance_date: "2023-01-01T00:00:00Z".to_string(),
+                expiration_date: Some("2030-01-01T00:00:00Z".to_string()),
+                subject: credential_storage::CredentialSubject {
+                    id: did.clone(),
+                    role: Some("DataScientist".to_string()),
+                    permissions: Some(vec!["data_processing".to_string(), "compute".to_string()]),
+                    attributes: HashMap::new(),
+                },
+                proof: credential_storage::CredentialProof {
+                    type_: "Ed25519Signature2020".to_string(),
+                    created: "2023-01-01T00:00:00Z".to_string(),
+                    verification_method: "did:icn:issuer#key-1".to_string(),
+                    proof_purpose: "assertionMethod".to_string(),
+                    jws: "mock_signature".to_string(),
+                },
+            };
+            mock_credential.add_credential(credential_id.clone(), mock_credential_data);
+            mock_credential.set_verification_result(
+                &did, 
+                &credential_id, 
+                credential_storage::CredentialVerificationStatus::Verified
+            );
+            
+            // Create storage services
+            let identity_storage = identity_storage::IdentityStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation.clone(),
+                3600,
+                mock_identity,
+            );
+            
+            let credential_storage = credential_storage::CredentialStorageService::new(
+                identity_storage.clone(),
+                mock_credential,
+            );
+            
+            // Create compute service
+            let compute_service = compute::ComputeStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation,
+                identity_storage,
+                credential_storage,
+            );
+            
+            // Parse args
+            let args_vec: Vec<String> = args.split(',').map(|s| s.to_string()).collect();
+            
+            // Parse input files
+            let input_files_map: HashMap<String, String> = input_files
+                .split(',')
+                .filter_map(|pair| {
+                    let parts: Vec<&str> = pair.split(':').collect();
+                    if parts.len() == 2 {
+                        Some((parts[0].to_string(), parts[1].to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            
+            // Parse output files
+            let output_files_map: HashMap<String, String> = output_files
+                .split(',')
+                .filter_map(|pair| {
+                    let parts: Vec<&str> = pair.split(':').collect();
+                    if parts.len() == 2 {
+                        Some((parts[0].to_string(), parts[1].to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            
+            // Process data
+            let job_id = compute_service.process_data(
+                &did,
+                &challenge,
+                &signature,
+                &credential_id,
+                &name,
+                &command,
+                args_vec,
+                input_files_map,
+                output_files_map,
+            ).await?;
+            
+            println!("Data processing job submitted successfully. ID: {}", job_id);
+            Ok(())
+        },
+
+        ComputeCommands::GetJobStatus {
+            did,
+            challenge,
+            signature,
+            credential_id,
+            job_id,
+            federation,
+        } => {
+            // Create mock providers with the necessary setups
+            let mut mock_identity = identity_storage::MockIdentityProvider::new();
+            let mut mock_credential = credential_storage::MockCredentialProvider::new();
+            
+            // Set up mock identity and credential verification
+            mock_identity.add_did(&did, "mock_public_key");
+            mock_identity.set_verification_result(
+                &did, 
+                &challenge, 
+                &signature, 
+                identity_storage::DIDVerificationStatus::Verified
+            );
+            
+            // Create services
+            let identity_storage = identity_storage::IdentityStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation.clone(),
+                3600,
+                mock_identity,
+            );
+            
+            let credential_storage = credential_storage::CredentialStorageService::new(
+                identity_storage.clone(),
+                mock_credential,
+            );
+            
+            let compute_service = compute::ComputeStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation,
+                identity_storage,
+                credential_storage,
+            );
+            
+            // Get job status
+            let status = compute_service.get_job_status(
+                &did,
+                &challenge,
+                &signature,
+                &credential_id,
+                &job_id,
+            )?;
+            
+            println!("Job Status: {:?}", status);
+            Ok(())
+        },
+
+        ComputeCommands::GetJob {
+            did,
+            challenge,
+            signature,
+            credential_id,
+            job_id,
+            federation,
+        } => {
+            // Create mock providers with the necessary setups
+            let mut mock_identity = identity_storage::MockIdentityProvider::new();
+            let mut mock_credential = credential_storage::MockCredentialProvider::new();
+            
+            // Set up mock identity and credential verification
+            mock_identity.add_did(&did, "mock_public_key");
+            mock_identity.set_verification_result(
+                &did, 
+                &challenge, 
+                &signature, 
+                identity_storage::DIDVerificationStatus::Verified
+            );
+            
+            // Create services
+            let identity_storage = identity_storage::IdentityStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation.clone(),
+                3600,
+                mock_identity,
+            );
+            
+            let credential_storage = credential_storage::CredentialStorageService::new(
+                identity_storage.clone(),
+                mock_credential,
+            );
+            
+            let compute_service = compute::ComputeStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation,
+                identity_storage,
+                credential_storage,
+            );
+            
+            // Get job
+            let job = compute_service.get_job(
+                &did,
+                &challenge,
+                &signature,
+                &credential_id,
+                &job_id,
+            )?;
+            
+            println!("Job Details:");
+            println!("  ID:     {}", job.id);
+            println!("  Name:   {}", job.name);
+            println!("  Status: {:?}", job.status);
+            println!("  User:   {}", job.user_did);
+            println!("  Command: {} {}", job.command, job.args.join(" "));
+            println!("  Created: {}", job.created_at);
+            println!("  Updated: {}", job.updated_at);
+            Ok(())
+        },
+
+        ComputeCommands::ListJobs {
+            did,
+            challenge,
+            signature,
+            credential_id,
+            federation,
+        } => {
+            // Create mock providers with the necessary setups
+            let mut mock_identity = identity_storage::MockIdentityProvider::new();
+            let mut mock_credential = credential_storage::MockCredentialProvider::new();
+            
+            // Set up mock identity and credential verification
+            mock_identity.add_did(&did, "mock_public_key");
+            mock_identity.set_verification_result(
+                &did, 
+                &challenge, 
+                &signature, 
+                identity_storage::DIDVerificationStatus::Verified
+            );
+            
+            // Create services
+            let identity_storage = identity_storage::IdentityStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation.clone(),
+                3600,
+                mock_identity,
+            );
+            
+            let credential_storage = credential_storage::CredentialStorageService::new(
+                identity_storage.clone(),
+                mock_credential,
+            );
+            
+            let compute_service = compute::ComputeStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation,
+                identity_storage,
+                credential_storage,
+            );
+            
+            // List jobs
+            let jobs = compute_service.list_jobs(
+                &did,
+                &challenge,
+                &signature,
+                &credential_id,
+            )?;
+            
+            println!("Jobs for user {}:", did);
+            for job in jobs {
+                println!("  {}: {} (Status: {:?})", job.id, job.name, job.status);
+            }
+            
+            Ok(())
+        },
+
+        ComputeCommands::CancelJob {
+            did,
+            challenge,
+            signature,
+            credential_id,
+            job_id,
+            federation,
+        } => {
+            // Create mock providers with the necessary setups
+            let mut mock_identity = identity_storage::MockIdentityProvider::new();
+            let mut mock_credential = credential_storage::MockCredentialProvider::new();
+            
+            // Set up mock identity and credential verification
+            mock_identity.add_did(&did, "mock_public_key");
+            mock_identity.set_verification_result(
+                &did, 
+                &challenge, 
+                &signature, 
+                identity_storage::DIDVerificationStatus::Verified
+            );
+            
+            // Create services
+            let identity_storage = identity_storage::IdentityStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation.clone(),
+                3600,
+                mock_identity,
+            );
+            
+            let credential_storage = credential_storage::CredentialStorageService::new(
+                identity_storage.clone(),
+                mock_credential,
+            );
+            
+            let compute_service = compute::ComputeStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation,
+                identity_storage,
+                credential_storage,
+            );
+            
+            // Cancel job
+            compute_service.cancel_job(
+                &did,
+                &challenge,
+                &signature,
+                &credential_id,
+                &job_id,
+            )?;
+            
+            println!("Job {} cancelled successfully.", job_id);
+            Ok(())
+        },
+
+        ComputeCommands::GetJobLogs {
+            did,
+            challenge,
+            signature,
+            credential_id,
+            job_id,
+            federation,
+        } => {
+            // Create mock providers with the necessary setups
+            let mut mock_identity = identity_storage::MockIdentityProvider::new();
+            let mut mock_credential = credential_storage::MockCredentialProvider::new();
+            
+            // Set up mock identity and credential verification
+            mock_identity.add_did(&did, "mock_public_key");
+            mock_identity.set_verification_result(
+                &did, 
+                &challenge, 
+                &signature, 
+                identity_storage::DIDVerificationStatus::Verified
+            );
+            
+            // Create services
+            let identity_storage = identity_storage::IdentityStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation.clone(),
+                3600,
+                mock_identity,
+            );
+            
+            let credential_storage = credential_storage::CredentialStorageService::new(
+                identity_storage.clone(),
+                mock_credential,
+            );
+            
+            let compute_service = compute::ComputeStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation,
+                identity_storage,
+                credential_storage,
+            );
+            
+            // Get job logs
+            let logs = compute_service.get_job_logs(
+                &did,
+                &challenge,
+                &signature,
+                &credential_id,
+                &job_id,
+            )?;
+            
+            println!("Logs for job {}:", job_id);
+            println!("{}", logs);
+            Ok(())
+        },
+
+        ComputeCommands::UploadJobOutputs {
+            did,
+            challenge,
+            signature,
+            credential_id,
+            job_id,
+            federation,
+        } => {
+            // Create mock providers with the necessary setups
+            let mut mock_identity = identity_storage::MockIdentityProvider::new();
+            let mut mock_credential = credential_storage::MockCredentialProvider::new();
+            
+            // Set up mock identity and credential verification
+            mock_identity.add_did(&did, "mock_public_key");
+            mock_identity.set_verification_result(
+                &did, 
+                &challenge, 
+                &signature, 
+                identity_storage::DIDVerificationStatus::Verified
+            );
+            
+            // Create services
+            let identity_storage = identity_storage::IdentityStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation.clone(),
+                3600,
+                mock_identity,
+            );
+            
+            let credential_storage = credential_storage::CredentialStorageService::new(
+                identity_storage.clone(),
+                mock_credential,
+            );
+            
+            let compute_service = compute::ComputeStorageService::new(
+                PathBuf::from("compute_workspace"),
+                federation,
+                identity_storage,
+                credential_storage,
+            );
+            
+            // Upload job outputs
+            compute_service.upload_job_outputs(
+                &did,
+                &challenge,
+                &signature,
+                &credential_id,
+                &job_id,
+            ).await?;
+            
+            println!("Job outputs uploaded successfully.");
+            Ok(())
+        },
+    }
 } 

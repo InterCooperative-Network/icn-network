@@ -263,3 +263,129 @@ Planned extensions for the Credential-Based Storage System include:
 ## Conclusion
 
 The Credential-Based Storage System represents a significant advancement in the ICN Network's authorization capabilities, enabling true attribute-based access control that goes beyond simple identity verification. By leveraging verifiable credentials, we provide a powerful mechanism for implementing sophisticated security policies that match real-world organizational structures and roles. This enhancement further strengthens the ICN Network's position as a comprehensive solution for secure, decentralized data management. 
+
+## ICN Network Distributed Compute System
+
+The ICN Network Distributed Compute System represents a significant advancement in distributed computing by seamlessly integrating with our identity and credential frameworks for secure, democratically governed computation.
+
+### System Overview
+
+The Distributed Compute System allows federation members to:
+
+- **Execute computations** on data stored within the secure storage system
+- **Maintain security context** throughout the entire data lifecycle
+- **Apply governance policies** to compute resources and operations
+- **Enforce credential verification** for all compute operations
+- **Track provenance** of data and computational results
+
+By building on top of our existing identity-integrated and credential-based storage systems, the Distributed Compute System inherits all security properties and governance controls, ensuring that compute operations are subject to the same democratically determined policies as data storage.
+
+### Core Components
+
+The system consists of several key components:
+
+1. **ComputeJob Structure**: Represents a computational task with clear specifications:
+
+```rust
+struct ComputeJob {
+    id: String,
+    user_did: String,
+    name: String,
+    command: String,
+    args: Vec<String>,
+    resource_requirements: ResourceRequirements,
+    input_files: HashMap<String, String>,
+    output_files: HashMap<String, String>,
+    status: ComputeJobStatus,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+```
+
+2. **ResourceRequirements Structure**: Defines the computational resources needed:
+
+```rust
+struct ResourceRequirements {
+    cpu_cores: u32,
+    memory_mb: u32,
+    gpu_memory_mb: Option<u32>,
+}
+```
+
+3. **ComputeStorageService**: Integrates compute operations with secure storage:
+
+```rust
+struct ComputeStorageService<I: IdentityProvider, C: CredentialProvider> {
+    workspace_dir: PathBuf,
+    federation_name: String,
+    identity_storage: IdentityStorageService<I>,
+    credential_storage: CredentialStorageService<I, C>,
+    jobs: RwLock<HashMap<String, ComputeJob>>,
+}
+```
+
+4. **Job Execution Environment**: Provides isolated execution environments for compute tasks, preventing interference between different users' jobs.
+
+### CLI Commands
+
+The system provides comprehensive CLI commands for managing compute operations:
+
+- **init**: Initializes the compute environment
+  ```
+  icn-cli compute init --workspace ./compute_workspace --federation demo-fed
+  ```
+
+- **submit-job**: Submits a raw compute job with fine-grained control
+  ```
+  icn-cli compute submit-job --did "DID" --challenge "CHALLENGE" --signature "SIG" 
+    --credential-id "CRED_ID" --name "JOB_NAME" --command "CMD" --args "ARG1,ARG2" 
+    --cpu 2 --memory 1024 --input-files "SRC:DEST" --output-files "SRC:DEST"
+  ```
+
+- **process-data**: Higher-level command for data processing workloads
+  ```
+  icn-cli compute process-data --did "DID" --credential-id "CRED_ID" 
+    --name "JOB_NAME" --command "python3" --args "script.py,input.csv,output.txt" 
+    --input-files "input.csv:input.csv,script.py:script.py" 
+    --output-files "output.txt:results/output.txt"
+  ```
+
+- **get-job-status/get-job/list-jobs**: Commands for job monitoring and management
+- **cancel-job**: Cancels a running job
+- **get-job-logs**: Retrieves execution logs
+- **upload-job-outputs**: Uploads job results to secure storage
+
+### Security Features
+
+The Distributed Compute System incorporates several security mechanisms:
+
+1. **DID-based Authentication**: All compute operations require valid DIDs with proper signatures
+2. **Credential Verification**: Compute access requires appropriate verifiable credentials
+3. **Isolated Execution**: Jobs run in isolated environments to prevent interference
+4. **Governance Integration**: Compute resources are subject to democratic governance
+5. **Secure Data Transfer**: All data movement between storage and compute environments maintains security context
+6. **Audit Logging**: Comprehensive logging of all compute operations for accountability
+
+### Demo Script
+
+A demonstration script (`examples/compute_demo.sh`) showcases the system's capabilities, including:
+
+1. Setting up the compute environment
+2. Creating and registering DID documents
+3. Issuing and verifying compute credentials
+4. Storing input data and processing scripts
+5. Submitting compute jobs
+6. Monitoring job execution
+7. Retrieving and verifying results
+
+### Future Extensions
+
+1. **Distributed Compute Scheduling**: Efficiently distribute jobs across multiple compute nodes
+2. **Federated Learning Support**: Enable privacy-preserving machine learning across federations
+3. **Zero-Knowledge Compute**: Integrate zero-knowledge proofs for verified computation
+4. **Compute Marketplace**: Allow federations to share and trade compute resources
+5. **Real-time Collaboration**: Enable collaborative compute sessions for interactive data analysis
+
+### Conclusion
+
+The ICN Network Distributed Compute System represents a significant advancement in secure, democratically governed distributed computing. By integrating with our identity and credential frameworks, it ensures that computation maintains the same security properties and governance controls as data storage, creating a comprehensive solution for secure, collaborative data processing in a federated environment. 
