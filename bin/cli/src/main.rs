@@ -13,6 +13,9 @@ use governance::{GovernanceService, ProposalType, ProposalStatus, Vote};
 mod governance_storage;
 use governance_storage::{GovernanceStorageService, StoragePolicyType};
 
+mod identity_storage;
+use identity_storage::{IdentityStorageService, MockIdentityProvider, DidVerificationStatus};
+
 #[derive(Parser, Debug)]
 #[clap(author, version, about = "ICN Command Line Interface")]
 struct Cli {
@@ -52,6 +55,12 @@ enum Commands {
     GovernedStorage {
         #[clap(subcommand)]
         command: GovernedStorageCommands,
+    },
+
+    /// Identity-integrated storage operations
+    IdentityStorage {
+        #[clap(subcommand)]
+        command: IdentityStorageCommands,
     },
 }
 
@@ -458,6 +467,162 @@ enum GovernedStorageCommands {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum IdentityStorageCommands {
+    /// Initialize identity storage environment
+    Init {
+        /// Storage directory path
+        #[clap(short, long, default_value = "./data")]
+        path: String,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+        
+        /// Authentication cache TTL in seconds
+        #[clap(short, long, default_value = "3600")]
+        cache_ttl: u64,
+    },
+    
+    /// Register a new DID document for storage access
+    RegisterDid {
+        /// DID identifier (did:icn:...)
+        #[clap(short, long)]
+        did: String,
+        
+        /// DID document file path (JSON)
+        #[clap(short, long)]
+        document: String,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// Store a file with DID authentication
+    StoreFile {
+        /// DID identifier (did:icn:...)
+        #[clap(short, long)]
+        did: String,
+        
+        /// Authentication challenge (for signing)
+        #[clap(short, long)]
+        challenge: String,
+        
+        /// Signature of the challenge
+        #[clap(short, long)]
+        signature: String,
+        
+        /// File to store
+        #[clap(short, long)]
+        file: String,
+        
+        /// Storage key (defaults to filename)
+        #[clap(short, long)]
+        key: Option<String>,
+        
+        /// Enable encryption for this file
+        #[clap(short, long)]
+        encrypted: bool,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// Retrieve a file with DID authentication
+    GetFile {
+        /// DID identifier (did:icn:...)
+        #[clap(short, long)]
+        did: String,
+        
+        /// Authentication challenge (for signing)
+        #[clap(short, long)]
+        challenge: String,
+        
+        /// Signature of the challenge
+        #[clap(short, long)]
+        signature: String,
+        
+        /// Storage key to retrieve
+        #[clap(short, long)]
+        key: String,
+        
+        /// Output file path (defaults to key name)
+        #[clap(short, long)]
+        output: Option<String>,
+        
+        /// Specific version to retrieve (defaults to latest)
+        #[clap(short, long)]
+        version: Option<String>,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// List files with DID authentication
+    ListFiles {
+        /// DID identifier (did:icn:...)
+        #[clap(short, long)]
+        did: String,
+        
+        /// Authentication challenge (for signing)
+        #[clap(short, long)]
+        challenge: String,
+        
+        /// Signature of the challenge
+        #[clap(short, long)]
+        signature: String,
+        
+        /// Filter by prefix
+        #[clap(short, long)]
+        prefix: Option<String>,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// Create a DID to Member ID mapping
+    MapDidToMember {
+        /// DID identifier (did:icn:...)
+        #[clap(short, long)]
+        did: String,
+        
+        /// Member ID
+        #[clap(short, long)]
+        member_id: String,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// Create an access control policy with DID authentication
+    CreateAccessPolicy {
+        /// DID identifier (did:icn:...)
+        #[clap(short, long)]
+        did: String,
+        
+        /// Authentication challenge (for signing)
+        #[clap(short, long)]
+        challenge: String,
+        
+        /// Signature of the challenge
+        #[clap(short, long)]
+        signature: String,
+        
+        /// JSON file containing access permissions
+        #[clap(short, long)]
+        policy_file: String,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -482,6 +647,7 @@ async fn main() -> Result<()> {
         Commands::Storage { command } => handle_storage_command(command).await?,
         Commands::Governance { command } => handle_governance_command(command).await?,
         Commands::GovernedStorage { command } => handle_governed_storage_command(command).await?,
+        Commands::IdentityStorage { command } => handle_identity_storage_command(command).await?,
     }
     
     Ok(())
@@ -1180,6 +1346,240 @@ async fn handle_governed_storage_command(command: GovernedStorageCommands) -> Re
             
             // Pretty-print the schema
             println!("{}", serde_json::to_string_pretty(&schema)?);
+        },
+    }
+    
+    Ok(())
+}
+
+async fn handle_identity_storage_command(command: IdentityStorageCommands) -> Result<()> {
+    match command {
+        IdentityStorageCommands::Init { path, federation, cache_ttl } => {
+            println!("Initializing identity storage at {} for federation {} (cache TTL: {}s)", 
+                path, federation, cache_ttl);
+            
+            // Create path if it doesn't exist
+            let path = PathBuf::from(path);
+            tokio::fs::create_dir_all(&path).await?;
+            
+            // Initialize storage service (this is just for initialization)
+            // In a real implementation, we would store some configuration
+            let _ = StorageService::new(&path).await?;
+            
+            println!("Identity storage environment initialized successfully");
+        },
+        IdentityStorageCommands::RegisterDid { did, document, federation } => {
+            println!("Registering DID {} in federation {}", did, federation);
+            
+            // Read the DID document
+            let document_data = tokio::fs::read_to_string(&document).await?;
+            let did_document: identity_storage::DidDocument = serde_json::from_str(&document_data)?;
+            
+            // In a real implementation, we would store this in a DID registry
+            // For now, we just verify the document
+            if did_document.id != did {
+                return Err(anyhow::anyhow!("DID in document does not match provided DID"));
+            }
+            
+            println!("DID registered successfully");
+        },
+        IdentityStorageCommands::StoreFile { did, challenge, signature, file, key, encrypted, federation } => {
+            let key = key.unwrap_or_else(|| file.split('/').last().unwrap_or(&file).to_string());
+            println!("Storing file {} with key {} as DID {} in federation {} (encryption: {})", 
+                file, key, did, federation, if encrypted { "enabled" } else { "disabled" });
+            
+            // In a real implementation, we would use a real identity provider
+            // For now, we use a mock that accepts any valid DID
+            let mut provider = MockIdentityProvider::new();
+            
+            // Create a dummy DID document for testing
+            let document = identity_storage::DidDocument {
+                id: did.clone(),
+                controller: None,
+                verification_method: vec![],
+                authentication: vec![],
+                service: vec![],
+            };
+            provider.add_did_document(did.clone(), document);
+            
+            // Initialize identity storage service
+            let mut service = IdentityStorageService::new(
+                &federation,
+                "./data",
+                provider,
+                3600, // 1 hour cache TTL
+            ).await?;
+            
+            // Store the file with DID authentication
+            service.store_file(
+                &did,
+                challenge.as_bytes(),
+                signature.as_bytes(),
+                &file,
+                &key,
+                encrypted,
+            ).await?;
+            
+            println!("File stored successfully");
+        },
+        IdentityStorageCommands::GetFile { did, challenge, signature, key, output, version, federation } => {
+            let output = output.unwrap_or_else(|| key.clone());
+            println!("Retrieving key {} as DID {} from federation {} to {}{}", 
+                key, did, federation, output, 
+                if let Some(ver) = &version { format!(" (version: {})", ver) } else { String::new() });
+            
+            // In a real implementation, we would use a real identity provider
+            // For now, we use a mock that accepts any valid DID
+            let mut provider = MockIdentityProvider::new();
+            
+            // Create a dummy DID document for testing
+            let document = identity_storage::DidDocument {
+                id: did.clone(),
+                controller: None,
+                verification_method: vec![],
+                authentication: vec![],
+                service: vec![],
+            };
+            provider.add_did_document(did.clone(), document);
+            
+            // Initialize identity storage service
+            let mut service = IdentityStorageService::new(
+                &federation,
+                "./data",
+                provider,
+                3600, // 1 hour cache TTL
+            ).await?;
+            
+            // Retrieve the file with DID authentication
+            service.retrieve_file(
+                &did,
+                challenge.as_bytes(),
+                signature.as_bytes(),
+                &key,
+                &output,
+                version.as_deref(),
+            ).await?;
+            
+            println!("File retrieved successfully");
+        },
+        IdentityStorageCommands::ListFiles { did, challenge, signature, prefix, federation } => {
+            println!("Listing files in federation {} accessible by DID {}{}", 
+                federation, did,
+                if let Some(pre) = &prefix { format!(" with prefix {}", pre) } else { String::new() });
+            
+            // In a real implementation, we would use a real identity provider
+            // For now, we use a mock that accepts any valid DID
+            let mut provider = MockIdentityProvider::new();
+            
+            // Create a dummy DID document for testing
+            let document = identity_storage::DidDocument {
+                id: did.clone(),
+                controller: None,
+                verification_method: vec![],
+                authentication: vec![],
+                service: vec![],
+            };
+            provider.add_did_document(did.clone(), document);
+            
+            // Initialize identity storage service
+            let mut service = IdentityStorageService::new(
+                &federation,
+                "./data",
+                provider,
+                3600, // 1 hour cache TTL
+            ).await?;
+            
+            // List files with DID authentication
+            let files = service.list_files(
+                &did,
+                challenge.as_bytes(),
+                signature.as_bytes(),
+                prefix.as_deref(),
+            ).await?;
+            
+            if files.is_empty() {
+                println!("No files found");
+            } else {
+                println!("Found {} files:", files.len());
+                println!("{:<30} {:<20} {:<10} {:<20}", "Key", "Current Version", "Versions", "Last Modified");
+                println!("{:-<30} {:-<20} {:-<10} {:-<20}", "", "", "", "");
+                
+                for file in files {
+                    // Extract the key from metadata key (remove "meta:" prefix)
+                    let key = file.filename;
+                    
+                    // Format timestamp as ISO date
+                    let modified = chrono::DateTime::from_timestamp(file.modified_at as i64, 0)
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    
+                    println!("{:<30} {:<20} {:<10} {:<20}", 
+                        key, 
+                        &file.current_version[0..8], // Show first 8 chars of version ID
+                        file.versions.len(),
+                        modified
+                    );
+                }
+            }
+        },
+        IdentityStorageCommands::MapDidToMember { did, member_id, federation } => {
+            println!("Mapping DID {} to member ID {} in federation {}", did, member_id, federation);
+            
+            // In a real implementation, we would use a real identity provider
+            // For now, we use a mock
+            let provider = MockIdentityProvider::new();
+            
+            // Initialize identity storage service
+            let mut service = IdentityStorageService::new(
+                &federation,
+                "./data",
+                provider,
+                3600, // 1 hour cache TTL
+            ).await?;
+            
+            // Update DID to member ID mapping
+            service.update_did_access_mapping(&[(did, member_id)]).await?;
+            
+            println!("DID to member ID mapping created successfully");
+        },
+        IdentityStorageCommands::CreateAccessPolicy { did, challenge, signature, policy_file, federation } => {
+            println!("Creating access policy as DID {} in federation {}", did, federation);
+            
+            // Read the policy file
+            let policy_data = tokio::fs::read_to_string(&policy_file).await?;
+            let access_permissions: Vec<governance_storage::AccessPermission> = serde_json::from_str(&policy_data)?;
+            
+            // In a real implementation, we would use a real identity provider
+            // For now, we use a mock that accepts any valid DID
+            let mut provider = MockIdentityProvider::new();
+            
+            // Create a dummy DID document for testing
+            let document = identity_storage::DidDocument {
+                id: did.clone(),
+                controller: None,
+                verification_method: vec![],
+                authentication: vec![],
+                service: vec![],
+            };
+            provider.add_did_document(did.clone(), document);
+            
+            // Initialize identity storage service
+            let mut service = IdentityStorageService::new(
+                &federation,
+                "./data",
+                provider,
+                3600, // 1 hour cache TTL
+            ).await?;
+            
+            // Create access policy with DID authentication
+            let proposal_id = service.create_did_access_policy(
+                &did,
+                challenge.as_bytes(),
+                signature.as_bytes(),
+                &access_permissions,
+            ).await?;
+            
+            println!("Access policy proposal created with ID: {}", proposal_id);
         },
     }
     

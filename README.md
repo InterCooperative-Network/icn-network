@@ -16,6 +16,7 @@ A comprehensive peer-to-peer networking solution for distributed applications, w
 - **Metrics and Monitoring**: Comprehensive metrics collection for network performance tracking
 - **End-to-End Encrypted Storage**: Versioned storage system with federation-based encryption and fine-grained access control
 - **Governance-Controlled Storage**: Democratic policy management for storage with access control and quotas
+- **Identity-Integrated Storage**: DID-based authentication and access control for secure data management
 
 ## Architecture Overview
 
@@ -26,7 +27,7 @@ The ICN Network employs a layered architecture:
 3. **Discovery Layer**: Provides peer discovery and service resolution
 4. **Messaging Layer**: Handles message exchange and prioritization
 5. **Governance Layer**: Enables democratic decision-making through proposals and voting
-6. **Storage Layer**: Provides secure, versioned, governed storage
+6. **Storage Layer**: Provides secure, versioned, governed storage with DID integration
 7. **Application Layer**: Domain-specific logic built on top of the network
 
 ## Authentication & Identity
@@ -42,6 +43,7 @@ did:icn:coopA:userX
 - **DID Resolution**: DIDs can be resolved via DHT or blockchain fallback
 - **Verification Methods**: Support for multiple key types (Ed25519, secp256k1)
 - **Credentials**: Verifiable credentials for authorization and attribute verification
+- **DID-Based Storage**: Authentication and access control using DIDs for storage operations
 
 ### Zero-Trust Authentication
 
@@ -111,6 +113,16 @@ The storage system is integrated with the governance system, allowing democratic
 - **Retention Policies**: Rules for version history management
 - **Replication Policies**: How data is replicated across storage nodes
 
+### Identity-Integrated Storage
+
+The Identity-Integrated Storage System combines governance-controlled policies with decentralized identity for authentication and access control:
+
+- **DID-Based Authentication**: Users authenticate using DIDs and cryptographic signatures
+- **Identity-to-Member Mapping**: DIDs are mapped to federation member IDs for policy enforcement
+- **Key Rotation Support**: Users can update their DID documents and keys while maintaining access
+- **Challenge-Response Authentication**: Secure authentication through challenge signing
+- **DID-Based Access Control**: Fine-grained control over who can access specific resources
+
 ### Usage via CLI
 
 ```bash
@@ -140,6 +152,12 @@ icn-cli governed-storage store-file --file document.pdf --member alice@example.o
 
 # Propose a new storage policy
 icn-cli governed-storage propose-policy --proposer alice@example.org --title "New Access Controls" --policy-type access-control --content-file policy.json
+
+# Register a DID for storage access
+icn-cli identity-storage register-did --did "did:icn:alice" --document alice_did.json
+
+# Store a file with DID authentication
+icn-cli identity-storage store-file --did "did:icn:alice" --challenge "timestamp=1621500000" --signature "alice_signature" --file secret.txt --encrypted
 ```
 
 ### Storage Implementation
@@ -152,6 +170,7 @@ The storage system implements:
 - **Secure Key Derivation**: Argon2id for password-based encryption
 - **Multiple Recipient Support**: Encrypting for multiple recipients without re-encrypting content
 - **Democratic Policy Enforcement**: Governance-based access control and quota management
+- **DID Authentication**: Cryptographic verification of DID control for storage operations
 
 ## Project Structure
 
@@ -198,6 +217,9 @@ cargo run --example icn_node -- --listen /ip4/0.0.0.0/tcp/9000
 
 # Run the governance-controlled storage demo
 ./examples/governed_storage_demo.sh
+
+# Run the identity-integrated storage demo
+./examples/identity_storage_demo.sh
 ```
 
 ## Testing
@@ -224,6 +246,7 @@ The project includes several demos:
 - **Federation Demo**: Shows cross-cooperative communication
 - **Storage Encryption Demo**: Demonstrates the secure storage capabilities
 - **Governed Storage Demo**: Shows governance-controlled storage policies
+- **Identity Storage Demo**: Demonstrates DID-based storage authentication and access control
 - **Integrated Demo**: Combines all features into a single application
 
 Run any demo using:
@@ -241,6 +264,7 @@ For more detailed documentation, see:
 - [WireGuard Integration](docs/networking/wireguard-integration.md) - WireGuard overlay network
 - [Secure Storage](docs/storage/secure-storage.md) - Encrypted federation-based storage
 - [Governance-Controlled Storage](docs/storage/governance-controlled-storage.md) - Democratic storage management
+- [Identity-Integrated Storage](docs/storage/identity-integrated-storage.md) - DID-based storage authentication
 - API Documentation (generate with `cargo doc --open`)
 
 ## Development Roadmap
@@ -248,7 +272,6 @@ For more detailed documentation, see:
 1. **Phase 1: Identity & Authentication**
    - Implement DID manager and resolver
    - Add DHT-based identity storage and retrieval
-   - Build authentication verification system
 
 2. **Phase 2: WireGuard Integration**
    - Create WireGuard configuration manager
