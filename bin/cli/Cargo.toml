@@ -13,6 +13,7 @@ icn-ledger = { path = "../../crates/ledger" }
 icn-governance = { path = "../../crates/governance" }
 icn-network = { path = "../../crates/network" }
 icn-apps = { path = "../../crates/apps" }
+icn-storage-system = { path = "../../crates/storage/icn-storage-system" }
 
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -20,6 +21,31 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4.4", features = ["derive"] }
+env_logger = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Time handling
+chrono = "0.4"
+
+# UUID generation
+uuid = { version = "1.4", features = ["v4"] }
+
+# Encryption
+chacha20poly1305 = { workspace = true }
+aes-gcm = { workspace = true }
+rand_core = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+
+# Key derivation and encoding
+base64 = "0.21"
+hkdf = "0.12"
+x25519-dalek = "2.0.0"
+argon2 = "0.5"
+
+# Password hashing
+pbkdf2 = "0.12"
 
 # TUI (Terminal User Interface)
 ratatui = "0.22"

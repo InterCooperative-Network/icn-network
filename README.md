@@ -14,6 +14,7 @@ A comprehensive peer-to-peer networking solution for distributed applications, w
 - **Reputation System**: Intelligent tracking of peer behavior with automatic banning of misbehaving nodes
 - **Priority Message Processing**: Smart message queue that prioritizes important messages and high-reputation peers
 - **Metrics and Monitoring**: Comprehensive metrics collection for network performance tracking
+- **End-to-End Encrypted Storage**: Versioned storage system with federation-based encryption and fine-grained access control
 
 ## Architecture Overview
 
@@ -73,6 +74,60 @@ Users authenticate using:
 - **Transport Negotiation**: Nodes negotiate optimal transport protocols (IPv6, QUIC, WebRTC)
 - **Protocol Discovery**: Services advertise supported protocols in DHT records
 - **Fallback Mechanisms**: Graceful degradation when preferred protocols are unavailable
+
+## Secure Storage System
+
+### Multi-Federation Encrypted Storage
+
+The ICN Network includes a secure, versioned storage system that supports both symmetric and asymmetric encryption:
+
+- **Federation-based Storage Isolation**: Separate storage environments with independent encryption
+- **Automatic Versioning**: Full version history with cryptographic verification
+- **End-to-End Encryption**: Multiple encryption options including ChaCha20Poly1305 and AES-GCM
+- **Recipient-specific Encryption**: Encrypt files for specific recipients using X25519 keypairs
+- **Key Management**: Secure key storage, federation key sharing, and key rotation
+- **Password-derived Keys**: Support for password-based encryption using Argon2 key derivation
+
+### Usage via CLI
+
+```bash
+# Initialize storage with encryption enabled
+icn-cli storage init --path ./data --encrypted
+
+# Generate federation encryption key
+icn-cli storage generate-key --output ./federation.key
+
+# Store encrypted file
+icn-cli storage put --file document.pdf --encrypted --federation finance
+
+# Retrieve encrypted file
+icn-cli storage get --key document.pdf --output ./retrieved.pdf --federation finance
+
+# Generate asymmetric key pair for recipient-specific encryption
+icn-cli storage generate-key-pair --output-dir ./my_keys
+
+# Encrypt file for specific recipients
+icn-cli storage encrypt-for --input sensitive.doc --output sensitive.enc --recipients "user1_pub.key,user2_pub.key"
+
+# Decrypt file with your private key
+icn-cli storage decrypt-with --input sensitive.enc --output decrypted.doc --private-key ./my_keys/private.key
+
+# Export federation key for sharing
+icn-cli storage export-key --federation finance --output finance_key.json
+
+# Import federation key
+icn-cli storage import-key --federation finance --key-file received_key.json
+```
+
+### Storage Implementation
+
+The storage system implements:
+
+- **Content Integrity Verification**: SHA-256 hashing with authenticated encryption
+- **Hybrid Encryption**: Public key encryption with symmetric content keys for efficiency
+- **Key Isolation**: Separate key stores with memory protection
+- **Secure Key Derivation**: Argon2id for password-based encryption
+- **Multiple Recipient Support**: Encrypting for multiple recipients without re-encrypting content
 
 ## Project Structure
 
@@ -152,6 +207,7 @@ For more detailed documentation, see:
 - [Network Architecture](crates/network/docs/ARCHITECTURE.md) - Details on the network design
 - [DID Implementation](docs/identity/did-implementation.md) - Details on the DID system
 - [WireGuard Integration](docs/networking/wireguard-integration.md) - WireGuard overlay network
+- [Secure Storage](docs/storage/secure-storage.md) - Encrypted federation-based storage
 - API Documentation (generate with `cargo doc --open`)
 
 ## Development Roadmap
@@ -175,6 +231,13 @@ For more detailed documentation, see:
    - Create federation registry
    - Implement cross-coop authentication
    - Add dynamic permission enforcement
+
+5. **Phase 5: Secure Storage System**
+   - Implement versioned storage with encryption
+   - Add federation-based isolation
+   - Enable secure key management
+   - Support recipient-specific encryption
+   - Add secure key sharing mechanisms
 
 ## License
 
