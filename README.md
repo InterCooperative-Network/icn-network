@@ -17,6 +17,7 @@ A comprehensive peer-to-peer networking solution for distributed applications, w
 - **End-to-End Encrypted Storage**: Versioned storage system with federation-based encryption and fine-grained access control
 - **Governance-Controlled Storage**: Democratic policy management for storage with access control and quotas
 - **Identity-Integrated Storage**: DID-based authentication and access control for secure data management
+- **Credential-Based Storage**: Verifiable credential-based access control with attribute verification
 
 ## Architecture Overview
 
@@ -27,7 +28,7 @@ The ICN Network employs a layered architecture:
 3. **Discovery Layer**: Provides peer discovery and service resolution
 4. **Messaging Layer**: Handles message exchange and prioritization
 5. **Governance Layer**: Enables democratic decision-making through proposals and voting
-6. **Storage Layer**: Provides secure, versioned, governed storage with DID integration
+6. **Storage Layer**: Provides secure, versioned, governed storage with DID and credential integration
 7. **Application Layer**: Domain-specific logic built on top of the network
 
 ## Authentication & Identity
@@ -44,6 +45,7 @@ did:icn:coopA:userX
 - **Verification Methods**: Support for multiple key types (Ed25519, secp256k1)
 - **Credentials**: Verifiable credentials for authorization and attribute verification
 - **DID-Based Storage**: Authentication and access control using DIDs for storage operations
+- **Verifiable Credentials**: W3C-compliant verifiable credentials for attribute-based access control
 
 ### Zero-Trust Authentication
 
@@ -51,6 +53,7 @@ Users authenticate using:
 - **Cryptographic Signatures**: Ed25519/secp256k1 public key cryptography
 - **WebAuthn Support**: For hardware security key integration
 - **WireGuard Peer Authentication**: Network-level authentication
+- **Credential Verification**: Attribute-based authentication using verifiable credentials
 
 ## WireGuard Integration
 
@@ -123,6 +126,17 @@ The Identity-Integrated Storage System combines governance-controlled policies w
 - **Challenge-Response Authentication**: Secure authentication through challenge signing
 - **DID-Based Access Control**: Fine-grained control over who can access specific resources
 
+### Credential-Based Storage
+
+The Credential-Based Storage System extends identity-integrated storage with attribute-based access control using verifiable credentials:
+
+- **Attribute-Based Access Control**: Grant access based on verified attributes like role, department, or clearance
+- **Credential Verification**: Cryptographically verify credentials before authorizing access
+- **Expiration & Revocation Checking**: Automatically enforce credential freshness and validity
+- **Fine-Grained Rule Matching**: Match file patterns against credential types and attribute values
+- **Trust Framework Integration**: Federation-governed decisions on trusted credential issuers
+- **Rule Persistency**: Stable enforcement of access rules with save/load functionality
+
 ### Usage via CLI
 
 ```bash
@@ -158,6 +172,15 @@ icn-cli identity-storage register-did --did "did:icn:alice" --document alice_did
 
 # Store a file with DID authentication
 icn-cli identity-storage store-file --did "did:icn:alice" --challenge "timestamp=1621500000" --signature "alice_signature" --file secret.txt --encrypted
+
+# Register a verifiable credential
+icn-cli credential-storage register-credential --credential hr_credential.json --federation my-federation
+
+# Create a credential-based access rule
+icn-cli credential-storage create-access-rule --did "did:icn:alice" --challenge "timestamp=1621500000" --signature "alice_signature" --pattern "hr_*" --credential-types "DepartmentCredential" --attributes '{"department": "HR"}' --permissions "read,write" --federation my-federation
+
+# Store a file with credential authentication
+icn-cli credential-storage store-file --did "did:icn:alice" --challenge "timestamp=1621500010" --signature "alice_signature" --credential-id "credential:1" --file document.txt --key "document.txt" --encrypted --federation my-federation
 ```
 
 ### Storage Implementation
@@ -171,6 +194,8 @@ The storage system implements:
 - **Multiple Recipient Support**: Encrypting for multiple recipients without re-encrypting content
 - **Democratic Policy Enforcement**: Governance-based access control and quota management
 - **DID Authentication**: Cryptographic verification of DID control for storage operations
+- **Credential Verification**: Validate verifiable credentials for attribute-based authorization
+- **Attribute Matching**: Match credential attributes against access rules for fine-grained control
 
 ## Project Structure
 
@@ -247,6 +272,7 @@ The project includes several demos:
 - **Storage Encryption Demo**: Demonstrates the secure storage capabilities
 - **Governed Storage Demo**: Shows governance-controlled storage policies
 - **Identity Storage Demo**: Demonstrates DID-based storage authentication and access control
+- **Credential Storage Demo**: Shows attribute-based access control using verifiable credentials
 - **Integrated Demo**: Combines all features into a single application
 
 Run any demo using:

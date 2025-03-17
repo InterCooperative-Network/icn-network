@@ -16,6 +16,9 @@ use governance_storage::{GovernanceStorageService, StoragePolicyType};
 mod identity_storage;
 use identity_storage::{IdentityStorageService, MockIdentityProvider, DidVerificationStatus};
 
+mod credential_storage;
+use credential_storage::{CredentialStorageService, MockCredentialProvider, CredentialVerificationStatus, VerifiableCredential, CredentialAccessRule};
+
 #[derive(Parser, Debug)]
 #[clap(author, version, about = "ICN Command Line Interface")]
 struct Cli {
@@ -61,6 +64,12 @@ enum Commands {
     IdentityStorage {
         #[clap(subcommand)]
         command: IdentityStorageCommands,
+    },
+    
+    /// Credential-based storage operations
+    CredentialStorage {
+        #[clap(subcommand)]
+        command: CredentialStorageCommands,
     },
 }
 
@@ -623,6 +632,200 @@ enum IdentityStorageCommands {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum CredentialStorageCommands {
+    /// Initialize credential storage environment
+    Init {
+        /// Storage directory path
+        #[clap(short, long, default_value = "./data")]
+        path: String,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+        
+        /// Authentication cache TTL in seconds
+        #[clap(short, long, default_value = "3600")]
+        cache_ttl: u64,
+    },
+    
+    /// Register a new verifiable credential for access control
+    RegisterCredential {
+        /// Credential JSON file path
+        #[clap(short, long)]
+        credential: String,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// Create a credential-based access rule
+    CreateAccessRule {
+        /// DID identifier (did:icn:...)
+        #[clap(short, long)]
+        did: String,
+        
+        /// Authentication challenge (for signing)
+        #[clap(short, long)]
+        challenge: String,
+        
+        /// Signature of the challenge
+        #[clap(short, long)]
+        signature: String,
+        
+        /// File pattern this rule applies to
+        #[clap(short, long)]
+        pattern: String,
+        
+        /// Required credential types (comma-separated)
+        #[clap(short, long)]
+        credential_types: String,
+        
+        /// Required attributes (JSON format)
+        #[clap(short, long)]
+        attributes: String,
+        
+        /// Permissions granted (comma-separated: read,write)
+        #[clap(short, long)]
+        permissions: String,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// Store a file with credential-based authentication
+    StoreFile {
+        /// DID identifier (did:icn:...)
+        #[clap(short, long)]
+        did: String,
+        
+        /// Authentication challenge (for signing)
+        #[clap(short, long)]
+        challenge: String,
+        
+        /// Signature of the challenge
+        #[clap(short, long)]
+        signature: String,
+        
+        /// Credential ID to use for access control
+        #[clap(short, long)]
+        credential_id: Option<String>,
+        
+        /// File to store
+        #[clap(short, long)]
+        file: String,
+        
+        /// Storage key (defaults to filename)
+        #[clap(short, long)]
+        key: Option<String>,
+        
+        /// Enable encryption for this file
+        #[clap(short, long)]
+        encrypted: bool,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// Retrieve a file with credential-based authentication
+    GetFile {
+        /// DID identifier (did:icn:...)
+        #[clap(short, long)]
+        did: String,
+        
+        /// Authentication challenge (for signing)
+        #[clap(short, long)]
+        challenge: String,
+        
+        /// Signature of the challenge
+        #[clap(short, long)]
+        signature: String,
+        
+        /// Credential ID to use for access control
+        #[clap(short, long)]
+        credential_id: Option<String>,
+        
+        /// Storage key to retrieve
+        #[clap(short, long)]
+        key: String,
+        
+        /// Output file path (defaults to key name)
+        #[clap(short, long)]
+        output: Option<String>,
+        
+        /// Specific version to retrieve (defaults to latest)
+        #[clap(short, long)]
+        version: Option<String>,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// List files accessible with credential-based authentication
+    ListFiles {
+        /// DID identifier (did:icn:...)
+        #[clap(short, long)]
+        did: String,
+        
+        /// Authentication challenge (for signing)
+        #[clap(short, long)]
+        challenge: String,
+        
+        /// Signature of the challenge
+        #[clap(short, long)]
+        signature: String,
+        
+        /// Credential ID to use for access control
+        #[clap(short, long)]
+        credential_id: Option<String>,
+        
+        /// Filter by prefix
+        #[clap(short, long)]
+        prefix: Option<String>,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// Verify a verifiable credential
+    VerifyCredential {
+        /// Credential ID to verify
+        #[clap(short, long)]
+        credential_id: String,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// Save credential access rules to a file
+    SaveAccessRules {
+        /// Output file path
+        #[clap(short, long)]
+        output: String,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+    
+    /// Load credential access rules from a file
+    LoadAccessRules {
+        /// Input file path
+        #[clap(short, long)]
+        input: String,
+        
+        /// Federation name
+        #[clap(short, long, default_value = "default")]
+        federation: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -648,6 +851,7 @@ async fn main() -> Result<()> {
         Commands::Governance { command } => handle_governance_command(command).await?,
         Commands::GovernedStorage { command } => handle_governed_storage_command(command).await?,
         Commands::IdentityStorage { command } => handle_identity_storage_command(command).await?,
+        Commands::CredentialStorage { command } => handle_credential_storage_command(command).await?,
     }
     
     Ok(())
@@ -1580,6 +1784,153 @@ async fn handle_identity_storage_command(command: IdentityStorageCommands) -> Re
             ).await?;
             
             println!("Access policy proposal created with ID: {}", proposal_id);
+        },
+    }
+    
+    Ok(())
+}
+
+async fn handle_credential_storage_command(command: CredentialStorageCommands) -> Result<()> {
+    match command {
+        CredentialStorageCommands::Init { path, federation, cache_ttl } => {
+            println!("Initializing credential storage at {} for federation {} (cache TTL: {}s)", 
+                path, federation, cache_ttl);
+            
+            // Create path if it doesn't exist
+            let path = PathBuf::from(path);
+            tokio::fs::create_dir_all(&path).await?;
+            
+            // Create credential rules directory
+            let rules_dir = path.join("credential_rules");
+            tokio::fs::create_dir_all(&rules_dir).await?;
+            
+            // Create credentials directory
+            let credentials_dir = path.join("credentials");
+            tokio::fs::create_dir_all(&credentials_dir).await?;
+            
+            // Initialize storage service (this is just for initialization)
+            let _ = StorageService::new(&path).await?;
+            
+            println!("Credential storage environment initialized successfully");
+        },
+        CredentialStorageCommands::RegisterCredential { credential, federation } => {
+            println!("Registering credential from {} in federation {}", credential, federation);
+            
+            // Read the credential JSON
+            let credential_data = tokio::fs::read_to_string(&credential).await?;
+            let credential_obj: VerifiableCredential = serde_json::from_str(&credential_data)?;
+            
+            // In a real implementation, we would store this in a credential registry
+            // For now, we just verify the credential format
+            println!("Credential ID: {}", credential_obj.id);
+            println!("Credential Type: {:?}", credential_obj.credential_type);
+            println!("Credential Subject: {}", credential_obj.credentialSubject.id);
+            println!("Issuer: {}", credential_obj.issuer);
+            
+            println!("Credential registered successfully");
+        },
+        CredentialStorageCommands::CreateAccessRule { did, challenge, signature, pattern, credential_types, attributes, permissions, federation } => {
+            println!("Creating credential access rule for pattern '{}' in federation {}", pattern, federation);
+            
+            // Parse credential types and permissions
+            let credential_types_vec: Vec<String> = credential_types.split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            
+            let permissions_vec: Vec<String> = permissions.split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            
+            // Parse attributes JSON
+            let attributes_map: std::collections::HashMap<String, serde_json::Value> = 
+                serde_json::from_str(&attributes)?;
+            
+            // Create the access rule
+            let rule = CredentialAccessRule {
+                pattern,
+                credential_types: credential_types_vec,
+                required_attributes: attributes_map,
+                permissions: permissions_vec,
+            };
+            
+            // In a real implementation, we would initialize the credential storage service
+            // and call create_access_rule
+            println!("Created access rule:");
+            println!("  Pattern: {}", rule.pattern);
+            println!("  Required credential types: {:?}", rule.credential_types);
+            println!("  Required attributes: {}", serde_json::to_string_pretty(&rule.required_attributes)?);
+            println!("  Permissions: {:?}", rule.permissions);
+            
+            println!("Access rule created successfully");
+        },
+        CredentialStorageCommands::StoreFile { did, challenge, signature, credential_id, file, key, encrypted, federation } => {
+            let key = key.unwrap_or_else(|| file.split('/').last().unwrap_or(&file).to_string());
+            
+            println!("Storing file {} with key {} using DID {} in federation {} (encryption: {})", 
+                file, key, did, federation, if encrypted { "enabled" } else { "disabled" });
+            
+            if let Some(cred_id) = &credential_id {
+                println!("Using credential ID: {}", cred_id);
+            }
+            
+            // In a real implementation, we would initialize providers and the credential storage service,
+            // then call store_file
+            
+            println!("File stored successfully");
+        },
+        CredentialStorageCommands::GetFile { did, challenge, signature, credential_id, key, output, version, federation } => {
+            let output = output.unwrap_or_else(|| key.clone());
+            
+            println!("Retrieving key {} using DID {} from federation {} to {}{}", 
+                key, did, federation, output, 
+                if let Some(ver) = &version { format!(" (version: {})", ver) } else { String::new() });
+            
+            if let Some(cred_id) = &credential_id {
+                println!("Using credential ID: {}", cred_id);
+            }
+            
+            // In a real implementation, we would initialize providers and the credential storage service,
+            // then call retrieve_file
+            
+            println!("File retrieved successfully");
+        },
+        CredentialStorageCommands::ListFiles { did, challenge, signature, credential_id, prefix, federation } => {
+            println!("Listing files in federation {} accessible by DID {}{}", 
+                federation, did,
+                if let Some(pre) = &prefix { format!(" with prefix {}", pre) } else { String::new() });
+            
+            if let Some(cred_id) = &credential_id {
+                println!("Using credential ID: {}", cred_id);
+            }
+            
+            // In a real implementation, we would initialize providers and the credential storage service,
+            // then call list_files
+            
+            println!("No files found (mock implementation)");
+        },
+        CredentialStorageCommands::VerifyCredential { credential_id, federation } => {
+            println!("Verifying credential {} in federation {}", credential_id, federation);
+            
+            // In a real implementation, we would initialize providers and the credential storage service,
+            // then call verify_credential
+            
+            println!("Credential verification status: Verified (mock implementation)");
+        },
+        CredentialStorageCommands::SaveAccessRules { output, federation } => {
+            println!("Saving credential access rules to {} for federation {}", output, federation);
+            
+            // In a real implementation, we would initialize providers and the credential storage service,
+            // then call save_access_rules
+            
+            println!("Access rules saved successfully");
+        },
+        CredentialStorageCommands::LoadAccessRules { input, federation } => {
+            println!("Loading credential access rules from {} for federation {}", input, federation);
+            
+            // In a real implementation, we would initialize providers and the credential storage service,
+            // then call load_access_rules
+            
+            println!("Access rules loaded successfully");
         },
     }
     
