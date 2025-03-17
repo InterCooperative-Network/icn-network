@@ -51,6 +51,15 @@ pbkdf2 = "0.12"
 ratatui = "0.22"
 crossterm = "0.26"
 
+# Network-specific dependencies
+libp2p = { version = "0.55", features = ["tcp", "dns", "websocket", "noise", "yamux", "ping", "identify", "kad", "gossipsub", "mdns", "tokio"] }
+wireguard-control = "1.5.0"
+async-trait = "0.1.73"
+multiaddr = "0.17.1"
+futures = "0.3.28"
+hex = "0.4.3"
+ipnetwork = "0.20.0"
+
 [[bin]]
 name = "icn-cli"
 path = "src/main.rs"
