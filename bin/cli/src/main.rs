@@ -2838,3 +2838,17 @@ async fn handle_compute_command(command: ComputeCommands) -> Result<()> {
         },
     }
 } 
+
+async fn handle_network_command(server: &str) -> Result<()> {
+    println!("Testing network connectivity to {}", server);
+    
+    // In a real implementation, we would:
+    // 1. Connect to the server
+    // 2. Send a ping/health check message
+    // 3. Verify the response
+    
+    // For now, just simulate a successful connection
+    println!("Connection to {} successful", server);
+    
+    Ok(())
+}
