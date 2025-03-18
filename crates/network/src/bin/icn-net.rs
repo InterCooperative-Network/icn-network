@@ -6,7 +6,7 @@ use tokio::time;
 use tracing::{info, warn, debug, error};
 use tracing_subscriber::FmtSubscriber;
 use icn_core::{
-    storage::{Storage, MockStorage},
+    storage::{Storage, StorageError},
     networking::NetworkMessage,
 };
 use icn_network::{
@@ -15,6 +15,9 @@ use icn_network::{
 };
 use libp2p::Multiaddr;
 use libp2p::PeerId;
+use anyhow::Result;
+use tokio::sync::oneshot;
+use std::collections::HashMap;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -85,25 +88,122 @@ enum Commands {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
-    let subscriber = FmtSubscriber::new();
-    tracing::subscriber::set_global_default(subscriber)?;
-    
-    // Parse command line arguments
-    let args = Args::parse();
-    
-    match args.mode.as_str() {
-        "single" => run_single_node().await?,
-        "two-nodes" => run_two_nodes().await?,
-        "network-test" => run_network_test().await?,
-        _ => {
-            error!("Invalid mode. Use: single, two-nodes, or network-test");
-            std::process::exit(1);
+// MockStorage implementation for testing
+struct MockStorage {
+    data: HashMap<String, Vec<u8>>,
+}
+
+impl MockStorage {
+    fn new() -> Self {
+        Self {
+            data: HashMap::new(),
         }
     }
+}
+
+#[async_trait::async_trait]
+impl Storage for MockStorage {
+    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        match self.data.get(key) {
+            Some(data) => Ok(data.clone()),
+            None => Err(StorageError::NotFound),
+        }
+    }
+
+    async fn put(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
+        let mut storage = MockStorage {
+            data: self.data.clone(),
+        };
+        storage.data.insert(key.to_string(), value.to_vec());
+        Ok(())
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), StorageError> {
+        let mut storage = MockStorage {
+            data: self.data.clone(),
+        };
+        storage.data.remove(key);
+        Ok(())
+    }
+
+    async fn exists(&self, key: &str) -> Result<bool, StorageError> {
+        Ok(self.data.contains_key(key))
+    }
     
+    async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
+        let keys = self.data.keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect();
+        Ok(keys)
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Initialize tracing
+    tracing_subscriber::fmt::init();
+
+    // Create storage instances
+    let storage1 = Arc::new(MockStorage::new());
+    let storage2 = Arc::new(MockStorage::new());
+
+    // Create network configurations
+    let config1 = P2pConfig::default();
+    let config2 = P2pConfig::default();
+
+    // Create networks
+    let network1 = P2pNetwork::new(storage1, config1).await?;
+    let network2 = P2pNetwork::new(storage2, config2).await?;
+
+    // Get peer IDs
+    let peer_id1 = network1.local_peer_id();
+    let peer_id2 = network2.local_peer_id();
+
+    // Get listen addresses
+    let addr2 = network2.listen_addresses()[0].clone();
+
+    // Connect networks
+    network1.connect(addr2).await?;
+
+    // Create and send a message
+    let message = icn_network::NetworkMessage::Broadcast {
+        topic: "test".to_string(),
+        data: "Hello, World!".into_bytes(),
+    };
+
+    network1.send_to(&peer_id2.to_base58(), message).await?;
+
+    // Test reputation system
+    let context = ReputationContext::General;
+    let reputation1 = network1.reputation_manager().expect("Reputation manager should exist");
+
+    // Record positive interaction
+    reputation1.record_change(peer_id2, ReputationChange::MessageSuccess).await?;
+    let rep = reputation1.get_reputation(&peer_id2, &context);
+    info!("Reputation after success: {}", rep);
+
+    // Record negative interaction
+    reputation1.record_change(peer_id2, ReputationChange::MessageFailure).await?;
+    let rep = reputation1.get_reputation(&peer_id2, &context);
+    info!("Reputation after failure: {}", rep);
+
+    // Test banning
+    let is_banned = reputation1.is_banned(&peer_id2);
+    info!("Is peer banned? {}", is_banned);
+
+    // Try to connect again
+    let result = network1.connect(addr2).await;
+    info!("Connection attempt result: {:?}", result);
+
+    // Check if still banned
+    let is_banned = reputation1.is_banned(&peer_id2);
+    info!("Is peer still banned? {}", is_banned);
+
+    // Get final reputation
+    let rep = reputation1.get_reputation(&peer_id2, &context);
+    info!("Final reputation: {}", rep);
+
     Ok(())
 }
 
