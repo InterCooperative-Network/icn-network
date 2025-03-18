@@ -1,10 +1,11 @@
-use crate::error::Error;
-use crate::voting::{VotingManager, VotingPolicy};
+use crate::GovernanceError as Error;
+use crate::voting::{VotingScheme, SimpleVoting};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::{debug, info, warn};
 
 /// Identity information for a DAO
 #[derive(Clone, Debug, Serialize, Deserialize)]

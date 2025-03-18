@@ -107,7 +107,6 @@ impl Default for P2pConfig {
 }
 
 /// P2P behavior combining multiple protocols
-#[derive(NetworkBehaviour)]
 pub struct P2pBehaviour {
     /// Gossipsub for message propagation
     gossipsub: gossipsub::Behaviour,
@@ -119,6 +118,21 @@ pub struct P2pBehaviour {
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     /// mDNS for local peer discovery
     mdns: mdns::Behaviour<mdns::tokio::Tokio>,
+}
+
+/// Events emitted by the P2pBehaviour
+#[derive(Debug)]
+pub enum P2pBehaviourEvent {
+    /// Gossipsub events
+    Gossipsub(gossipsub::Event),
+    /// Identify events
+    Identify(identify::Event),
+    /// Ping events
+    Ping(ping::Event),
+    /// Kademlia events
+    Kad(kad::Event),
+    /// mDNS events
+    Mdns(mdns::Event),
 }
 
 /// Combined events from all protocols

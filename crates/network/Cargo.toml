@@ -12,7 +12,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
 anyhow = "1.0"
-libp2p = { version = "0.55", features = ["tcp", "dns", "websocket", "noise", "yamux", "ping", "identify", "kad", "gossipsub", "mdns", "tokio"] }
+libp2p = { version = "0.55", features = ["tcp", "dns", "websocket", "noise", "yamux", "ping", "identify", "kad", "gossipsub", "mdns", "relay", "tokio"] }
+
+# Core dependencies
+icn-core = { path = "../core" }
 
 # Async runtime and utilities
 futures = { workspace = true }
@@ -30,6 +33,7 @@ uuid = { version = "1.4", features = ["v4", "serde"] }
 clap = { version = "4.4", features = ["derive"] }
 hex = { workspace = true }
 bs58 = { workspace = true }
+rand = "0.8"
 
 # Metrics
 prometheus = { version = "0.13", default-features = false }

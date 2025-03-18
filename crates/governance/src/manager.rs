@@ -12,15 +12,18 @@ use serde::{Serialize, Deserialize};
 use async_trait::async_trait;
 
 use icn_core::{
-    storage::{Storage, JsonStorage},
-    crypto::{NodeId, Signature, verify_signature},
+    storage::Storage,
+    crypto::{identity::NodeId, Signature, verify_signature},
     utils::timestamp_secs,
 };
 
-use icn_identity::{
-    IdentityProvider, IdentityResult, Identity,
-    reputation::{Reputation, Evidence, EvidenceType},
+use icn_identity::service::{
+    IdentityService as IdentityProvider, 
+    Identity
 };
+
+// Local type definition
+type IdentityResult<T> = Result<T, crate::GovernanceError>;
 
 use crate::{
     Governance, GovernanceConfig, GovernanceResult, GovernanceError,

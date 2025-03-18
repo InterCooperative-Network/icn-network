@@ -7,9 +7,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Serialize, Deserialize};
 use tracing::{debug, error, info, warn};
+use std::time::Duration;
+use anyhow::Result;
 
 use icn_core::{storage::Storage, config::ConfigProvider};
-use icn_identity::IdentityProvider;
+use icn_identity::IdentityService as IdentityProvider;
 
 use crate::{Proposal, ProposalType, GovernanceResult, GovernanceError};
 

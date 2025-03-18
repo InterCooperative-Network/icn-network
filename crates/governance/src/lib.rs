@@ -14,22 +14,24 @@ use thiserror::Error;
 use serde::{Serialize, Deserialize};
 
 use icn_core::{
-    crypto::{Signature, Hash, NodeId, sha256},
+    crypto::{Signature, Hash, identity::NodeId, sha256},
     storage::{Storage, StorageResult, StorageError, JsonStorage},
     utils::timestamp_secs,
 };
 
-use icn_identity::{
-    Identity, IdentityProvider, IdentityError, IdentityResult,
-    reputation::{Reputation, ReputationError, Evidence, EvidenceType},
-};
+use icn_identity::IdentityService;
+
+// Define the types we need
+pub type IdentityResult<T> = Result<T, GovernanceError>;
+pub type IdentityError = GovernanceError;  // We'll map identity errors to governance errors
+pub type Identity = NodeId;  // For simplicity, identity is just a NodeId for now
 
 /// Error types for governance operations
 #[derive(Error, Debug)]
 pub enum GovernanceError {
     /// Error with the identity system
     #[error("Identity error: {0}")]
-    IdentityError(#[from] IdentityError),
+    IdentityError(String),
     
     /// Error with storage
     #[error("Storage error: {0}")]
@@ -37,7 +39,7 @@ pub enum GovernanceError {
     
     /// Error with reputation
     #[error("Reputation error: {0}")]
-    ReputationError(#[from] ReputationError),
+    ReputationError(String),
     
     /// Invalid proposal
     #[error("Invalid proposal: {0}")]
@@ -426,7 +428,7 @@ pub use execution::ProposalExecutor;
 
 // ICN Governance crate
 
-//! Governance system for ICN, including proposals and voting.
+// Governance system for ICN, including proposals and voting.
 
 /// Governance types and utilities
 pub mod governance {
@@ -467,32 +469,6 @@ pub struct VoteTally {
     pub abstentions: usize,
     /// Total number of votes
     pub total_votes: usize,
-}
-
-/// Proposal status
-#[derive(Debug, PartialEq)]
-pub enum ProposalStatus {
-    /// Proposal is active and can be voted on
-    Active,
-    /// Proposal has been executed
-    Executed,
-    /// Proposal has been rejected
-    Rejected,
-    /// Proposal has been cancelled
-    Cancelled,
-}
-
-/// Simple proposal struct
-#[derive(Debug)]
-pub struct Proposal {
-    /// The identifier for this proposal
-    pub id: String,
-    /// The title of the proposal
-    pub title: String,
-    /// The description of the proposal
-    pub description: String,
-    /// The status of the proposal
-    pub status: ProposalStatus,
 }
 
 impl ProposalManager {
