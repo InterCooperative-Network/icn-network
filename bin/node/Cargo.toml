@@ -2,7 +2,7 @@
 name = "icn-node"
 version = "0.1.0"
 edition = "2021"
-description = "ICN Node binary"
+description = "Node for the ICN Network"
 authors = ["ICN Developers"]
 license = "MIT OR Apache-2.0"
 
@@ -14,18 +14,18 @@ icn-governance = { path = "../../crates/governance" }
 icn-network = { path = "../../crates/network" }
 icn-apps = { path = "../../crates/apps" }
 
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-anyhow = { workspace = true }
+tokio = { version = "1.32", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 # Configuration
 config = "0.13"
 dotenv = "0.15"
-clap = { version = "4.3", features = ["derive"] }
+clap = { version = "4.4", features = ["derive"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

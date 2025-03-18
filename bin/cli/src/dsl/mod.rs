@@ -16,7 +16,6 @@ pub mod integration;
 use anyhow::Result;
 use tokio::sync::mpsc;
 use std::path::Path;
-use parser::Parser;
 use parser::ast::Program;
 
 /// Main entry point for the DSL system
@@ -75,19 +74,21 @@ impl DslSystem {
 
     /// Execute a DSL script from a string
     pub async fn execute_script(&self, script: &str) -> Result<()> {
-        let ast = parser::parse_script(script)?;
-        let mut vm = vm::VirtualMachine::new(self.event_sender.clone());
-        vm.execute(ast).await
+        // Parse the script
+        let program = parse(script)?;
+        
+        // Run the program via integration module
+        integration::run_program(program, self.event_sender.clone(), None).await
     }
 
     /// Execute a DSL script from a file
     pub async fn execute_script_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let script = std::fs::read_to_string(path)?;
-        self.execute_script(&script).await
+        let path_str = path.as_ref().to_string_lossy().to_string();
+        integration::execute_script_file(&path_str, self.event_sender.clone(), None).await
     }
 }
 
-/// Create a default DSL system with an unbounded event channel
+/// Create a default DSL system with an event channel
 pub async fn create_default_system() -> (DslSystem, mpsc::Receiver<DslEvent>) {
     let (tx, rx) = mpsc::channel(100);
     let system = DslSystem::new(tx);
@@ -108,8 +109,39 @@ pub async fn create_default_system() -> (DslSystem, mpsc::Receiver<DslEvent>) {
 ///
 /// Returns an error if the input cannot be parsed
 pub fn parse(input: &str) -> Result<Program> {
-    let mut parser = Parser::new(input)?;
+    parser::parse_script(input)
+}
+
+/// Helper function to parse a script using the Parser directly
+pub(crate) fn parse_script(input: &str) -> Result<Program> {
+    let mut parser = parser::Parser::new(input)?;
     parser.parse_script()
+}
+
+/// Higher-level API for executing scripts
+pub async fn execute_script(script: &str, federation: Option<String>) -> Result<()> {
+    let (system, mut event_rx) = create_default_system().await;
+    
+    // Start event handler in a separate task
+    let event_task = tokio::spawn(async move {
+        integration::handle_dsl_events(event_rx).await
+    });
+    
+    // Parse and execute script
+    let program = parse(script)?;
+    integration::run_program(program, system.event_sender, federation).await?;
+    
+    // Wait for event task to finish processing events
+    event_task.abort();
+    
+    Ok(())
+}
+
+/// Higher-level API for executing script files
+pub async fn execute_script_file<P: AsRef<Path>>(path: P, federation: Option<String>) -> Result<()> {
+    let path_str = path.as_ref().to_string_lossy().to_string();
+    let script = std::fs::read_to_string(&path_str)?;
+    execute_script(&script, federation).await
 }
 
 #[cfg(test)]
@@ -118,8 +150,8 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    #[test]
-    fn test_parse_example() {
+    #[tokio::test]
+    async fn test_parse_example() {
         let example_path = Path::new("bin/cli/src/dsl/examples/governance.dsl");
         let input = fs::read_to_string(example_path).expect("Failed to read example file");
         

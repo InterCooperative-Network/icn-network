@@ -1,19 +1,25 @@
-// ICN Applications
+/// Applications for the ICN Network
+///
+/// This crate provides applications that run on the ICN Network,
+/// including governance tools, economic tools, and resource sharing.
 
-//! ICN Applications crate. This crate contains the applications built on top of the core ICN components.
+/// Applications service for managing applications
+pub struct AppsService {}
 
-/// Application modules
-pub mod app {
-    /// Placeholder for future applications
-    pub fn placeholder() {
-        println!("ICN Applications crate");
+impl AppsService {
+    /// Create a new applications service
+    pub fn new() -> Self {
+        Self {}
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    
     #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    fn test_create_apps_service() {
+        let service = AppsService::new();
+        // Just testing that we can create the service
     }
 } 

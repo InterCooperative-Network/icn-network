@@ -1,7 +1,7 @@
-//! Storage system for ICN
-//!
-//! This crate provides a unified storage interface for persistent data storage
-//! across the ICN network components.
+/// Storage system for the ICN Network
+///
+/// This crate provides a distributed storage system for the ICN Network,
+/// supporting encrypted, versioned, and permission-controlled storage.
 
 use async_trait::async_trait;
 use icn_common::{Error, Result};
@@ -11,6 +11,7 @@ use tokio::fs;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
+use anyhow::Result;
 
 /// Storage options for configuring storage behavior
 #[derive(Debug, Clone)]
@@ -236,6 +237,27 @@ pub async fn create_storage(options: StorageOptions) -> Result<Arc<FileStorage>>
     Ok(Arc::new(storage))
 }
 
+/// Storage service for the ICN Network
+pub struct StorageService {
+    /// The base path for the storage
+    base_path: std::path::PathBuf,
+}
+
+impl StorageService {
+    /// Create a new storage service
+    pub fn new<P: AsRef<std::path::Path>>(base_path: P) -> Self {
+        Self {
+            base_path: base_path.as_ref().to_path_buf(),
+        }
+    }
+    
+    /// Get the base path for the storage
+    pub fn base_path(&self) -> &std::path::Path {
+        &self.base_path
+    }
+}
+
+/// Mock implementation for testing
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +268,12 @@ mod tests {
     struct TestData {
         field1: String,
         field2: i32,
+    }
+    
+    #[test]
+    fn test_create_storage_service() {
+        let service = StorageService::new("/tmp/icn-storage");
+        assert_eq!(service.base_path().to_str().unwrap(), "/tmp/icn-storage");
     }
     
     #[tokio::test]

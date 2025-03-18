@@ -488,3 +488,9 @@ fn matches_token_type(a: &Token, b: &Token) -> bool {
         _ => a == b,
     }
 }
+
+/// Parse a script directly without creating a Parser instance
+pub fn parse_script(input: &str) -> anyhow::Result<ast::Program> {
+    let mut parser = Parser::new(input)?;
+    parser.parse_script()
+}

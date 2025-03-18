@@ -17,6 +17,8 @@ pub struct VirtualMachine {
     event_sender: mpsc::Sender<DslEvent>,
     /// VM state
     state: Arc<Mutex<VmState>>,
+    /// Active federation (if any)
+    active_federation: Option<String>,
 }
 
 /// VM State
@@ -61,29 +63,145 @@ impl VirtualMachine {
         Self {
             event_sender,
             state: Arc::new(Mutex::new(VmState::new())),
+            active_federation: None,
         }
+    }
+
+    /// Set the active federation
+    pub fn set_active_federation(&mut self, federation: &str) -> Result<()> {
+        self.active_federation = Some(federation.to_string());
+        Ok(())
+    }
+
+    /// Get the active federation
+    pub fn get_active_federation(&self) -> Option<&str> {
+        self.active_federation.as_deref()
     }
 
     /// Execute an AST
-    pub async fn execute(&mut self, ast: Ast) -> Result<()> {
-        for node in ast.nodes {
-            self.execute_node(node).await?;
+    pub async fn execute(&mut self, ast: Vec<crate::dsl::parser::ast::Statement>) -> Result<()> {
+        for statement in ast {
+            self.execute_statement(statement).await?;
         }
         Ok(())
     }
 
-    /// Execute a single AST node
-    async fn execute_node(&self, node: AstNode) -> Result<()> {
-        match node {
-            AstNode::Proposal(proposal) => self.register_proposal(proposal).await?,
-            AstNode::Asset(asset) => self.register_asset(asset).await?,
-            AstNode::ExecutionStep(step) => self.execute_step(step).await?,
+    /// Execute a statement
+    async fn execute_statement(&mut self, statement: crate::dsl::parser::ast::Statement) -> Result<()> {
+        use crate::dsl::parser::ast::Statement;
+        
+        match statement {
+            Statement::Proposal(proposal) => {
+                // Extract proposal details
+                let identifier = proposal.identifier.clone();
+                let title = self.extract_string_property(&proposal.properties, "title")?;
+                let description = self.extract_string_property(&proposal.properties, "description")
+                    .unwrap_or_else(|_| "No description provided".to_string());
+                
+                // In a real impl, we'd create the proposal in the governance system
+                // For now, we just emit an event
+                self.event_sender.send(DslEvent::ProposalCreated {
+                    id: identifier.clone(),
+                    title: title.clone(),
+                    description: description.clone(),
+                }).await.context("Failed to send event")?;
+                
+                // Execute any nested statements in the proposal block
+                for stmt in proposal.body {
+                    self.execute_statement(stmt).await?;
+                }
+            },
+            Statement::Asset(asset) => {
+                // Extract asset details
+                let identifier = asset.identifier.clone();
+                
+                // Log asset creation
+                self.event_sender.send(DslEvent::Log(
+                    format!("Asset '{}' created", identifier)
+                )).await.context("Failed to send event")?;
+                
+                // Execute any nested statements in the asset block
+                if let Some(body) = asset.body {
+                    for stmt in body {
+                        self.execute_statement(stmt).await?;
+                    }
+                }
+            },
+            Statement::Transaction(tx) => {
+                // Extract transaction details
+                let from = self.extract_string_property(&tx.properties, "from")?;
+                let to = self.extract_string_property(&tx.properties, "to")?;
+                let amount = self.extract_number_property(&tx.properties, "amount")?;
+                let asset = self.extract_string_property(&tx.properties, "asset")?;
+                
+                // In a real impl, we'd execute the transaction in the economic system
+                // For now, we just emit an event
+                self.event_sender.send(DslEvent::Transaction {
+                    from: from.clone(),
+                    to: to.clone(),
+                    amount: amount as u64,
+                    asset_type: asset.clone(),
+                }).await.context("Failed to send event")?;
+                
+                // Execute any nested statements in the transaction block
+                if let Some(body) = tx.body {
+                    for stmt in body {
+                        self.execute_statement(stmt).await?;
+                    }
+                }
+            },
+            Statement::Log(log) => {
+                // Extract log message
+                let message = match &log.message {
+                    crate::dsl::parser::ast::Expression::String(s) => s.clone(),
+                    _ => "".to_string(),
+                };
+                
+                // Emit log event
+                self.event_sender.send(DslEvent::Log(message))
+                    .await
+                    .context("Failed to send event")?;
+            },
             _ => {
-                // Log unhandled node type
-                self.emit_event(DslEvent::Log(format!("Unhandled AST node type"))).await?;
+                // For other statement types, we'd implement specific handling
+                // For now, we just log them
+                self.event_sender.send(DslEvent::Log(
+                    format!("Executing statement: {:?}", statement)
+                )).await.context("Failed to send event")?;
             }
         }
+        
         Ok(())
+    }
+
+    /// Extract a string property from a properties map
+    fn extract_string_property(
+        &self,
+        properties: &HashMap<String, crate::dsl::parser::ast::Expression>,
+        name: &str
+    ) -> Result<String> {
+        use crate::dsl::parser::ast::Expression;
+        
+        match properties.get(name) {
+            Some(Expression::String(s)) => Ok(s.clone()),
+            Some(_) => Err(anyhow!("Property '{}' is not a string", name)),
+            None => Err(anyhow!("Property '{}' not found", name)),
+        }
+    }
+
+    /// Extract a number property from a properties map
+    fn extract_number_property(
+        &self,
+        properties: &HashMap<String, crate::dsl::parser::ast::Expression>,
+        name: &str
+    ) -> Result<f64> {
+        use crate::dsl::parser::ast::Expression;
+        
+        match properties.get(name) {
+            Some(Expression::Number(n)) => Ok(*n),
+            Some(_) => Err(anyhow!("Property '{}' is not a number", name)),
+            None => Err(anyhow!("Property '{}' not found", name)),
+        }
     }
 
     /// Register a proposal

@@ -1,7 +1,53 @@
-//! Core ICN module
-//!
-//! This module provides fundamental components for the InterCooperative Network,
-//! including networking, storage, and cryptography.
+/// Core functionality for the ICN Network
+///
+/// This crate provides core functionality for the ICN Network,
+/// including common traits, data structures, and utilities.
+
+pub mod error;
+
+/// Common Result type for ICN crates
+pub type Result<T> = std::result::Result<T, error::Error>;
+
+/// Common module for errors
+pub mod error {
+    use thiserror::Error;
+    
+    /// Common error type for ICN crates
+    #[derive(Debug, Error)]
+    pub enum Error {
+        /// Error from I/O operation
+        #[error("I/O error: {0}")]
+        Io(#[from] std::io::Error),
+        
+        /// Error from serialization or deserialization
+        #[error("Serialization error: {0}")]
+        Serialization(#[from] serde_json::Error),
+        
+        /// Error from parsing
+        #[error("Parse error: {0}")]
+        Parse(String),
+        
+        /// Error from network operation
+        #[error("Network error: {0}")]
+        Network(String),
+        
+        /// Error from storage operation
+        #[error("Storage error: {0}")]
+        Storage(String),
+        
+        /// Error from economic operation
+        #[error("Economic error: {0}")]
+        Economic(String),
+        
+        /// Error from governance operation
+        #[error("Governance error: {0}")]
+        Governance(String),
+        
+        /// Error from DSL operation
+        #[error("DSL error: {0}")]
+        Dsl(String),
+    }
+}
 
 pub mod storage;
 pub mod networking;

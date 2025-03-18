@@ -3679,86 +3679,16 @@ async fn handle_dsl_command(command: DslCommands) -> Result<()> {
         DslCommands::ExecuteScript { file, federation } => {
             println!("Executing DSL script from file: {}", file);
             
-            // Create DSL system
-            let (dsl_system, mut event_rx) = dsl::create_default_system().await;
-            
-            // Start event handler in a separate task
-            let event_task = tokio::spawn(async move {
-                while let Some(event) = event_rx.recv().await {
-                    match event {
-                        DslEvent::Log(message) => println!("DSL: {}", message),
-                        DslEvent::Error(error) => println!("DSL Error: {}", error),
-                        DslEvent::ProposalCreated { id, title, .. } => {
-                            println!("DSL: Proposal created: {} ({})", title, id)
-                        },
-                        DslEvent::VoteCast { proposal_id, voter_id, vote } => {
-                            println!("DSL: Vote cast by {} on proposal {}", voter_id, proposal_id)
-                        },
-                        DslEvent::ProposalExecuted { id, result } => {
-                            println!(
-                                "DSL: Proposal {} {}",
-                                id,
-                                if result { "executed" } else { "rejected" }
-                            )
-                        },
-                        DslEvent::Transaction { from, to, amount, asset_type } => {
-                            println!(
-                                "DSL: Transaction of {} {} from {} to {}",
-                                amount, asset_type, from, to
-                            )
-                        },
-                    }
-                }
-            });
-            
-            // Execute script
-            dsl_system.execute_script_file(file).await?;
-            
-            // Wait for event task to finish
-            event_task.abort();
+            // Execute script using the DSL system
+            dsl::execute_script_file(file, federation).await?;
             
             println!("Script execution completed");
         },
         DslCommands::ExecuteScriptString { script, federation } => {
             println!("Executing DSL script string");
             
-            // Create DSL system
-            let (dsl_system, mut event_rx) = dsl::create_default_system().await;
-            
-            // Start event handler in a separate task
-            let event_task = tokio::spawn(async move {
-                while let Some(event) = event_rx.recv().await {
-                    match event {
-                        DslEvent::Log(message) => println!("DSL: {}", message),
-                        DslEvent::Error(error) => println!("DSL Error: {}", error),
-                        DslEvent::ProposalCreated { id, title, .. } => {
-                            println!("DSL: Proposal created: {} ({})", title, id)
-                        },
-                        DslEvent::VoteCast { proposal_id, voter_id, vote } => {
-                            println!("DSL: Vote cast by {} on proposal {}", voter_id, proposal_id)
-                        },
-                        DslEvent::ProposalExecuted { id, result } => {
-                            println!(
-                                "DSL: Proposal {} {}",
-                                id,
-                                if result { "executed" } else { "rejected" }
-                            )
-                        },
-                        DslEvent::Transaction { from, to, amount, asset_type } => {
-                            println!(
-                                "DSL: Transaction of {} {} from {} to {}",
-                                amount, asset_type, from, to
-                            )
-                        },
-                    }
-                }
-            });
-            
-            // Execute script
-            dsl_system.execute_script(&script).await?;
-            
-            // Wait for event task to finish
-            event_task.abort();
+            // Execute script using the DSL system
+            dsl::execute_script(&script, federation).await?;
             
             println!("Script execution completed");
         },

@@ -2,16 +2,16 @@
 name = "icn-core"
 version = "0.1.0"
 edition = "2021"
-description = "Core functionality for ICN"
+description = "Core functionality for the ICN Network"
 authors = ["ICN Developers"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-anyhow = { workspace = true }
+tokio = { version = "1.32", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
 async-trait = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }

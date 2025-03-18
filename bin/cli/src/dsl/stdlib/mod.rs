@@ -1,67 +1,62 @@
-/// Standard Library for DSL
+/// Standard library for the DSL
 ///
-/// This module provides standard library functions and primitives for the DSL,
-/// including common governance operations, economic transactions, and resource management.
+/// This module contains the standard library of functions and types
+/// that can be used in DSL scripts.
 
 pub mod governance;
 pub mod economic;
-pub mod networking;
+pub mod network;
 
-use anyhow::{Result, anyhow};
-use std::collections::HashMap;
-
-/// Standard library function registry
-pub struct StdLibRegistry {
-    /// Registered functions
-    functions: HashMap<String, StdLibFunction>,
+/// Function registration for the standard library
+#[derive(Debug, Clone)]
+pub struct StdlibRegistry {
+    /// Governance functions
+    pub governance_functions: Vec<StdlibFunction>,
+    /// Economic functions
+    pub economic_functions: Vec<StdlibFunction>,
+    /// Network functions
+    pub network_functions: Vec<StdlibFunction>,
 }
 
-/// A standard library function
-pub type StdLibFunction = fn(args: &[&str]) -> Result<String>;
+/// A function in the standard library
+#[derive(Debug, Clone)]
+pub struct StdlibFunction {
+    /// Name of the function
+    pub name: String,
+    /// Handler for the function
+    pub handler: fn(args: Vec<StdlibValue>) -> Result<StdlibValue, String>,
+}
 
-impl StdLibRegistry {
-    /// Create a new standard library registry
+/// Values that can be returned from stdlib functions
+#[derive(Debug, Clone)]
+pub enum StdlibValue {
+    /// String value
+    String(String),
+    /// Number value
+    Number(f64),
+    /// Boolean value
+    Boolean(bool),
+    /// Array of values
+    Array(Vec<StdlibValue>),
+    /// No value (void)
+    Void,
+}
+
+impl StdlibRegistry {
+    /// Create a new stdlib registry with default functions
     pub fn new() -> Self {
-        let mut registry = Self {
-            functions: HashMap::new(),
-        };
-        
-        // Register standard library functions
-        registry.register_defaults();
-        
-        registry
-    }
-    
-    /// Register default functions
-    fn register_defaults(&mut self) {
-        // Register governance functions
-        self.register("create_proposal", governance::create_proposal);
-        self.register("cast_vote", governance::cast_vote);
-        self.register("execute_proposal", governance::execute_proposal);
-        
-        // Register economic functions
-        self.register("transfer", economic::transfer);
-        self.register("create_asset", economic::create_asset);
-        self.register("get_balance", economic::get_balance);
-        
-        // Register networking functions
-        self.register("connect_peer", networking::connect_peer);
-        self.register("create_federation", networking::create_federation);
-        self.register("join_federation", networking::join_federation);
-    }
-    
-    /// Register a function
-    pub fn register(&mut self, name: &str, func: StdLibFunction) {
-        self.functions.insert(name.to_string(), func);
-    }
-    
-    /// Call a function
-    pub fn call(&self, name: &str, args: &[&str]) -> Result<String> {
-        if let Some(func) = self.functions.get(name) {
-            func(args)
-        } else {
-            Err(anyhow!("Function not found: {}", name))
+        Self {
+            governance_functions: governance::register_functions(),
+            economic_functions: economic::register_functions(),
+            network_functions: network::register_functions(),
         }
+    }
+
+    /// Get a function by name
+    pub fn get_function(&self, name: &str) -> Option<&StdlibFunction> {
+        self.governance_functions.iter().find(|f| f.name == name)
+            .or_else(|| self.economic_functions.iter().find(|f| f.name == name))
+            .or_else(|| self.network_functions.iter().find(|f| f.name == name))
     }
 }
 
@@ -164,7 +159,7 @@ pub mod economic {
 }
 
 /// Networking standard library
-pub mod networking {
+pub mod network {
     use anyhow::{Result, anyhow};
     
     /// Connect to a peer

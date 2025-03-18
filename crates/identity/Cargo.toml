@@ -2,19 +2,19 @@
 name = "icn-identity"
 version = "0.1.0"
 edition = "2021"
-description = "Identity system for ICN"
+description = "Identity management for the ICN Network"
 authors = ["ICN Developers"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 icn-core = { path = "../core" }
 
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-anyhow = { workspace = true }
-async-trait = { workspace = true }
+tokio = { version = "1.32", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
+async-trait = "0.1"
 tracing = { workspace = true }
 futures = { workspace = true }
 
