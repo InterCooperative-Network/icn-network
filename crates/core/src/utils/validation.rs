@@ -70,7 +70,9 @@ pub fn validate_email(email: &str) -> Result<(), UtilError> {
         return Err(UtilError::InvalidValue(format!("Invalid email address: {}", email)));
     }
     
-    if !parts[1].contains('.') {
+    // Check domain part (must have at least one character before and after the dot)
+    let domain_parts: Vec<&str> = parts[1].split('.').collect();
+    if domain_parts.len() < 2 || domain_parts.iter().any(|part| part.is_empty()) {
         return Err(UtilError::InvalidValue(format!("Invalid email domain: {}", parts[1])));
     }
     

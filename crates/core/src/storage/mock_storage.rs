@@ -36,10 +36,13 @@ impl MockStorage {
     }
     
     /// Set predefined data
-    pub fn with_data(mut self, data: HashMap<String, Vec<u8>>) -> Self {
-        let mut store = self.data.write().unwrap();
+    pub fn with_data(self, data: HashMap<String, Vec<u8>>) -> Self {
+        // Clone self first to avoid borrowing issues
+        let mut result = self;
+        let mut store = result.data.write().unwrap();
         *store = data;
-        self
+        drop(store); // Explicitly drop the write guard before returning
+        result
     }
     
     /// Clear all data

@@ -88,3 +88,49 @@ pub use distributed_storage::{DistributedStorage, DataAccessPolicy, StoragePeer,
 pub use federation_storage_router::{FederationStorageRouter, StorageRoute};
 pub use icn_economic::{EconomicSystem, FederationEconomicConfig, EconomicError};
 pub use icn_mutual_credit::{Transaction, TransactionType, TransactionStatus, Amount, CreditLimit, Account};
+
+#[cfg(test)]
+mod tests {
+    use crate::storage::versioning::{VersioningManager, VersionInfo};
+    use crate::storage::memory_storage::MemoryStorage;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    
+    #[tokio::test]
+    async fn test_versioning_integration() {
+        let storage = Arc::new(MemoryStorage::new());
+        let versioning = VersioningManager::new(Arc::clone(&storage), 3);
+        
+        // Generate a test key and version ID
+        let key = "versioned-key";
+        let version_id = versioning.generate_version_id();
+        let version_key = versioning.create_version_storage_key(key, &version_id);
+        
+        // Store version data
+        let data = b"Version 1 data";
+        storage.put(&version_key, data).await.unwrap();
+        
+        // Create version info
+        let version_info = VersionInfo {
+            version_id: version_id.clone(),
+            created_at: 1000,
+            size_bytes: data.len() as u64,
+            metadata: HashMap::new(),
+            storage_key: version_key.clone(),
+            content_hash: "hash1".to_string(),
+            created_by: "test-user".to_string(),
+            comment: Some("Initial version".to_string()),
+        };
+        
+        // Initialize versioning 
+        versioning.init_versioning(key, None, Some(version_info)).await.unwrap();
+        
+        // Get history and verify
+        let history = versioning.get_version_history(key).await.unwrap();
+        assert_eq!(history.versions.len(), 1);
+        assert_eq!(history.current_version_id, Some(version_id));
+        
+        // Clean up
+        versioning.delete_all_versions(key).await.unwrap();
+    }
+}

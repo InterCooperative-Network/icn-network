@@ -1903,9 +1903,18 @@ dependencies = [
 name = "icn"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "argon2",
  "async-trait",
+ "bs58 0.4.0",
+ "chacha20poly1305",
  "chrono",
+ "curve25519-dalek 3.2.0",
+ "ed25519-dalek 1.0.1",
  "env_logger 0.10.2",
+ "hex",
+ "hkdf",
  "icn-core",
  "icn-economic",
  "icn-governance",
@@ -1913,10 +1922,18 @@ dependencies = [
  "icn-mutual-credit",
  "icn-network",
  "log",
+ "pbkdf2",
+ "rand 0.7.3",
+ "rand_core 0.6.4",
+ "ring 0.17.14",
+ "rust_decimal",
  "serde",
  "serde_json",
+ "sha2 0.10.8",
  "thiserror 1.0.69",
  "tokio",
+ "uuid 1.16.0",
+ "x25519-dalek",
 ]
 
 [[package]]
@@ -2021,6 +2038,7 @@ dependencies = [
  "toml 0.7.8",
  "tracing",
  "tracing-subscriber",
+ "uuid 1.16.0",
 ]
 
 [[package]]

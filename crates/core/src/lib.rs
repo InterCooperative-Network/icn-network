@@ -90,10 +90,59 @@ pub async fn init() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::Storage;
+    use crate::storage::{Storage, MemoryStorage, VersioningManager, VersionInfo};
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::RwLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
     
     // Test implementations and code
+    
+    #[tokio::test]
+    async fn test_versioning_integration() {
+        // Setup storage and versioning
+        let storage = Arc::new(MemoryStorage::new());
+        let versioning_manager = VersioningManager::new(storage.clone(), 5);
+        
+        // Generate test key and version ID
+        let test_key = "test-versioned-doc";
+        let version_id = versioning_manager.generate_version_id();
+        
+        // Create version storage key and store some data
+        let version_storage_key = versioning_manager.create_version_storage_key(test_key, &version_id);
+        let test_data = b"This is version 1 of the document";
+        storage.put(&version_storage_key, test_data).await.unwrap();
+        
+        // Create metadata for the version
+        let metadata = HashMap::new();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        // Create version info
+        let version_info = VersionInfo {
+            version_id: version_id.clone(),
+            created_at: timestamp,
+            size_bytes: test_data.len() as u64,
+            metadata,
+            storage_key: version_storage_key,
+            content_hash: "fakehash123".to_string(),
+            created_by: "test-user".to_string(),
+            comment: Some("Initial version".to_string()),
+        };
+        
+        // Initialize versioning with the version info
+        versioning_manager.init_versioning(test_key, &version_id, version_info)
+            .await
+            .unwrap();
+        
+        // Get version history and verify
+        let history = versioning_manager.get_version_history(test_key).await.unwrap();
+        assert_eq!(history.version_count(), 1);
+        assert_eq!(history.current_version_id, Some(version_id));
+        
+        // Clean up
+        versioning_manager.delete_all_versions(test_key).await.unwrap();
+    }
 } 

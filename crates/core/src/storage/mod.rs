@@ -105,8 +105,16 @@ impl<T: Storage> JsonStorage for T {}
 pub mod file_storage;
 pub use file_storage::FileStorage;
 
+// Versioning module
+pub mod versioning;
+pub use versioning::{VersionInfo, VersionHistory, VersioningManager, VersioningError};
+
 // Mock storage for testing
 #[cfg(any(test, feature = "testing"))]
 pub mod mock_storage;
 #[cfg(any(test, feature = "testing"))]
-pub use mock_storage::MockStorage; 
+pub use mock_storage::MockStorage;
+
+// Memory storage implementation
+pub mod memory_storage;
+pub use memory_storage::MemoryStorage; 
