@@ -203,21 +203,14 @@ impl DiscoveryManager {
     }
     
     /// Connect to a peer
-    async fn connect_to_peer(&self, peer_id: PeerId, addr: Multiaddr) -> NetworkResult<()> {
-        // Check if we're already connected
-        let peers = self.network.get_connected_peers().await?;
-        if peers.iter().any(|p| p.peer_id == peer_id.to_string()) {
-            return Ok(());
-        }
-        
-        // Try to connect
-        match self.network.connect(&addr).await {
-            Ok(_) => {
-                info!("Connected to peer {} at {}", peer_id, addr);
-                Ok(())
+    pub async fn connect_to_peer(&self, addr: &Multiaddr) -> NetworkResult<PeerId> {
+        match self.network.connect(addr.clone()).await {
+            Ok(peer_id) => {
+                debug!("Connected to peer {} at {}", peer_id, addr);
+                Ok(peer_id)
             }
             Err(e) => {
-                warn!("Failed to connect to peer {} at {}: {}", peer_id, addr, e);
+                error!("Failed to connect to peer at {}: {}", addr, e);
                 Err(e)
             }
         }
@@ -253,7 +246,7 @@ impl DiscoveryManager {
                 for (peer_id, addr) in peers {
                     if !connected.contains(&peer_id.to_string()) {
                         debug!("Trying to connect to known peer {} at {}", peer_id, addr);
-                        let _ = network.connect(&addr).await;
+                        let _ = network.connect(addr).await;
                     }
                 }
                 
@@ -282,6 +275,18 @@ impl DiscoveryManager {
         // ... existing code ...
         Ok(())
     }
+
+    /// Connect to bootstrap nodes
+    pub async fn connect_to_bootstrap_nodes(&self) -> NetworkResult<()> {
+        // Use bootstrap peers from config
+        for addr in &self.config.bootstrap_peers {
+            let network = self.network.clone();
+            let _ = network.connect(addr.clone()).await;
+        }
+        
+        // Return success
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -293,7 +298,7 @@ impl PeerDiscovery for DiscoveryManager {
         // Connect to bootstrap peers
         if self.config.use_bootstrap {
             for addr in &self.config.bootstrap_peers {
-                match self.network.connect(addr).await {
+                match self.network.connect(addr.clone()).await {
                     Ok(peer_id) => {
                         info!("Connected to bootstrap peer {} at {}", peer_id, addr);
                         self.add_discovered_peer(peer_id, addr.clone()).await?;

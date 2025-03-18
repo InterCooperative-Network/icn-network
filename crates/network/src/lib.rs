@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::sync::RwLock;
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use thiserror::Error;
 use serde::{Serialize, Deserialize};
@@ -123,6 +124,14 @@ pub enum NetworkError {
     /// Transport error
     #[error("Transport error: {0}")]
     TransportError(String),
+    
+    /// Invalid peer ID
+    #[error("Invalid peer ID: {0}")]
+    InvalidPeerId(String),
+    
+    /// Configuration error
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
 }
 
 /// Result type for network operations
@@ -301,7 +310,7 @@ pub trait MessageHandler: Send + Sync {
 
 /// Network service trait
 #[async_trait]
-pub trait NetworkService: Send + Sync {
+pub trait NetworkService: Send + Sync + 'static {
     /// Start the network service
     async fn start(&self) -> NetworkResult<()>;
     
@@ -312,22 +321,26 @@ pub trait NetworkService: Send + Sync {
     async fn broadcast(&self, message: NetworkMessage) -> NetworkResult<()>;
     
     /// Send a message to a specific peer
-    async fn send_to(&self, peer_id: &PeerId, message: NetworkMessage) -> NetworkResult<()>;
+    async fn send_to(&self, peer_id: &str, message: NetworkMessage) -> NetworkResult<()>;
     
     /// Connect to a peer
-    async fn connect(&self, addr: &Multiaddr) -> NetworkResult<PeerId>;
+    async fn connect(&self, address: Multiaddr) -> NetworkResult<PeerId>;
     
     /// Disconnect from a peer
-    async fn disconnect(&self, peer_id: &PeerId) -> NetworkResult<()>;
+    async fn disconnect(&self, peer_id: &str) -> NetworkResult<()>;
     
     /// Get information about a peer
-    async fn get_peer_info(&self, peer_id: &PeerId) -> NetworkResult<PeerInfo>;
+    async fn get_peer_info(&self, peer_id: &str) -> NetworkResult<PeerInfo>;
     
     /// Get a list of connected peers
     async fn get_connected_peers(&self) -> NetworkResult<Vec<PeerInfo>>;
     
     /// Register a handler for a specific message type
     async fn register_message_handler(&self, message_type: &str, handler: Arc<dyn MessageHandler>) -> NetworkResult<()>;
+    
+    /// Subscribe to receive network messages
+    /// Returns a channel receiver that will receive (peer_id, message) tuples
+    async fn subscribe_messages(&self) -> NetworkResult<mpsc::Receiver<(String, NetworkMessage)>>;
 }
 
 /// Public modules
@@ -338,6 +351,7 @@ pub mod sync;
 pub mod metrics;
 pub mod reputation;
 pub mod circuit_relay;
+pub mod adapter;
 
 /// Private modules
 mod libp2p_compat;
@@ -386,4 +400,7 @@ mod peer_id_serde {
         let s = String::deserialize(deserializer)?;
         PeerId::from_str(&s).map_err(serde::de::Error::custom)
     }
-} 
+}
+
+/// Re-export adapter functions
+pub use adapter::{core_to_network_message, network_to_core_message}; 

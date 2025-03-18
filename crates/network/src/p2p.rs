@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::time::Instant;
+use std::str::FromStr;
 
 use async_trait::async_trait;
 use futures::prelude::*;
@@ -29,6 +30,7 @@ use tokio::sync::{mpsc, RwLock, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use tokio::sync::watch;
+use tokio::sync::oneshot;
 
 use icn_core::storage::Storage;
 
@@ -1237,7 +1239,7 @@ impl P2pNetwork {
                 match relay_manager.connect_via_relay(*peer_id).await {
                     Ok(relay_addr) => {
                         // Connect via the relay address
-                        self.connect(&relay_addr).await?;
+                        self.connect(relay_addr).await?;
                         return Ok(());
                     }
                     Err(e) => {
@@ -1294,7 +1296,7 @@ impl P2pNetwork {
     /// Connect to a peer using a string address
     async fn connect_by_string(&self, addr_str: &str) -> NetworkResult<PeerId> {
         match addr_str.parse::<Multiaddr>() {
-            Ok(addr) => self.connect(&addr).await,
+            Ok(addr) => self.connect(addr).await,
             Err(e) => Err(NetworkError::InvalidAddress(format!("Failed to parse address: {}", e))),
         }
     }
@@ -1483,41 +1485,55 @@ impl NetworkService for P2pNetwork {
         Ok(())
     }
     
-    async fn send_to(&self, peer_id: &PeerId, message: NetworkMessage) -> NetworkResult<()> {
-        self.command_tx.lock().await.send(Command::SendTo(*peer_id, message)).await
-            .map_err(|e| NetworkError::ChannelClosed(format!("Failed to send message: {}", e)))?;
+    async fn send_to(&self, peer_id: &str, message: NetworkMessage) -> NetworkResult<()> {
+        // Convert string to PeerId
+        let peer_id = PeerId::from_str(peer_id)
+            .map_err(|_| NetworkError::InvalidPeerId(peer_id.to_string()))?;
+            
+        let (tx, mut rx) = mpsc::channel::<NetworkResult<()>>(1);
+        self.command_tx.lock().await.send(Command::SendTo(peer_id, message)).await
+            .map_err(|_| NetworkError::ChannelClosed("Failed to send message command".into()))?;
+        
         Ok(())
     }
     
-    async fn connect(&self, addr: &Multiaddr) -> NetworkResult<PeerId> {
-        let (tx, mut rx) = mpsc::channel(1);
-        self.command_tx.lock().await.send(Command::Connect(addr.clone(), tx)).await
-            .map_err(|e| NetworkError::ChannelClosed(format!("Failed to send connect command: {}", e)))?;
+    async fn connect(&self, address: Multiaddr) -> NetworkResult<PeerId> {
+        let (tx, mut rx) = mpsc::channel::<NetworkResult<PeerId>>(1);
+        self.command_tx.lock().await.send(Command::Connect(address, tx)).await
+            .map_err(|_| NetworkError::ChannelClosed("Failed to send connect command".into()))?;
         
         rx.recv().await
-            .unwrap_or_else(|| Err(NetworkError::ChannelClosed("Response channel closed".to_string())))
+            .unwrap_or_else(|| Err(NetworkError::ChannelClosed("Connect response channel closed".into())))
     }
     
-    async fn disconnect(&self, peer_id: &PeerId) -> NetworkResult<()> {
-        let (tx, mut rx) = mpsc::channel(1);
-        self.command_tx.lock().await.send(Command::Disconnect(*peer_id, tx)).await
-            .map_err(|e| NetworkError::ChannelClosed(format!("Failed to send disconnect command: {}", e)))?;
+    async fn disconnect(&self, peer_id: &str) -> NetworkResult<()> {
+        // Convert string to PeerId
+        let peer_id = PeerId::from_str(peer_id)
+            .map_err(|_| NetworkError::InvalidPeerId(peer_id.to_string()))?;
+            
+        let (tx, mut rx) = mpsc::channel::<NetworkResult<()>>(1);
+        self.command_tx.lock().await.send(Command::Disconnect(peer_id, tx)).await
+            .map_err(|_| NetworkError::ChannelClosed("Failed to send disconnect command".into()))?;
         
         rx.recv().await
-            .unwrap_or_else(|| Err(NetworkError::ChannelClosed("Response channel closed".to_string())))
+            .unwrap_or_else(|| Err(NetworkError::ChannelClosed("Disconnect response channel closed".into())))
     }
     
-    async fn get_peer_info(&self, peer_id: &PeerId) -> NetworkResult<PeerInfo> {
-        let (tx, mut rx) = mpsc::channel(1);
-        self.command_tx.lock().await.send(Command::GetPeerInfo(*peer_id, tx)).await
-            .map_err(|e| NetworkError::ChannelClosed(format!("Failed to send get_peer_info command: {}", e)))?;
+    async fn get_peer_info(&self, peer_id: &str) -> NetworkResult<PeerInfo> {
+        // Convert string to PeerId
+        let peer_id = PeerId::from_str(peer_id)
+            .map_err(|_| NetworkError::InvalidPeerId(peer_id.to_string()))?;
+            
+        let (tx, mut rx) = mpsc::channel::<NetworkResult<PeerInfo>>(1);
+        self.command_tx.lock().await.send(Command::GetPeerInfo(peer_id, tx)).await
+            .map_err(|_| NetworkError::ChannelClosed("Failed to send get_peer_info command".into()))?;
         
         rx.recv().await
-            .unwrap_or_else(|| Err(NetworkError::ChannelClosed("Response channel closed".to_string())))
+            .unwrap_or_else(|| Err(NetworkError::ChannelClosed("Get peer info response channel closed".into())))
     }
     
     async fn get_connected_peers(&self) -> NetworkResult<Vec<PeerInfo>> {
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, mut rx) = mpsc::channel::<NetworkResult<Vec<PeerInfo>>>(1);
         self.command_tx.lock().await.send(Command::GetConnectedPeers(tx)).await
             .map_err(|e| NetworkError::ChannelClosed(format!("Failed to send get_connected_peers command: {}", e)))?;
         
@@ -1526,11 +1542,37 @@ impl NetworkService for P2pNetwork {
     }
     
     async fn register_message_handler(&self, message_type: &str, handler: Arc<dyn MessageHandler>) -> NetworkResult<()> {
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, mut rx) = mpsc::channel::<NetworkResult<()>>(1);
         self.command_tx.lock().await.send(Command::RegisterHandler(message_type.to_string(), handler, tx)).await
             .map_err(|e| NetworkError::ChannelClosed(format!("Failed to send register_handler command: {}", e)))?;
         
         rx.recv().await
             .unwrap_or_else(|| Err(NetworkError::ChannelClosed("Response channel closed".to_string())))
+    }
+
+    async fn subscribe_messages(&self) -> NetworkResult<mpsc::Receiver<(String, NetworkMessage)>> {
+        let (tx, rx) = mpsc::channel(100);
+        
+        // Create a message handler that forwards messages to the channel
+        let message_handler = Arc::new(messaging::DefaultMessageHandler::new(
+            0, // handler ID
+            "message_subscriber".to_string(), // handler name
+            move |msg: &NetworkMessage, peer: &PeerInfo| {
+                let tx = tx.clone();
+                let peer_id = peer.id.clone();
+                let msg = msg.clone();
+                
+                tokio::spawn(async move {
+                    let _ = tx.send((peer_id, msg)).await;
+                });
+                
+                Ok(())
+            }
+        ));
+        
+        // Register the message handler for all message types
+        self.register_message_handler("*", message_handler).await?;
+        
+        Ok(rx)
     }
 } 

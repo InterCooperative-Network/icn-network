@@ -2048,6 +2048,7 @@ dependencies = [
  "icn-identity",
  "icn-ledger",
  "icn-network",
+ "libp2p",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

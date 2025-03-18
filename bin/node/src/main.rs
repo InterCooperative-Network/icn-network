@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use config::{Config, File};
-use icn_network::{P2pConfig, P2pNetwork, NetworkMessage};
+use icn_network::{P2pConfig, P2pNetwork, NetworkMessage, NetworkService};
 use libp2p::Multiaddr;
 use serde::Deserialize;
 use tokio::signal;
@@ -186,14 +186,22 @@ async fn main() -> Result<()> {
     p2p_config.peer_store_path = Some(format!("{}/peers", data_dir));
     
     // Create storage
-    let storage = Arc::new(icn_core::storage::FileStorage::new(&data_dir)
-        .context("Failed to initialize storage")?);
+    let storage = Arc::new(
+        icn_core::storage::FileStorage::new(&data_dir)
+            .await
+            .context("Failed to initialize storage")?
+    );
     
     // Create and start the network
-    let (p2p_network, message_receiver) = P2pNetwork::new(
+    let p2p_network = P2pNetwork::new(
         storage.clone(),
         p2p_config,
-    ).context("Failed to create P2P network")?;
+    )
+    .await
+    .context("Failed to create P2P network")?;
+    
+    let message_receiver = p2p_network.subscribe_messages().await
+        .context("Failed to subscribe to network messages")?;
     
     let network_handle = p2p_network.start().await
         .context("Failed to start P2P network")?;
@@ -224,7 +232,7 @@ async fn main() -> Result<()> {
 // Handle incoming network messages
 async fn handle_messages(mut receiver: mpsc::Receiver<(String, NetworkMessage)>) {
     while let Some((peer_id, message)) = receiver.recv().await {
-        match &message {
+        match message {
             NetworkMessage::LedgerStateUpdate(update) => {
                 debug!("Received ledger state update from {}: hash={}, tx_count={}", 
                        peer_id, update.ledger_hash, update.transaction_count);
