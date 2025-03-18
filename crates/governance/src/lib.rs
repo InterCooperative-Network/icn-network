@@ -3,14 +3,14 @@
 //! This module provides decentralized governance capabilities for the
 //! InterCooperative Network, including proposal creation, voting, and execution.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::fmt;
 
 use async_trait::async_trait;
 use tokio::sync::RwLock;
-use thiserror::Error;
+use tracing::{debug, error, info, warn};
 use serde::{Serialize, Deserialize};
 
 use icn_core::{
@@ -19,7 +19,7 @@ use icn_core::{
     utils::timestamp_secs,
 };
 
-use icn_identity::IdentityService;
+use icn_identity::IdentityProvider;
 
 // Define the types we need
 pub type IdentityResult<T> = Result<T, GovernanceError>;
@@ -514,6 +514,8 @@ impl ProposalManager {
             title: "Stub Proposal".to_string(),
             description: "This is a stub proposal".to_string(),
             status: ProposalStatus::Active,
+            created_at: icn_core::utils::timestamp_secs(),
+            updated_at: icn_core::utils::timestamp_secs(),
         })
     }
     
@@ -535,4 +537,166 @@ mod tests {
         assert_eq!(proposal.title, "Test Proposal");
         assert_eq!(proposal.description, "A test proposal");
     }
+}
+
+// Implement Reputation-related types for use in governance
+pub mod reputation {
+    use std::collections::HashMap;
+    use async_trait::async_trait;
+    use icn_core::crypto::identity::NodeId;
+    use crate::GovernanceError;
+
+    /// Result type for reputation operations
+    pub type ReputationResult<T> = Result<T, GovernanceError>;
+    
+    /// Types of evidence
+    #[derive(Debug, Clone)]
+    pub enum EvidenceType {
+        /// A successful transaction or interaction
+        SuccessfulTransaction,
+        /// A failed transaction or interaction
+        FailedTransaction,
+        /// Positive feedback from another identity
+        PositiveFeedback,
+        /// Negative feedback from another identity
+        NegativeFeedback,
+        /// Validation of some work or contribution
+        Validation,
+        /// Attestation from a trusted identity
+        Attestation,
+        /// Governance participation (voting, proposals)
+        GovernanceParticipation,
+        /// A custom evidence type
+        Custom(String),
+    }
+    
+    /// Evidence about an identity
+    #[derive(Debug, Clone)]
+    pub struct Evidence {
+        /// Unique identifier for this evidence
+        pub id: String,
+        /// The identity that submitted the evidence
+        pub submitter: NodeId,
+        /// The identity the evidence is about
+        pub subject: NodeId,
+        /// The type of evidence
+        pub evidence_type: EvidenceType,
+        /// A description of the evidence
+        pub description: String,
+        /// The weight of this evidence (-1.0 to 1.0)
+        pub weight: f64,
+        /// When the evidence was created
+        pub created_at: u64,
+    }
+    
+    impl Evidence {
+        /// Create new evidence
+        pub fn new(
+            submitter: NodeId,
+            subject: NodeId,
+            evidence_type: EvidenceType,
+            description: String,
+            weight: f64,
+        ) -> Self {
+            Self {
+                id: format!("ev-{}", rand::random::<u64>()),
+                submitter,
+                subject,
+                evidence_type,
+                description,
+                weight,
+                created_at: icn_core::utils::timestamp_secs(),
+            }
+        }
+    }
+    
+    /// Reputation score for an identity
+    #[derive(Debug, Clone)]
+    pub struct ReputationScore {
+        /// The identity this score is for
+        pub identity_id: NodeId,
+        /// The overall score (0.0 to 1.0)
+        pub score: f64,
+        /// The number of positive evidence items
+        pub positive_count: u32,
+        /// The number of negative evidence items
+        pub negative_count: u32,
+        /// The total number of evidence items
+        pub total_count: u32,
+        /// Scores by category
+        pub category_scores: HashMap<String, f64>,
+        /// Last updated timestamp
+        pub updated_at: u64,
+    }
+    
+    impl ReputationScore {
+        /// Create a new reputation score
+        pub fn new(identity_id: NodeId) -> Self {
+            Self {
+                identity_id,
+                score: 0.5,  // Default neutral score
+                positive_count: 0,
+                negative_count: 0,
+                total_count: 0,
+                category_scores: HashMap::new(),
+                updated_at: icn_core::utils::timestamp_secs(),
+            }
+        }
+    }
+    
+    /// Trait for reputation systems
+    #[async_trait]
+    pub trait Reputation: Send + Sync {
+        /// Get the reputation score for an identity
+        async fn get_reputation(&self, identity_id: &NodeId) -> ReputationResult<ReputationScore>;
+        
+        /// Submit evidence about an identity
+        async fn submit_evidence(&self, evidence: Evidence) -> ReputationResult<()>;
+        
+        /// Get evidence for an identity
+        async fn get_evidence(&self, identity_id: &NodeId) -> ReputationResult<Vec<Evidence>>;
+        
+        /// Get a specific piece of evidence by ID
+        async fn get_evidence_by_id(&self, evidence_id: &str) -> ReputationResult<Option<Evidence>>;
+        
+        /// Verify evidence signature
+        async fn verify_evidence(&self, evidence: &Evidence) -> ReputationResult<bool>;
+    }
+}
+
+/// Add a new vote to a proposal
+pub async fn add_vote(&self, proposal_id: &str, vote: Vote) -> GovernanceResult<()> {
+    // Verify the proposal exists
+    let mut proposal = self.get_proposal(proposal_id).await?;
+    
+    // Verify proposal is in voting status
+    if proposal.status != ProposalStatus::Voting {
+        return Err(GovernanceError::InvalidProposalStatus(
+            proposal.id.clone(),
+            proposal.status.to_string(),
+            ProposalStatus::Voting.to_string(),
+        ));
+    }
+    
+    // Verify the voter's identity
+    let voter_id = &vote.voter_id;
+    
+    // Check if the voter already voted
+    let votes = self.get_votes_for_proposal(proposal_id).await?;
+    if votes.iter().any(|v| v.voter_id == voter_id) {
+        return Err(GovernanceError::AlreadyVoted(
+            proposal_id.to_string(),
+            voter_id.clone(),
+        ));
+    }
+    
+    // Store the vote
+    let vote_path = format!("{}/{}/{}", VOTES_PATH, proposal_id, vote.id);
+    self.storage.put_json(&vote_path, &vote).await
+        .map_err(|e| GovernanceError::StorageError(e.to_string()))?;
+    
+    // Add to the cache
+    {
+        let mut votes_map = self.votes.write().await;
+        let proposal_votes = votes_map
 } 

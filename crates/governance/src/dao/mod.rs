@@ -319,6 +319,25 @@ pub struct TreasuryPolicy {
     pub credit_limit: f64,
 }
 
+/// Voting policy for the DAO
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VotingPolicy {
+    /// Name of the policy
+    pub name: String,
+    /// Description of the policy
+    pub description: String,
+    /// Voting method (e.g., majority, ranked-choice)
+    pub method: String,
+    /// Minimum quorum percentage (0.0 to 1.0)
+    pub quorum: f64,
+    /// Approval threshold percentage (0.0 to 1.0)
+    pub threshold: f64,
+    /// Voting duration in seconds
+    pub duration: u64,
+    /// Additional parameters
+    pub parameters: HashMap<String, String>,
+}
+
 /// Manager for DAOs
 pub struct DaoManager {
     /// Registered DAOs

@@ -12,18 +12,19 @@ use serde::{Serialize, Deserialize};
 use async_trait::async_trait;
 
 use icn_core::{
-    storage::Storage,
+    storage::{Storage, StorageResult, StorageError},
+    config::ConfigProvider,
     crypto::{identity::NodeId, Signature, verify_signature},
     utils::timestamp_secs,
 };
 
-use icn_identity::service::{
-    IdentityService as IdentityProvider, 
-    Identity
-};
+use icn_identity::IdentityProvider;
 
-// Local type definition
+// Local type definitions
 type IdentityResult<T> = Result<T, crate::GovernanceError>;
+
+// Import reputation types from our local module
+use crate::reputation::{Reputation, Evidence, EvidenceType, ReputationScore};
 
 use crate::{
     Governance, GovernanceConfig, GovernanceResult, GovernanceError,
@@ -234,27 +235,23 @@ impl GovernanceManager {
         weight: f64,
     ) -> GovernanceResult<()> {
         // Create evidence data
-        let mut data = HashMap::new();
-        data.insert("activity_type".to_string(), activity_type.to_string());
         
         // Use the current node's identity as the submitter
         let submitter = self.identity_provider.get_identity().await?;
         
         // Create evidence
         let evidence = Evidence::new(
-            submitter.id.clone(),
+            submitter.clone(),
             identity_id.clone(),
             EvidenceType::GovernanceParticipation,
-            description.to_string(),
+            format!("{}: {}", activity_type, description),
             weight,
-            data,
-            Vec::new(),
         );
         
         // Submit the evidence
         match self.reputation.submit_evidence(evidence).await {
             Ok(_) => Ok(()),
-            Err(e) => Err(GovernanceError::ReputationError(e)),
+            Err(e) => Err(e), // Already a GovernanceError
         }
     }
     
