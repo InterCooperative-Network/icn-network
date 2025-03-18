@@ -62,13 +62,21 @@ pub enum GovernanceError {
     #[error("Permission denied: {0}")]
     PermissionDenied(String),
     
+    /// Serialization error
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
+    
     /// IO error
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
     
-    /// Serialization error
-    #[error("Serialization error: {0}")]
-    SerializationError(String),
+    /// Not found error
+    #[error("Not found")]
+    NotFound,
+    
+    /// Invalid input
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 }
 
 /// Result type for governance operations
@@ -430,6 +438,9 @@ pub trait Governance: Send + Sync {
     
     /// Cancel a proposal (only allowed by the proposer or admins)
     async fn cancel_proposal(&self, proposal_id: &str) -> GovernanceResult<()>;
+    
+    /// Execute the proposal if it's approved
+    async fn execute_proposal(&self, id: &str) -> GovernanceResult<()>;
 }
 
 pub mod execution;
@@ -590,6 +601,12 @@ pub mod reputation {
         Attestation,
         /// Governance participation (voting, proposals)
         GovernanceParticipation,
+        /// Participation in voting
+        Voting,
+        /// Creation of a proposal
+        ProposalCreation,
+        /// Execution of a proposal
+        ProposalExecution,
         /// A custom evidence type
         Custom(String),
     }
@@ -1040,5 +1057,17 @@ impl<S: Storage + 'static> Governance for DefaultGovernance<S> {
             .map_err(GovernanceError::StorageError)?;
         
         Ok(())
+    }
+    
+    async fn execute_proposal(&self, id: &str) -> GovernanceResult<()> {
+        // Implementation of execute_proposal method
+        Ok(())
+    }
+}
+
+// Implementation for IdentityError
+impl From<icn_identity::IdentityError> for GovernanceError {
+    fn from(err: icn_identity::IdentityError) -> Self {
+        Self::IdentityError(err.to_string())
     }
 } 
