@@ -11,7 +11,6 @@ use tokio::fs;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use anyhow::Result;
 
 /// Storage options for configuring storage behavior
 #[derive(Debug, Clone)]

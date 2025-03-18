@@ -1940,10 +1940,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "futures",
  "icn-core",
  "icn-identity",
  "raft-consensus",
+ "rand 0.7.3",
  "serde",
  "serde_json",
  "tempfile",

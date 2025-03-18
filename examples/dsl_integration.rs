@@ -23,13 +23,41 @@ async fn main() -> Result<()> {
     // Create the DSL manager with the proposal manager
     let mut dsl_manager = GovernanceDslManager::new(Arc::clone(&proposal_manager)).await;
     
-    // Load and execute a DSL script from a file
-    let script_path = "bin/cli/src/dsl/examples/budget_allocation.dsl";
-    println!("Executing DSL script: {}", script_path);
+    // Load and execute a simple DSL script
+    let script = r#"
+        proposal "EducationBudget" {
+            title: "Fund Education Program"
+            description: "Allocate 500 credits to the Education Program for workshop supplies and speaker fees."
+            
+            voting {
+                method: "ranked_choice"
+                threshold: 60%
+                quorum: 51%
+                duration: "7 days"
+            }
+            
+            on_approve {
+                transaction {
+                    from: "treasury"
+                    to: "education_program"
+                    amount: 500
+                    asset: "credits"
+                }
+                
+                log("Budget allocation for Education Program approved and executed.")
+            }
+            
+            on_reject {
+                log("Budget allocation for Education Program was rejected.")
+            }
+        }
+    "#;
+    
+    println!("Executing DSL script");
     
     // You can run this in a separate task to avoid blocking
     let handle = tokio::spawn(async move {
-        match dsl_manager.execute_script_file(script_path).await {
+        match dsl_manager.execute_script(script).await {
             Ok(_) => println!("Script executed successfully"),
             Err(e) => eprintln!("Script execution failed: {}", e),
         }
@@ -55,7 +83,7 @@ async fn main() -> Result<()> {
         println!();
     }
     
-    // Simulate voting on the proposal
+    // Simulate voting on a proposal
     if let Some(proposal) = proposal_manager.list_proposals().await?.first() {
         println!("Casting votes on proposal: {}", proposal.id);
         
