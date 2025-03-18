@@ -1,12 +1,27 @@
 //! Transaction management for the mutual credit system.
 
 use crate::types::{Amount, DID, Timestamp};
-use icn_crypto::Signature;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::fmt;
 use uuid::Uuid;
+
+/// A simple signature type for transaction verification
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Signature(Vec<u8>);
+
+impl Signature {
+    /// Create a new signature from bytes
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    /// Get the underlying bytes
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 /// A unique identifier for a transaction
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

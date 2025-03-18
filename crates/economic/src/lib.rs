@@ -51,7 +51,16 @@ pub enum EconomicError {
     Serialization(#[from] serde_json::Error),
     
     #[error("Internal error: {0}")]
-    Internal(String)
+    Internal(String),
+
+    #[error("Resource not found: {0}")]
+    NotFound(String),
+
+    #[error("Invalid state: {0}")]
+    InvalidState(String),
+
+    #[error("Invalid input: {0}")]
+    InvalidInput(String)
 }
 
 pub type Result<T> = std::result::Result<T, EconomicError>;

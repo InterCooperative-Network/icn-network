@@ -17,7 +17,7 @@ pub use credit_graph::{CreditGraph, CreditLineId, CreditLineStep};
 pub use credit_line::{
     CollateralRequirement, CollateralType, CreditCondition, CreditLine, CreditTerms, ResourceCommitment,
 };
-pub use error::CreditError;
+pub use error::{CreditError, Result};
 pub use transaction::{Transaction as TransactionModule, TransactionStatus as TransactionStatusModule, TransactionType as TransactionTypeModule};
 pub use transaction_processor::{TransactionProcessor, TransactionResult, CreditClearingParams};
 pub use types::{Amount as AmountType, DID, Timestamp};
@@ -26,7 +26,6 @@ pub use confidential::*;
 /// Version of the mutual credit implementation
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-use icn_common::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -158,7 +157,7 @@ impl Account {
     /// Apply a transaction to this account
     pub fn apply_transaction(&mut self, amount: Amount) -> Result<()> {
         if !self.can_transact(amount) {
-            return Err(Error::validation(format!(
+            return Err(CreditError::InsufficientFunds(format!(
                 "Insufficient credit for account {}: balance={}, limit={}, amount={}",
                 self.id, self.balance.value(), self.credit_limit.value(), amount.value()
             )));
@@ -299,10 +298,10 @@ impl MutualCreditSystem {
     /// Create a new account
     pub fn create_account(&self, id: AccountId, name: String, credit_limit: CreditLimit) -> Result<Account> {
         let mut accounts = self.accounts.write()
-            .map_err(|_| Error::internal("Failed to acquire write lock on accounts"))?;
+            .map_err(|_| CreditError::Internal("Failed to acquire write lock on accounts".to_string()))?;
         
         if accounts.contains_key(&id) {
-            return Err(Error::validation(format!("Account already exists: {}", id)));
+            return Err(CreditError::AccountAlreadyExists(format!("Account already exists: {}", id)));
         }
         
         let account = Account::new(id.clone(), name, credit_limit);
@@ -314,11 +313,11 @@ impl MutualCreditSystem {
     /// Get an account
     pub fn get_account(&self, id: &AccountId) -> Result<Account> {
         let accounts = self.accounts.read()
-            .map_err(|_| Error::internal("Failed to acquire read lock on accounts"))?;
+            .map_err(|_| CreditError::Internal("Failed to acquire read lock on accounts".to_string()))?;
         
         accounts.get(id)
             .cloned()
-            .ok_or_else(|| Error::not_found(format!("Account not found: {}", id)))
+            .ok_or_else(|| CreditError::AccountNotFound(format!("Account not found: {}", id)))
     }
     
     /// Create a new transaction
@@ -336,7 +335,7 @@ impl MutualCreditSystem {
         
         // Validate amount
         if amount.is_zero() {
-            return Err(Error::validation("Transaction amount cannot be zero"));
+            return Err(CreditError::Validation("Transaction amount cannot be zero".to_string()));
         }
         
         // Create the transaction
@@ -351,7 +350,7 @@ impl MutualCreditSystem {
         
         // Store the transaction
         let mut transactions = self.transactions.write()
-            .map_err(|_| Error::internal("Failed to acquire write lock on transactions"))?;
+            .map_err(|_| CreditError::Internal("Failed to acquire write lock on transactions".to_string()))?;
         
         transactions.insert(transaction.id.clone(), transaction.clone());
         
@@ -362,35 +361,35 @@ impl MutualCreditSystem {
     pub fn execute_transaction(&self, transaction_id: &TransactionId) -> Result<Transaction> {
         // Get the transaction
         let mut transactions = self.transactions.write()
-            .map_err(|_| Error::internal("Failed to acquire write lock on transactions"))?;
+            .map_err(|_| CreditError::Internal("Failed to acquire write lock on transactions".to_string()))?;
         
         // First, clone the transaction to avoid borrow issues
         let transaction_opt = transactions.get(transaction_id).cloned();
         if transaction_opt.is_none() {
-            return Err(Error::not_found(format!("Transaction not found: {}", transaction_id)));
+            return Err(CreditError::NotFound(format!("Transaction not found: {}", transaction_id)));
         }
         let mut transaction = transaction_opt.unwrap();
         
         // Check transaction status
         if transaction.status != TransactionStatus::Pending {
-            return Err(Error::validation(format!(
+            return Err(CreditError::Validation(format!(
                 "Transaction {} is not in pending state: {:?}",
                 transaction_id, transaction.status
             )));
         }
         
         let mut accounts = self.accounts.write()
-            .map_err(|_| Error::internal("Failed to acquire write lock on accounts"))?;
+            .map_err(|_| CreditError::Internal("Failed to acquire write lock on accounts".to_string()))?;
         
         // Get clones of the accounts first to avoid multiple mutable borrows
         let source_account_opt = accounts.get(&transaction.source_account).cloned();
         let destination_account_opt = accounts.get(&transaction.destination_account).cloned();
         
         if source_account_opt.is_none() {
-            return Err(Error::not_found(format!("Source account not found: {}", transaction.source_account)));
+            return Err(CreditError::NotFound(format!("Source account not found: {}", transaction.source_account)));
         }
         if destination_account_opt.is_none() {
-            return Err(Error::not_found(format!("Destination account not found: {}", transaction.destination_account)));
+            return Err(CreditError::NotFound(format!("Destination account not found: {}", transaction.destination_account)));
         }
         
         let mut source_account = source_account_opt.unwrap();
@@ -399,7 +398,7 @@ impl MutualCreditSystem {
         if !source_account.can_transact(transaction.amount.negate()) {
             transaction.fail();
             transactions.insert(transaction.id.clone(), transaction.clone());
-            return Err(Error::validation("Insufficient funds or credit limit exceeded"));
+            return Err(CreditError::Validation("Insufficient funds or credit limit exceeded".to_string()));
         }
         
         source_account.apply_transaction(transaction.amount.negate())?;
@@ -417,17 +416,17 @@ impl MutualCreditSystem {
     /// Get a transaction
     pub fn get_transaction(&self, id: &TransactionId) -> Result<Transaction> {
         let transactions = self.transactions.read()
-            .map_err(|_| Error::internal("Failed to acquire read lock on transactions"))?;
+            .map_err(|_| CreditError::Internal("Failed to acquire read lock on transactions".to_string()))?;
         
         transactions.get(id)
             .cloned()
-            .ok_or_else(|| Error::not_found(format!("Transaction not found: {}", id)))
+            .ok_or_else(|| CreditError::NotFound(format!("Transaction not found: {}", id)))
     }
     
     /// Get all transactions for an account
     pub fn get_account_transactions(&self, account_id: &AccountId) -> Result<Vec<Transaction>> {
         let transactions = self.transactions.read()
-            .map_err(|_| Error::internal("Failed to acquire read lock on transactions"))?;
+            .map_err(|_| CreditError::Internal("Failed to acquire read lock on transactions".to_string()))?;
         
         Ok(transactions.values()
             .filter(|t| t.source_account == *account_id || t.destination_account == *account_id)
@@ -444,10 +443,10 @@ impl MutualCreditSystem {
     /// Update an account's credit limit
     pub fn update_credit_limit(&self, account_id: &AccountId, credit_limit: CreditLimit) -> Result<Account> {
         let mut accounts = self.accounts.write()
-            .map_err(|_| Error::internal("Failed to acquire write lock on accounts"))?;
+            .map_err(|_| CreditError::Internal("Failed to acquire write lock on accounts".to_string()))?;
         
         let account = accounts.get_mut(account_id)
-            .ok_or_else(|| Error::not_found(format!("Account not found: {}", account_id)))?;
+            .ok_or_else(|| CreditError::NotFound(format!("Account not found: {}", account_id)))?;
         
         account.credit_limit = credit_limit;
         account.updated_at = Utc::now();

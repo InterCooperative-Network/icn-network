@@ -1,10 +1,11 @@
 //! Error types for the mutual credit system.
 
+use std::fmt;
 use thiserror::Error;
 use crate::confidential::ConfidentialError;
 
 /// Errors that can occur in the mutual credit system
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 pub enum CreditError {
     /// Account already exists
     #[error("Account already exists: {0}")]
@@ -43,7 +44,7 @@ pub enum CreditError {
     InvalidTransaction(String),
     
     /// No path found
-    #[error("No path found: {0}")]
+    #[error("No path found for transaction: {0}")]
     NoPathFound(String),
     
     /// Feature not implemented
@@ -62,57 +63,32 @@ pub enum CreditError {
     #[error("Storage error: {0}")]
     StorageError(String),
     
+    /// Not found error
+    #[error("Not found: {0}")]
+    NotFound(String),
+    
+    /// Validation error
+    #[error("Validation error: {0}")]
+    Validation(String),
+    
+    /// Internal error
+    #[error("Internal error: {0}")]
+    Internal(String),
+    
     /// Other error
     #[error("Other error: {0}")]
     Other(String),
 }
 
-impl From<CreditError> for icn_common::error::Error {
-    fn from(err: CreditError) -> Self {
-        match err {
-            CreditError::AccountAlreadyExists(msg) => icn_common::error::Error::validation(msg),
-            CreditError::AccountNotFound(msg) => icn_common::error::Error::not_found(msg),
-            CreditError::InactiveAccount(msg) => icn_common::error::Error::validation(msg),
-            CreditError::CreditLineAlreadyExists(msg) => icn_common::error::Error::validation(msg),
-            CreditError::CreditLineNotFound(msg) => icn_common::error::Error::not_found(msg),
-            CreditError::InactiveCredit(msg) => icn_common::error::Error::validation(msg),
-            CreditError::CreditLimitExceeded(msg) => icn_common::error::Error::validation(msg),
-            CreditError::InsufficientFunds(msg) => icn_common::error::Error::validation(msg),
-            CreditError::InvalidTransaction(msg) => icn_common::error::Error::validation(msg),
-            CreditError::NoPathFound(msg) => icn_common::error::Error::not_found(msg),
-            CreditError::NotImplemented(msg) => icn_common::error::Error::internal(msg),
-            CreditError::SerializationError(msg) => icn_common::error::Error::internal(msg),
-            CreditError::DeserializationError(msg) => icn_common::error::Error::internal(msg),
-            CreditError::StorageError(msg) => icn_common::error::Error::internal(msg),
-            CreditError::Other(msg) => icn_common::error::Error::internal(msg),
-        }
-    }
-}
+/// Result type for credit operations
+pub type Result<T> = std::result::Result<T, CreditError>;
 
-impl From<icn_common::error::Error> for CreditError {
-    fn from(err: icn_common::error::Error) -> Self {
-        let msg = err.to_string();
-        
-        if msg.contains("not found") {
-            CreditError::AccountNotFound(msg)
-        } else if msg.contains("already exists") {
-            CreditError::AccountAlreadyExists(msg)
-        } else if msg.contains("inactive") {
-            CreditError::InactiveAccount(msg)
-        } else if msg.contains("credit limit") {
-            CreditError::CreditLimitExceeded(msg)
-        } else if msg.contains("insufficient funds") {
-            CreditError::InsufficientFunds(msg)
-        } else if msg.contains("invalid transaction") {
-            CreditError::InvalidTransaction(msg)
-        } else if msg.contains("serialization") {
-            CreditError::SerializationError(msg)
-        } else if msg.contains("deserialization") {
-            CreditError::DeserializationError(msg)
-        } else if msg.contains("storage") {
-            CreditError::StorageError(msg)
+impl From<serde_json::Error> for CreditError {
+    fn from(err: serde_json::Error) -> Self {
+        if err.is_data() {
+            Self::DeserializationError(err.to_string())
         } else {
-            CreditError::Other(msg)
+            Self::SerializationError(err.to_string())
         }
     }
 }

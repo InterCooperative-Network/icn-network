@@ -1,372 +1,226 @@
-//! Incentive mechanisms for the ICN economic system
+//! Incentive mechanisms for the ICN economic system.
 //!
-//! This module provides incentive structures for participation,
-//! contribution, and resource sharing within the ICN network.
+//! This module implements incentive mechanisms to encourage participation and contributions
+//! in the network, including storage provision, data sharing, and governance participation.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 use chrono::{DateTime, Utc};
+use async_trait::async_trait;
+use uuid::Uuid;
+use serde::{Deserialize, Serialize};
 
-use crate::{EconomicError, Result};
+use crate::EconomicError;
+use crate::Result;
 
-/// Types of incentivized actions in the network
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+/// Types of actions that can be incentivized in the network
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum IncentiveActionType {
-    /// Providing storage resources
+    /// Storage provision on the network
     StorageProvision,
     
-    /// Sharing data with other nodes
+    /// Sharing of data with other members
     DataSharing,
     
-    /// Participating in governance voting
+    /// Participation in governance activities
     GovernanceParticipation,
     
-    /// Validating transactions/blocks
-    Validation,
+    /// Node operation and hosting
+    NodeOperation,
     
-    /// Contributing to code/documentation
-    Development,
+    /// Content creation and curation
+    ContentCreation,
     
-    /// Running network infrastructure
-    Infrastructure,
+    /// Network bootstrapping and growth
+    NetworkGrowth,
     
-    /// Custom incentive type
-    Custom(String),
+    /// Reputation vouching for new members
+    ReputationVouching,
+    
+    /// Other customizable actions
+    Custom,
 }
 
-/// An incentive model configuration
+impl std::fmt::Display for IncentiveActionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StorageProvision => write!(f, "storage_provision"),
+            Self::DataSharing => write!(f, "data_sharing"),
+            Self::GovernanceParticipation => write!(f, "governance_participation"),
+            Self::NodeOperation => write!(f, "node_operation"),
+            Self::ContentCreation => write!(f, "content_creation"),
+            Self::NetworkGrowth => write!(f, "network_growth"),
+            Self::ReputationVouching => write!(f, "reputation_vouching"),
+            Self::Custom => write!(f, "custom"),
+        }
+    }
+}
+
+/// Configuration for an incentive model
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncentiveModelConfig {
-    /// Name of this incentive model
+    /// Name of the incentive model
     pub name: String,
     
-    /// Description
+    /// Description of the incentive model
     pub description: String,
     
-    /// Base reward rates for different action types
-    pub base_rewards: HashMap<IncentiveActionType, f64>,
+    /// Base reward rates for each action type
+    pub base_rates: HashMap<IncentiveActionType, f64>,
     
-    /// Time-based bonus multipliers
-    pub time_multipliers: Vec<(u64, f64)>, // (days active, multiplier)
+    /// Time-based multipliers (e.g., boost for early adopters)
+    pub time_multipliers: HashMap<String, f64>,
     
     /// Reputation-based multipliers
-    pub reputation_multipliers: Vec<(u64, f64)>, // (rep score, multiplier)
+    pub reputation_multipliers: HashMap<String, f64>,
     
-    /// Is this incentive model active
+    /// Whether this incentive model is active
     pub active: bool,
 }
 
-impl Default for IncentiveModelConfig {
-    fn default() -> Self {
-        let mut base_rewards = HashMap::new();
-        base_rewards.insert(IncentiveActionType::StorageProvision, 1.0);
-        base_rewards.insert(IncentiveActionType::DataSharing, 0.5);
-        base_rewards.insert(IncentiveActionType::GovernanceParticipation, 2.0);
-        
-        Self {
-            name: "Default Incentive Model".to_string(),
-            description: "Basic incentive structure for network participation".to_string(),
-            base_rewards,
-            time_multipliers: vec![(30, 1.1), (90, 1.25), (180, 1.5)],
-            reputation_multipliers: vec![(50, 1.1), (75, 1.25), (90, 1.5)],
-            active: true,
-        }
-    }
-}
-
-/// Incentive system for encouraging positive behaviors in the network
-pub struct IncentiveSystem {
-    /// Active incentive model configurations
-    pub models: HashMap<String, IncentiveModelConfig>,
-}
-
-impl IncentiveSystem {
-    /// Create a new incentive system
-    pub fn new() -> Self {
-        let mut models = HashMap::new();
-        models.insert("default".to_string(), IncentiveModelConfig::default());
-        
-        Self { models }
-    }
-    
-    /// Register an action for incentives
-    pub async fn register_action(
-        &self,
-        model_id: &str,
-        action_type: IncentiveActionType,
-        account_id: &str,
-        amount: f64,
-        metadata: Option<HashMap<String, String>>,
-    ) -> Result<f64> {
-        // This would calculate rewards based on the model, user reputation, etc.
-        // For now, just return a basic calculation
-        
-        let model = self.models.get(model_id).ok_or_else(|| {
-            EconomicError::Internal(format!("Incentive model not found: {}", model_id))
-        })?;
-        
-        if !model.active {
-            return Err(EconomicError::Internal(
-                format!("Incentive model is not active: {}", model_id)
-            ));
-        }
-        
-        let base_reward = model.base_rewards.get(&action_type).copied().unwrap_or(0.0);
-        let reward = base_reward * amount;
-        
-        // In a real implementation, this would persist the action
-        // and trigger the actual reward transaction
-        
-        Ok(reward)
-    }
-    
-    /// Add a new incentive model
-    pub fn add_model(&mut self, id: &str, config: IncentiveModelConfig) {
-        self.models.insert(id.to_string(), config);
-    }
-    
-    /// Get an incentive model by ID
-    pub fn get_model(&self, id: &str) -> Option<&IncentiveModelConfig> {
-        self.models.get(id)
-    }
-    
-    /// Activate an incentive model
-    pub fn activate_model(&mut self, id: &str) -> Result<()> {
-        if let Some(model) = self.models.get_mut(id) {
-            model.active = true;
-            Ok(())
-        } else {
-            Err(EconomicError::Internal(format!("Incentive model not found: {}", id)))
-        }
-    }
-    
-    /// Deactivate an incentive model
-    pub fn deactivate_model(&mut self, id: &str) -> Result<()> {
-        if let Some(model) = self.models.get_mut(id) {
-            model.active = false;
-            Ok(())
-        } else {
-            Err(EconomicError::Internal(format!("Incentive model not found: {}", id)))
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_incentive_system_basic() {
-        let system = IncentiveSystem::new();
-        assert!(system.models.contains_key("default"));
-        
-        let default_model = system.get_model("default").unwrap();
-        assert_eq!(default_model.name, "Default Incentive Model");
-        assert!(default_model.active);
-    }
-    
-    #[tokio::test]
-    async fn test_register_action() {
-        let system = IncentiveSystem::new();
-        
-        let reward = system.register_action(
-            "default",
-            IncentiveActionType::StorageProvision,
-            "user1",
-            10.0,
-            None
-        ).await.unwrap();
-        
-        assert_eq!(reward, 10.0); // 1.0 base reward * 10.0 amount
-    }
-}
-
-/// Types of contributions that can be incentivized
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum ContributionType {
-    /// Node operation and maintenance
-    NodeOperation,
-    /// Consensus participation
-    ConsensusParticipation,
-    /// Content creation
-    ContentCreation,
-    /// Code development
-    CodeDevelopment,
-    /// Community moderation
-    CommunityModeration,
-    /// Resource sharing
-    ResourceSharing,
-    /// Governance participation
-    GovernanceParticipation,
-    /// Custom contribution type
-    Custom(String),
-}
-
-/// A record of a contribution
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// A record of a contribution eligible for incentives
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContributionRecord {
-    /// ID of the contribution
+    /// Unique ID for this contribution
     pub id: String,
-    /// DID of the contributor
-    pub contributor_did: String,
+    
+    /// ID of the contributor
+    pub contributor_id: String,
+    
     /// Type of contribution
-    pub contribution_type: ContributionType,
-    /// Description of the contribution
-    pub description: String,
-    /// Timestamp of the contribution
+    pub action_type: IncentiveActionType,
+    
+    /// When the contribution was made
     pub timestamp: DateTime<Utc>,
-    /// Evidence of the contribution (e.g., links, hashes)
-    pub evidence: Vec<String>,
-    /// Status of the contribution
-    pub status: ContributionStatus,
-    /// Verification data
+    
+    /// Quantitative measure of the contribution (e.g., bytes stored, votes cast)
+    pub quantity: f64,
+    
+    /// Optional qualitative score (0-100)
+    pub quality_score: Option<u8>,
+    
+    /// Whether this contribution has been verified
+    pub verified: bool,
+    
+    /// Whether a reward has been issued for this contribution
+    pub rewarded: bool,
+    
+    /// Verification details if verified
     pub verification: Option<ContributionVerification>,
-    /// Reward details
-    pub reward: Option<ContributionReward>,
-    /// Federation ID (if applicable)
-    pub federation_id: Option<String>,
-    /// Metadata for the contribution
+    
+    /// Additional metadata about the contribution
     pub metadata: HashMap<String, String>,
 }
 
-/// Status of a contribution
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ContributionStatus {
-    /// Submitted but not yet verified
-    Submitted,
-    /// Under review
-    UnderReview,
-    /// Verified and approved
-    Verified,
-    /// Rejected
-    Rejected,
-    /// Rewarded
-    Rewarded,
-    /// Disputed
-    Disputed,
+impl ContributionRecord {
+    /// Create a new contribution record
+    pub fn new(
+        contributor_id: String,
+        action_type: IncentiveActionType,
+        quantity: f64,
+        _account_id: &str,
+        _metadata: Option<HashMap<String, String>>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            contributor_id,
+            action_type,
+            timestamp: Utc::now(),
+            quantity,
+            quality_score: None,
+            verified: false,
+            rewarded: false,
+            verification: None,
+            metadata: HashMap::new(),
+        }
+    }
 }
 
-/// Verification data for a contribution
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Verification of a contribution
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContributionVerification {
-    /// DID of the verifier
-    pub verifier_did: String,
-    /// Timestamp of verification
-    pub timestamp: DateTime<Utc>,
+    /// ID of the verifier
+    pub verifier_id: String,
+    
+    /// Verification score (0-100)
+    pub score: u8,
+    
     /// Comments from the verifier
     pub comments: Option<String>,
-    /// Score or rating (0.0 to 1.0)
-    pub score: f64,
-    /// Evidence provided by the verifier
-    pub evidence: Vec<String>,
-    /// Signatures from multiple verifiers if required
-    pub signatures: Vec<String>,
+    
+    /// When the verification was performed
+    pub timestamp: DateTime<Utc>,
+    
+    /// Any evidence provided
+    pub evidence: Option<HashMap<String, String>>,
 }
 
-/// Reward details for a contribution
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Reward for a contribution
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContributionReward {
-    /// Token ID for the reward
-    pub token_id: String,
-    /// Amount of tokens awarded
-    pub amount: f64,
-    /// Transaction ID for the reward
-    pub transaction_id: Option<String>,
-    /// Timestamp of the reward
+    /// ID of the contribution
+    pub contribution_id: String,
+    
+    /// ID of the contributor
+    pub contributor_id: String,
+    
+    /// Base amount
+    pub base_amount: f64,
+    
+    /// Reputation multiplier applied
+    pub reputation_multiplier: f64,
+    
+    /// Time-based multiplier applied
+    pub time_multiplier: f64,
+    
+    /// Total reward amount
+    pub total_amount: f64,
+    
+    /// When the reward was calculated
     pub timestamp: DateTime<Utc>,
-    /// Formula used to calculate the reward
-    pub formula: Option<String>,
-    /// Multipliers applied to the base reward
-    pub multipliers: HashMap<String, f64>,
+    
+    /// Token ID if using multiple token types
+    pub token_id: Option<String>,
+    
+    /// Transaction ID if recorded on-chain
+    pub transaction_id: Option<String>,
 }
 
 /// Configuration for an incentive scheme
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncentiveConfig {
+    /// Unique ID for this incentive scheme
+    pub id: String,
+    
     /// Name of the incentive scheme
     pub name: String,
-    /// Description of the incentive scheme
+    
+    /// Description of the scheme
     pub description: String,
-    /// Contribution types incentivized by this scheme
-    pub contribution_types: Vec<ContributionType>,
-    /// Base reward rates by contribution type
-    pub base_reward_rates: HashMap<ContributionType, f64>,
-    /// Token ID used for rewards
-    pub token_id: String,
-    /// Whether reputation affects rewards
-    pub reputation_based: bool,
-    /// Verification requirements
-    pub verification_requirements: VerificationRequirements,
-    /// Cooldown period between contributions
-    pub cooldown_period: Option<chrono::Duration>,
-    /// Maximum rewards per time period
-    pub reward_caps: HashMap<String, f64>,
-    /// Whether federation membership affects rewards
-    pub federation_aware: bool,
-    /// Boost for early adopters
-    pub early_adopter_boost: Option<f64>,
-    /// Enabled status
-    pub enabled: bool,
+    
+    /// Base rates for different contribution types
+    pub base_rates: HashMap<IncentiveActionType, f64>,
+    
+    /// Minimum threshold for rewards
+    pub min_threshold: f64,
+    
+    /// Whether verification is required
+    pub requires_verification: bool,
+    
+    /// Reputation tiers and their multipliers
+    pub reputation_tiers: HashMap<String, f64>,
+    
+    /// Whether this scheme is active
+    pub active: bool,
+    
+    /// When this scheme was created
+    pub created_at: DateTime<Utc>,
+    
+    /// When this scheme was last updated
+    pub updated_at: DateTime<Utc>,
 }
 
-impl Default for IncentiveConfig {
-    fn default() -> Self {
-        Self {
-            name: "Default Incentive Scheme".to_string(),
-            description: "Default incentive scheme for basic contributions".to_string(),
-            contribution_types: vec![ContributionType::NodeOperation, ContributionType::GovernanceParticipation],
-            base_reward_rates: {
-                let mut rates = HashMap::new();
-                rates.insert(ContributionType::NodeOperation, 10.0);
-                rates.insert(ContributionType::GovernanceParticipation, 5.0);
-                rates
-            },
-            token_id: "ICN".to_string(),
-            reputation_based: true,
-            verification_requirements: VerificationRequirements::default(),
-            cooldown_period: Some(chrono::Duration::hours(24)),
-            reward_caps: {
-                let mut caps = HashMap::new();
-                caps.insert("daily".to_string(), 100.0);
-                caps.insert("weekly".to_string(), 500.0);
-                caps
-            },
-            federation_aware: false,
-            early_adopter_boost: Some(1.2),
-            enabled: true,
-        }
-    }
-}
-
-/// Verification requirements for contributions
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct VerificationRequirements {
-    /// Number of verifiers required
-    pub min_verifiers: usize,
-    /// Minimum reputation for verifiers
-    pub min_verifier_reputation: Option<f64>,
-    /// Minimum verification score
-    pub min_verification_score: f64,
-    /// Whether self-verification is allowed
-    pub allow_self_verification: bool,
-    /// Whether federation members get priority for verification
-    pub federation_priority: bool,
-}
-
-impl Default for VerificationRequirements {
-    fn default() -> Self {
-        Self {
-            min_verifiers: 1,
-            min_verifier_reputation: Some(0.6),
-            min_verification_score: 0.5,
-            allow_self_verification: false,
-            federation_priority: false,
-        }
-    }
-}
-
-/// A reward formula calculator
+/// A calculator for incentive rewards
 #[async_trait]
 pub trait RewardCalculator: Send + Sync {
     /// Calculate a reward for a contribution
@@ -374,11 +228,11 @@ pub trait RewardCalculator: Send + Sync {
         &self,
         contribution: &ContributionRecord,
         contributor_reputation: f64,
-        config: &IncentiveConfig,
-    ) -> Result<ContributionReward, Error>;
+        incentive_config: &IncentiveConfig,
+    ) -> Result<ContributionReward>;
 }
 
-/// Default implementation of a reward calculator
+/// Implementation of a default reward calculator
 pub struct DefaultRewardCalculator;
 
 #[async_trait]
@@ -387,79 +241,83 @@ impl RewardCalculator for DefaultRewardCalculator {
         &self,
         contribution: &ContributionRecord,
         contributor_reputation: f64,
-        config: &IncentiveConfig,
-    ) -> Result<ContributionReward, Error> {
-        let base_rate = config.base_reward_rates
-            .get(&contribution.contribution_type)
-            .ok_or(Error::InvalidInput("No base rate for this contribution type".into()))?;
+        incentive_config: &IncentiveConfig,
+    ) -> Result<ContributionReward> {
+        let base_rate = incentive_config.base_rates.get(&contribution.action_type)
+            .ok_or(EconomicError::InvalidInput("No base rate for this contribution type".into()))?;
+            
+        // Calculate base amount
+        let base_amount = base_rate * contribution.quantity;
         
-        let mut multipliers = HashMap::new();
+        // Calculate reputation multiplier
+        let reputation_multiplier = if contributor_reputation < 25.0 {
+            0.8
+        } else if contributor_reputation < 50.0 {
+            1.0
+        } else if contributor_reputation < 75.0 {
+            1.2
+        } else {
+            1.5
+        };
         
-        // Apply reputation multiplier if enabled
-        if config.reputation_based {
-            let reputation_multiplier = 0.5 + contributor_reputation * 0.5;
-            multipliers.insert("reputation".to_string(), reputation_multiplier);
-        }
+        // Calculate time-based multiplier (just using 1.0 for now)
+        let time_multiplier = 1.0;
         
-        // Apply early adopter boost if applicable
-        if let Some(boost) = config.early_adopter_boost {
-            // Logic to determine if this contributor is an early adopter would go here
-            let is_early_adopter = false; // Placeholder
-            if is_early_adopter {
-                multipliers.insert("early_adopter".to_string(), boost);
-            }
-        }
-        
-        // Calculate final amount
-        let mut final_amount = *base_rate;
-        for (_, multiplier) in &multipliers {
-            final_amount *= multiplier;
-        }
+        // Calculate total reward
+        let total_amount = base_amount * reputation_multiplier * time_multiplier;
         
         Ok(ContributionReward {
-            token_id: config.token_id.clone(),
-            amount: final_amount,
+            contribution_id: contribution.id.clone(),
+            contributor_id: contribution.contributor_id.clone(),
+            base_amount,
+            reputation_multiplier,
+            time_multiplier,
+            total_amount,
+            timestamp: Utc::now(),
+            token_id: None,
             transaction_id: None,
-            timestamp: chrono::Utc::now(),
-            formula: Some(format!("base_rate({}) * multipliers", base_rate)),
-            multipliers,
         })
     }
 }
 
-/// A contribution verification service
+/// Service for verifying contributions
 #[async_trait]
 pub trait VerificationService: Send + Sync {
     /// Verify a contribution
     async fn verify_contribution(
         &self,
         contribution_id: &str,
-        verifier_did: &str,
-        score: f64,
+        verifier_id: &str,
+        score: u8,
         comments: Option<String>,
-        evidence: Vec<String>,
-    ) -> Result<ContributionVerification, Error>;
+        evidence: Option<HashMap<String, String>>,
+    ) -> Result<ContributionVerification>;
 }
 
-/// Manager for incentive mechanisms
+/// Manager for handling incentives
 pub struct IncentiveManager {
-    /// Configuration for incentive schemes
+    /// Incentive configurations
     configs: RwLock<HashMap<String, IncentiveConfig>>,
-    /// Contribution records
+    
+    /// Recorded contributions
     contributions: RwLock<HashMap<String, ContributionRecord>>,
-    /// Contributions by contributor
+    
+    /// Map of contributor IDs to their contribution IDs
     contributor_contributions: RwLock<HashMap<String, HashSet<String>>>,
+    
     /// Reward calculator
-    reward_calculator: Arc<dyn RewardCalculator>,
+    reward_calculator: Arc<DefaultRewardCalculator>,
+    
     /// Verification service
-    verification_service: Option<Arc<dyn VerificationService>>,
+    verification_service: Option<Arc<dyn VerificationService + Send + Sync>>,
+    
     /// Token manager for issuing rewards
-    token_manager: Option<Arc<TokenManager>>,
+    token_manager: Option<Arc<dyn Send + Sync>>,
 }
 
 impl IncentiveManager {
     /// Create a new incentive manager
-    pub fn new(reward_calculator: Arc<dyn RewardCalculator>) -> Self {
+    pub fn new(reward_calculator: Arc<DefaultRewardCalculator>) -> Self {
         Self {
             configs: RwLock::new(HashMap::new()),
             contributions: RwLock::new(HashMap::new()),
@@ -471,91 +329,104 @@ impl IncentiveManager {
     }
     
     /// Set the token manager
-    pub fn set_token_manager(&mut self, token_manager: Arc<TokenManager>) {
+    pub fn set_token_manager(&mut self, token_manager: Arc<dyn Send + Sync>) {
         self.token_manager = Some(token_manager);
     }
     
     /// Set the verification service
-    pub fn set_verification_service(&mut self, verification_service: Arc<dyn VerificationService>) {
+    pub fn set_verification_service(&mut self, verification_service: Arc<dyn VerificationService + Send + Sync>) {
         self.verification_service = Some(verification_service);
     }
     
-    /// Register an incentive scheme
-    pub async fn register_incentive_scheme(
+    /// Add a new incentive configuration
+    pub async fn add_incentive_config(
         &self,
-        id: &str,
-        config: IncentiveConfig,
-    ) -> Result<(), Error> {
-        self.configs.write().await.insert(id.to_string(), config);
+        name: String,
+        description: String,
+        base_rates: HashMap<IncentiveActionType, f64>,
+        requires_verification: bool,
+    ) -> Result<()> {
+        let config = IncentiveConfig {
+            id: Uuid::new_v4().to_string(),
+            name,
+            description,
+            base_rates,
+            min_threshold: 1.0,
+            requires_verification,
+            reputation_tiers: HashMap::new(),
+            active: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        
+        self.configs.write().unwrap().insert(config.id.clone(), config);
         Ok(())
     }
     
-    /// Get an incentive scheme configuration
-    pub async fn get_incentive_config(&self, id: &str) -> Result<IncentiveConfig, Error> {
-        let configs = self.configs.read().await;
-        configs.get(id).cloned().ok_or(Error::NotFound)
+    /// Get an incentive config by ID
+    pub async fn get_incentive_config(&self, id: &str) -> Result<IncentiveConfig> {
+        let configs = self.configs.read().unwrap();
+        configs.get(id).cloned().ok_or(EconomicError::NotFound(format!("Incentive config not found with id: {}", id)))
     }
     
-    /// Submit a contribution
-    pub async fn submit_contribution(
+    /// Register a new contribution
+    pub async fn register_contribution(
         &self,
-        contributor_did: &str,
-        contribution_type: ContributionType,
-        description: &str,
-        evidence: Vec<String>,
-        federation_id: Option<String>,
-        metadata: HashMap<String, String>,
-    ) -> Result<String, Error> {
-        let id = format!("contrib_{}", uuid::Uuid::new_v4());
-        
-        let contribution = ContributionRecord {
-            id: id.clone(),
-            contributor_did: contributor_did.to_string(),
-            contribution_type,
-            description: description.to_string(),
-            timestamp: chrono::Utc::now(),
-            evidence,
-            status: ContributionStatus::Submitted,
-            verification: None,
-            reward: None,
-            federation_id,
+        contributor_id: String,
+        action_type: IncentiveActionType,
+        quantity: f64,
+        account_id: &str,
+        metadata: Option<HashMap<String, String>>,
+    ) -> Result<String> {
+        // Create a new contribution record
+        let contribution = ContributionRecord::new(
+            contributor_id.clone(),
+            action_type,
+            quantity,
+            account_id,
             metadata,
-        };
+        );
         
         // Store the contribution
-        self.contributions.write().await.insert(id.clone(), contribution);
+        let contribution_id = contribution.id.clone();
         
-        // Update contributor index
-        let mut contributor_contribs = self.contributor_contributions.write().await;
-        let contribs = contributor_contribs
-            .entry(contributor_did.to_string())
-            .or_insert_with(HashSet::new);
-        contribs.insert(id.clone());
+        // Add to the contributions map
+        self.contributions.write().unwrap().insert(contribution_id.clone(), contribution);
         
-        Ok(id)
+        // Add to the contributor's set of contributions
+        self.contributor_contributions
+            .write()
+            .unwrap()
+            .entry(contributor_id)
+            .or_insert_with(HashSet::new)
+            .insert(contribution_id.clone());
+        
+        Ok(contribution_id)
     }
     
     /// Get a contribution by ID
-    pub async fn get_contribution(&self, id: &str) -> Result<ContributionRecord, Error> {
-        let contributions = self.contributions.read().await;
-        contributions.get(id).cloned().ok_or(Error::NotFound)
+    pub async fn get_contribution(&self, id: &str) -> Result<ContributionRecord> {
+        let contributions = self.contributions.read().unwrap();
+        contributions.get(id).cloned().ok_or(EconomicError::NotFound(format!("Contribution not found with id: {}", id)))
     }
     
     /// Get all contributions for a contributor
-    pub async fn get_contributor_contributions(&self, contributor_did: &str) -> Result<Vec<ContributionRecord>, Error> {
-        let contrib_indices = self.contributor_contributions.read().await;
-        let contributions = self.contributions.read().await;
+    pub async fn get_contributor_contributions(&self, contributor_id: &str) -> Result<Vec<ContributionRecord>> {
+        let contributor_map = self.contributor_contributions.read().unwrap();
+        let contributions = self.contributions.read().unwrap();
         
-        let result = match contrib_indices.get(contributor_did) {
-            Some(ids) => {
-                ids.iter()
-                    .filter_map(|id| contributions.get(id).cloned())
-                    .collect()
+        match contributor_map.get(contributor_id) {
+            Some(contribution_ids) => {
+                let mut result = Vec::new();
+                for id in contribution_ids {
+                    if let Some(contribution) = contributions.get(id) {
+                        result.push(contribution.clone());
+                    }
+                }
+                Ok(result)
             }
-            None => Vec::new(),
-        };
-        
-        Ok(result)
+            None => Ok(Vec::new()),
+        }
     }
     
     /// Verify a contribution
@@ -563,14 +434,14 @@ impl IncentiveManager {
         &self,
         contribution_id: &str,
         verifier_did: &str,
-        score: f64,
+        score: u8,
         comments: Option<String>,
-        evidence: Vec<String>,
-    ) -> Result<(), Error> {
+        evidence: Option<HashMap<String, String>>,
+    ) -> Result<()> {
         // Get the verification service
         let verification_service = match &self.verification_service {
             Some(service) => service,
-            None => return Err(Error::Internal("Verification service not set".into())),
+            None => return Err(EconomicError::Internal("Verification service not set".into())),
         };
         
         // Verify the contribution
@@ -582,41 +453,41 @@ impl IncentiveManager {
             evidence,
         ).await?;
         
-        // Update the contribution
-        let mut contributions = self.contributions.write().await;
-        let contribution = contributions.get_mut(contribution_id).ok_or(Error::NotFound)?;
+        // Update the contribution record
+        let mut contributions = self.contributions.write().unwrap();
+        let contribution = contributions.get_mut(contribution_id).ok_or(EconomicError::NotFound(format!("Contribution not found with id: {}", contribution_id)))?;
         
+        contribution.verified = true;
         contribution.verification = Some(verification);
-        contribution.status = ContributionStatus::Verified;
         
         Ok(())
     }
     
-    /// Award a reward for a verified contribution
-    pub async fn reward_contribution(
+    /// Calculate reward for a contribution
+    pub async fn calculate_reward(
         &self,
         contribution_id: &str,
         scheme_id: &str,
         contributor_reputation: f64,
-    ) -> Result<ContributionReward, Error> {
+    ) -> Result<ContributionReward> {
         // Get the token manager
-        let token_manager = match &self.token_manager {
+        let _token_manager = match &self.token_manager {
             Some(manager) => manager,
-            None => return Err(Error::Internal("Token manager not set".into())),
+            None => return Err(EconomicError::Internal("Token manager not set".into())),
         };
         
         // Get the contribution
-        let mut contributions = self.contributions.write().await;
-        let contribution = contributions.get_mut(contribution_id).ok_or(Error::NotFound)?;
+        let mut contributions = self.contributions.write().unwrap();
+        let contribution = contributions.get_mut(contribution_id).ok_or(EconomicError::NotFound(format!("Contribution not found with id: {}", contribution_id)))?;
         
-        // Check if the contribution is verified
-        if contribution.status != ContributionStatus::Verified {
-            return Err(Error::InvalidState("Contribution not verified".into()));
+        // Check if verified if required
+        if !contribution.verified {
+            return Err(EconomicError::InvalidState("Contribution not verified".into()));
         }
         
         // Get the incentive config
-        let configs = self.configs.read().await;
-        let config = configs.get(scheme_id).ok_or(Error::NotFound)?;
+        let configs = self.configs.read().unwrap();
+        let config = configs.get(scheme_id).ok_or(EconomicError::NotFound(format!("Incentive config not found with id: {}", scheme_id)))?;
         
         // Calculate the reward
         let reward = self.reward_calculator.calculate_reward(
@@ -625,35 +496,66 @@ impl IncentiveManager {
             config,
         ).await?;
         
-        // Issue the reward
-        // In a real implementation, this would use the token manager to issue tokens
-        // token_manager.issue_tokens(&contribution.contributor_did, &reward.token_id, reward.amount).await?;
-        
-        // Update the contribution
-        contribution.reward = Some(reward.clone());
-        contribution.status = ContributionStatus::Rewarded;
+        // Mark as rewarded
+        contribution.rewarded = true;
         
         Ok(reward)
     }
     
-    /// Get rewards summary for a contributor
-    pub async fn get_contributor_rewards_summary(
+    /// Get contribution stats for a period
+    pub async fn get_contribution_stats(
         &self,
-        contributor_did: &str,
-    ) -> Result<HashMap<String, f64>, Error> {
-        let contributions = self.get_contributor_contributions(contributor_did).await?;
+        contributor_id: Option<&str>,
+        action_type: Option<IncentiveActionType>,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<HashMap<String, f64>> {
+        let contributions = self.contributions.read().unwrap();
         
-        let mut token_totals = HashMap::new();
+        let mut stats = HashMap::new();
+        let mut total_count = 0.0;
+        let mut verified_count = 0.0;
+        let mut rewarded_count = 0.0;
+        let mut total_quantity = 0.0;
         
-        for contribution in contributions {
-            if let Some(reward) = contribution.reward {
-                if contribution.status == ContributionStatus::Rewarded {
-                    *token_totals.entry(reward.token_id).or_insert(0.0) += reward.amount;
+        for contribution in contributions.values() {
+            // Apply filters
+            if let Some(cid) = contributor_id {
+                if contribution.contributor_id != cid {
+                    continue;
                 }
+            }
+            
+            if let Some(at) = action_type {
+                if contribution.action_type != at {
+                    continue;
+                }
+            }
+            
+            if let Some(since_time) = since {
+                if contribution.timestamp < since_time {
+                    continue;
+                }
+            }
+            
+            // Update stats
+            total_count += 1.0;
+            total_quantity += contribution.quantity;
+            
+            if contribution.verified {
+                verified_count += 1.0;
+            }
+            
+            if contribution.rewarded {
+                rewarded_count += 1.0;
             }
         }
         
-        Ok(token_totals)
+        stats.insert("total_count".to_string(), total_count);
+        stats.insert("verified_count".to_string(), verified_count);
+        stats.insert("rewarded_count".to_string(), rewarded_count);
+        stats.insert("total_quantity".to_string(), total_quantity);
+        
+        Ok(stats)
     }
 }
 
@@ -661,5 +563,12 @@ impl IncentiveManager {
 mod tests {
     use super::*;
     
-    // Tests would be implemented here
+    #[test]
+    fn test_incentive_action_type_display() {
+        assert_eq!(IncentiveActionType::StorageProvision.to_string(), "storage_provision");
+        assert_eq!(IncentiveActionType::DataSharing.to_string(), "data_sharing");
+        assert_eq!(IncentiveActionType::GovernanceParticipation.to_string(), "governance_participation");
+    }
+    
+    // More tests will be added as needed
 } 
