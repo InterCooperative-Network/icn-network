@@ -19,7 +19,7 @@ use std::collections::HashMap;
 // Helper function to create a test environment
 async fn setup_test_environment() -> Result<(
     Arc<Identity>, 
-    Arc<Storage>, 
+    Arc<dyn Storage>, 
     Arc<CryptoUtils>, 
     Arc<ReputationSystem>, 
     Arc<FederationGovernance>
@@ -49,7 +49,7 @@ async fn setup_test_environment() -> Result<(
         fs::create_dir_all(&dir_path)?;
     }
     
-    let storage = Arc::new(Storage::new(base_path));
+    let storage = Arc::new(MemoryStorage::new()) as Arc<dyn Storage>;
     
     // Initialize federation data
     let federation_data = json!({

@@ -9,6 +9,8 @@ use std::sync::Arc;
 use icn_core::storage::Storage;
 use hex;
 use bs58;
+use std::collections::HashMap;
+use std::sync::RwLock;
 
 // DID Method specific to ICN
 const DID_METHOD: &str = "icn";
@@ -86,7 +88,7 @@ pub struct Identity {
     pub keypair: Keypair,
     pub listen_addr: String,
     pub tls: bool,
-    storage: Arc<Storage>,
+    storage: Arc<dyn Storage>,
 }
 
 impl Identity {
@@ -95,7 +97,7 @@ impl Identity {
         coop_id: String, 
         node_id: String, 
         did: String, 
-        storage: Arc<Storage>
+        storage: Arc<dyn Storage>
     ) -> Result<Self, Box<dyn Error>> {
         // Generate keypair for identity
         let keypair = CryptoUtils::generate_keypair()?;
@@ -283,4 +285,18 @@ impl Identity {
         let did_document: DidDocument = serde_json::from_str(&json)?;
         Ok(did_document)
     }
+}
+
+struct IdentityManager {
+    identities: RwLock<HashMap<String, Identity>>,
+    storage: Arc<dyn Storage>,
+}
+
+impl IdentityManager {
+    pub fn new(
+        storage: Arc<dyn Storage>
+    ) -> Self {
+        // ... existing code ...
+    }
+    // ... existing code ...
 } 

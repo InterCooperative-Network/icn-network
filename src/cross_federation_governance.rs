@@ -93,12 +93,12 @@ pub struct ConsensusSignature {
 // Cross-federation governance system
 pub struct CrossFederationGovernance {
     identity: Arc<Identity>,
-    storage: Arc<Storage>,
+    storage: Arc<dyn Storage>,
 }
 
 impl CrossFederationGovernance {
     // Create a new cross-federation governance system
-    pub fn new(identity: Arc<Identity>, storage: Arc<Storage>) -> Self {
+    pub fn new(identity: Arc<Identity>, storage: Arc<dyn Storage>) -> Self {
         CrossFederationGovernance {
             identity,
             storage,

@@ -47,13 +47,14 @@ pub struct FederationStorageManager {
     local_peers: RwLock<HashMap<String, StoragePeer>>,
     // Storage peer health metrics
     peer_health: RwLock<HashMap<String, f32>>,
+    local_storage: Arc<dyn Storage>,
 }
 
 impl FederationStorageManager {
     // Create a new federation storage manager
     pub fn new(
         config: FederationStorageConfig,
-        local_storage: Arc<Storage>,
+        local_storage: Arc<dyn Storage>,
         dht: Arc<DistributedHashTable>,
         federation_coordinator: Arc<FederationCoordinator>,
         node_id: String,
@@ -81,6 +82,7 @@ impl FederationStorageManager {
             federation_coordinator,
             local_peers: RwLock::new(HashMap::new()),
             peer_health: RwLock::new(HashMap::new()),
+            local_storage,
         }
     }
     

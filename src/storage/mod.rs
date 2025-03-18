@@ -146,6 +146,58 @@ pub trait JsonStorage: Storage {
 #[async_trait]
 impl<T: Storage + ?Sized> JsonStorage for T {}
 
+// Implement JsonStorage for Arc<dyn Storage>
+impl JsonStorage for Arc<dyn Storage> {
+    async fn get_json<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<T, StorageError> {
+        let data = self.get(key).await?;
+        match serde_json::from_slice(&data) {
+            Ok(value) => Ok(value),
+            Err(e) => Err(StorageError::DeserializationError(e.to_string())),
+        }
+    }
+
+    async fn put_json<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StorageError> {
+        let json_data = match serde_json::to_vec(value) {
+            Ok(data) => data,
+            Err(e) => return Err(StorageError::SerializationError(e.to_string())),
+        };
+        self.put(key, &json_data).await
+    }
+
+    async fn update_json<T, F>(&self, key: &str, update_fn: F) -> Result<T, StorageError>
+    where
+        T: for<'de> Deserialize<'de> + Serialize,
+        F: FnOnce(&mut T) -> Result<(), StorageError>,
+    {
+        // Get existing data
+        let data = match self.get(key).await {
+            Ok(data) => data,
+            Err(StorageError::KeyNotFound(_)) => {
+                return Err(StorageError::KeyNotFound(key.to_string()))
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Deserialize
+        let mut value: T = match serde_json::from_slice(&data) {
+            Ok(value) => value,
+            Err(e) => return Err(StorageError::DeserializationError(e.to_string())),
+        };
+
+        // Apply update
+        update_fn(&mut value)?;
+
+        // Serialize and store
+        let json_data = match serde_json::to_vec(&value) {
+            Ok(data) => data,
+            Err(e) => return Err(StorageError::SerializationError(e.to_string())),
+        };
+        self.put(key, &json_data).await?;
+
+        Ok(value)
+    }
+}
+
 // A basic file system-based storage implementation 
 pub struct FileStorage {
     base_path: PathBuf,

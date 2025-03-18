@@ -105,13 +105,13 @@ impl GovernanceManager {
     async fn get_json<T: DeserializeOwned + Send>(&self, key: &str) -> StorageResult<T> {
         let data = self.storage.get(key).await?;
         serde_json::from_slice(&data)
-            .map_err(StorageError::SerializationError)
+            .map_err(|e| StorageError::DeserializationError(e.to_string()))
     }
     
     /// Helper method to put JSON data
     async fn put_json<T: Serialize + Send + Sync>(&self, key: &str, value: &T) -> StorageResult<()> {
         let json_data = serde_json::to_vec_pretty(value)
-            .map_err(StorageError::SerializationError)?;
+            .map_err(|e| StorageError::SerializationError(e.to_string()))?;
         self.storage.put(key, &json_data).await
     }
     

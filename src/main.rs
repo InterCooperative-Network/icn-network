@@ -67,7 +67,7 @@ impl NetworkManager {
 // Simplified MutualCreditSystem
 pub struct MutualCreditSystem {
     identity: Arc<Identity>,
-    storage: Arc<Storage>,
+    storage: Arc<dyn Storage>,
     crypto: Arc<CryptoUtils>,
     reputation: Option<Arc<ReputationSystem>>,
 }
@@ -75,7 +75,7 @@ pub struct MutualCreditSystem {
 impl MutualCreditSystem {
     pub fn new(
         identity: Arc<Identity>,
-        storage: Arc<Storage>,
+        storage: Arc<dyn Storage>,
         crypto: Arc<CryptoUtils>,
     ) -> Self {
         MutualCreditSystem {
@@ -106,7 +106,7 @@ pub struct IcnNode {
     config: NodeConfig,
     identity: Arc<Identity>,
     network: NetworkManager,
-    storage: Arc<Storage>,
+    storage: Arc<dyn Storage>,
     economic: Arc<MutualCreditSystem>,
     federation: Arc<FederationSystem>,
     governance: Arc<FederationGovernance>,
@@ -127,7 +127,7 @@ impl IcnNode {
         info!("Initializing ICN Node...");
         
         // Initialize components
-        let storage = Arc::new(Storage::new(&storage_path));
+        let storage = Arc::new(Storage::new(&storage_path)) as Arc<dyn Storage>;
         let identity = Arc::new(Identity::new(
             coop_id.clone(),
             node_id.clone(),

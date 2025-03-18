@@ -102,14 +102,14 @@ pub struct TrustScore {
 // The main attestation manager
 pub struct AttestationManager {
     identity: Arc<Identity>,
-    storage: Arc<Storage>,
+    storage: Arc<dyn Storage>,
     crypto: Arc<CryptoUtils>,
 }
 
 impl AttestationManager {
     pub fn new(
         identity: Arc<Identity>,
-        storage: Arc<Storage>,
+        storage: Arc<dyn Storage>,
         crypto: Arc<CryptoUtils>,
     ) -> Self {
         AttestationManager {
@@ -319,11 +319,11 @@ impl AttestationManager {
 
 // Trust graph for indirect trust calculation
 pub struct TrustGraph {
-    storage: Arc<Storage>,
+    storage: Arc<dyn Storage>,
 }
 
 impl TrustGraph {
-    pub fn new(storage: Arc<Storage>) -> Self {
+    pub fn new(storage: Arc<dyn Storage>) -> Self {
         TrustGraph {
             storage,
         }
@@ -423,12 +423,12 @@ impl TrustGraph {
 
 // Anti-Sybil mechanisms
 pub struct SybilResistance {
-    storage: Arc<Storage>,
+    storage: Arc<dyn Storage>,
     attestation_manager: Arc<AttestationManager>,
 }
 
 impl SybilResistance {
-    pub fn new(storage: Arc<Storage>, attestation_manager: Arc<AttestationManager>) -> Self {
+    pub fn new(storage: Arc<dyn Storage>, attestation_manager: Arc<AttestationManager>) -> Self {
         SybilResistance {
             storage,
             attestation_manager,
@@ -558,7 +558,7 @@ pub struct SybilIndicators {
 // Main reputation system
 pub struct ReputationSystem {
     identity: Arc<Identity>,
-    storage: Arc<Storage>,
+    storage: Arc<dyn Storage>,
     crypto: Arc<CryptoUtils>,
     attestation_manager: Arc<AttestationManager>,
     trust_graph: Arc<TrustGraph>,
@@ -568,7 +568,7 @@ pub struct ReputationSystem {
 impl ReputationSystem {
     pub fn new(
         identity: Arc<Identity>,
-        storage: Arc<Storage>,
+        storage: Arc<dyn Storage>,
         crypto: Arc<CryptoUtils>,
     ) -> Self {
         let attestation_manager = Arc::new(AttestationManager::new(

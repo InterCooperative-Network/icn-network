@@ -11,9 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
 // Utility function to create a test environment
-fn setup_test_environment() -> Result<(Arc<Identity>, Arc<Storage>, Arc<CryptoUtils>), Box<dyn Error>> {
+fn setup_test_environment() -> Result<(Arc<Identity>, Arc<dyn Storage>, Arc<CryptoUtils>), Box<dyn Error>> {
     let temp_dir = tempdir()?;
-    let storage = Arc::new(Storage::new(temp_dir.path().to_path_buf())?);
+    let storage = Arc::new(MemoryStorage::new()) as Arc<dyn Storage>;
     
     let identity = Arc::new(Identity::new(
         "test-coop".to_string(),

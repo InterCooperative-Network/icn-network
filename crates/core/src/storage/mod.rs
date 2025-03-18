@@ -12,13 +12,22 @@ pub enum StorageError {
     IoError(#[from] std::io::Error),
     
     #[error("Serialization error: {0}")]
-    SerializationError(#[from] serde_json::Error),
+    SerializationError(String),
+    
+    #[error("Deserialization error: {0}")]
+    DeserializationError(String),
     
     #[error("Key not found: {0}")]
     KeyNotFound(String),
     
     #[error("Not a directory: {0}")]
     NotADirectory(String),
+    
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+    
+    #[error("Insufficient resources: {0}")]
+    InsufficientResources(String),
     
     #[error("Unexpected error: {0}")]
     Other(String),
@@ -29,8 +38,11 @@ impl Clone for StorageError {
         match self {
             Self::IoError(e) => Self::Other(format!("IO error: {}", e)),
             Self::SerializationError(e) => Self::Other(format!("Serialization error: {}", e)),
+            Self::DeserializationError(e) => Self::Other(format!("Deserialization error: {}", e)),
             Self::KeyNotFound(s) => Self::KeyNotFound(s.clone()),
             Self::NotADirectory(s) => Self::NotADirectory(s.clone()),
+            Self::PermissionDenied(s) => Self::PermissionDenied(s.clone()),
+            Self::InsufficientResources(s) => Self::InsufficientResources(s.clone()),
             Self::Other(s) => Self::Other(s.clone()),
         }
     }
@@ -85,7 +97,7 @@ pub trait JsonStorage: Storage {
     /// Store a serializable value at the specified key
     async fn put_json<T: Serialize + Send + Sync>(&self, key: &str, value: &T) -> StorageResult<()> {
         let json_data = serde_json::to_vec_pretty(value)
-            .map_err(StorageError::SerializationError)?;
+            .map_err(|e| StorageError::SerializationError(e.to_string()))?;
         self.put(key, &json_data).await
     }
     
@@ -93,7 +105,7 @@ pub trait JsonStorage: Storage {
     async fn get_json<T: DeserializeOwned + Send>(&self, key: &str) -> StorageResult<T> {
         let data = self.get(key).await?;
         serde_json::from_slice(&data)
-            .map_err(StorageError::SerializationError)
+            .map_err(|e| StorageError::DeserializationError(e.to_string()))
     }
 }
 

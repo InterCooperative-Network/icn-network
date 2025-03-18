@@ -1,10 +1,89 @@
 mod ml_optimizer;
-use ml_optimizer::MLOptimizer;
+
+use std::error::Error;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
 use crate::federation::coordination::{
     FederationCoordinator,
     SharedResource,
     ResourceUsageLimits,
 };
+use crate::identity::Identity;
+use self::ml_optimizer::MLOptimizer;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResourceStatus {
+    Available,
+    Maintenance,
+    Offline,
+    Reserved,
+    Depleted,
+}
+
+#[derive(Debug, Error)]
+pub enum ResourceSharingError {
+    #[error("Resource unavailable: {0}")]
+    ResourceUnavailable(String),
+    #[error("Insufficient resources: {0}")]
+    InsufficientResources(String),
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+    #[error("Usage limit exceeded: {0}")]
+    UsageLimitExceeded(String),
+    #[error("Storage error: {0}")]
+    StorageError(String),
+    #[error("Other error: {0}")]
+    Other(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AllocationPriority {
+    High,
+    Normal,
+    Low,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AllocationStatus {
+    Pending,
+    Active,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceAllocation {
+    pub id: String,
+    pub resource_id: String,
+    pub federation_id: String,
+    pub amount: u64,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub status: AllocationStatus,
+    pub metadata: serde_json::Value,
+    pub priority: AllocationPriority,
+    pub constraints: Option<ResourceConstraints>,
+    pub usage_limits: Option<ResourceUsageLimits>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceConstraints {
+    pub max_allocation: Option<u64>,
+    pub min_allocation: Option<u64>,
+    pub max_duration: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceUsageLimits {
+    pub max_concurrent_allocations: Option<u64>,
+    pub max_total_allocations: Option<u64>,
+    pub max_allocation_amount: Option<u64>,
+    pub max_allocation_duration: Option<u64>,
+}
 
 pub struct ResourceSharingSystem {
     // ... existing fields ...

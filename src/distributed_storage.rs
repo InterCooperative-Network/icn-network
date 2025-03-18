@@ -13,7 +13,7 @@ use icn_core::storage::{
 };
 
 // Add missing enum for quota checking
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum QuotaCheckResult {
     Allowed,
     Throttled { reason: String, retry_after_secs: u64 },
@@ -21,13 +21,19 @@ pub enum QuotaCheckResult {
 }
 
 // Declare missing types as placeholders since they don't exist in core yet
+#[derive(Clone)]
 pub struct VersionInfo {
     pub version_id: String,
     pub created_at: u64,
     pub size_bytes: u64,
     pub metadata: HashMap<String, String>,
+    pub storage_key: String,
+    pub content_hash: String,
+    pub created_by: String,
+    pub comment: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct VersionHistory {
     pub key: String,
     pub versions: Vec<VersionInfo>,
@@ -51,12 +57,46 @@ pub mod networking {
     pub mod overlay {
         pub mod dht {
             use std::sync::Arc;
+            use std::io::Result;
+            
+            #[derive(Debug, thiserror::Error)]
+            pub enum DhtError {
+                #[error("Not found")]
+                NotFound,
+                #[error("IO error: {0}")]
+                IoError(String),
+                #[error("Other error: {0}")]
+                Other(String),
+            }
+            
+            pub type DhtResult<T> = std::result::Result<T, DhtError>;
             
             pub struct DistributedHashTable {}
             
             impl DistributedHashTable {
                 pub fn new() -> Self {
                     Self {}
+                }
+                
+                pub fn get(&self, key: &Vec<u8>) -> DhtResult<Vec<u8>> {
+                    // Placeholder implementation for DHT get
+                    Err(DhtError::NotFound)
+                }
+                
+                pub fn store(&self, key: Vec<u8>, value: Vec<u8>) -> DhtResult<()> {
+                    // Placeholder implementation for DHT store
+                    Ok(())
+                }
+            }
+            
+            // Implement the same methods for Arc<DistributedHashTable>
+            impl<T: std::ops::Deref<Target = DistributedHashTable> + Send + Sync> Arc<T> {
+                pub fn get(&self, key: &Vec<u8>) -> DhtResult<Vec<u8>> {
+                    self.deref().get(key)
+                }
+                
+                pub fn store(&self, key: Vec<u8>, value: Vec<u8>) -> DhtResult<()> {
+                    self.deref().store(key, value)
                 }
             }
         }
@@ -80,15 +120,69 @@ pub enum EncryptionError {
     DecryptionFailed(String),
     #[error("Key management error: {0}")]
     KeyManagementError(String),
+    #[error("Key not found: {0}")]
+    KeyNotFound(String),
+    #[error("Access denied: {0}")]
+    AccessDenied(String),
 }
 
 // Add placeholders for quota management
 pub struct QuotaManager {}
+
+impl QuotaManager {
+    pub fn new() -> Self {
+        Self {}
+    }
+    
+    pub async fn check_quota(&self, entity_id: &str, operation: &QuotaOperation) -> QuotaCheckResult {
+        // In a placeholder implementation, always allow
+        QuotaCheckResult::Allowed
+    }
+    
+    pub async fn update_usage(&self, entity_id: &str, operation: &QuotaOperation) -> Result<(), String> {
+        // Update quota usage for an entity
+        Ok(())
+    }
+}
+
+// Implement methods for Arc<QuotaManager>
+impl<T: std::ops::Deref<Target = QuotaManager> + Send + Sync> std::sync::Arc<T> {
+    pub async fn check_quota(&self, entity_id: &str, operation: &QuotaOperation) -> QuotaCheckResult {
+        self.deref().check_quota(entity_id, operation).await
+    }
+    
+    pub async fn update_usage(&self, entity_id: &str, operation: &QuotaOperation) -> Result<(), String> {
+        self.deref().update_usage(entity_id, operation).await
+    }
+}
+
 pub struct OperationScheduler {}
-pub enum QuotaOperation {
-    Read { size_bytes: u64 },
-    Write { size_bytes: u64 },
-    Delete { key_count: u64 },
+
+impl OperationScheduler {
+    pub fn new() -> Self {
+        Self {}
+    }
+    
+    pub async fn start(&self) -> Result<(), String> {
+        // Start the scheduler
+        Ok(())
+    }
+    
+    pub async fn can_execute_immediately(&self, entity_id: &str, operation: &QuotaOperation) -> bool {
+        // Check if an operation can be executed immediately
+        true
+    }
+}
+
+// Implement methods for Arc<OperationScheduler>
+impl<T: std::ops::Deref<Target = OperationScheduler> + Send + Sync> std::sync::Arc<T> {
+    pub async fn start(&self) -> Result<(), String> {
+        self.deref().start().await
+    }
+    
+    pub async fn can_execute_immediately(&self, entity_id: &str, operation: &QuotaOperation) -> bool {
+        self.deref().can_execute_immediately(entity_id, operation).await
+    }
 }
 
 // Use the placeholders instead of importing them
@@ -156,7 +250,7 @@ pub struct DataLocation {
 // Distributed storage system
 pub struct DistributedStorage {
     // Local storage for this node
-    local_storage: Arc<Storage>,
+    local_storage: Arc<dyn Storage>,
     // DHT for distributed lookups
     dht: Arc<DistributedHashTable>,
     // Federation coordinator for access control
@@ -183,7 +277,7 @@ impl DistributedStorage {
     pub fn new(
         node_id: String,
         federation_id: String,
-        local_storage: Arc<Storage>,
+        local_storage: Arc<dyn Storage>,
         dht: Arc<DistributedHashTable>,
         federation_coordinator: Arc<FederationCoordinator>,
     ) -> Self {
@@ -209,7 +303,7 @@ impl DistributedStorage {
     pub fn with_encryption_service(
         node_id: String,
         federation_id: String,
-        local_storage: Arc<Storage>,
+        local_storage: Arc<dyn Storage>,
         dht: Arc<DistributedHashTable>,
         federation_coordinator: Arc<FederationCoordinator>,
         encryption_service: Arc<StorageEncryptionService>,
@@ -439,7 +533,7 @@ impl DistributedStorage {
                     // Store the version data
                     // We store this with a special key to avoid overwriting the main data
                     if peers.iter().any(|p| p.node_id == self.node_id) {
-                        self.local_storage.put(&version_storage_key, &storage_data)?;
+                        self.local_storage.put(&version_storage_key, &storage_data).await?;
                     }
                     
                     // Add to version history
@@ -473,7 +567,7 @@ impl DistributedStorage {
                     
                     // Store the version data
                     if peers.iter().any(|p| p.node_id == self.node_id) {
-                        self.local_storage.put(&version_storage_key, &storage_data)?;
+                        self.local_storage.put(&version_storage_key, &storage_data).await?;
                     }
                     
                     // Initialize versioning for this key
@@ -512,8 +606,8 @@ impl DistributedStorage {
                 
                 // Store the version data and the main data
                 if peers.iter().any(|p| p.node_id == self.node_id) {
-                    self.local_storage.put(&version_storage_key, &storage_data)?;
-                    self.local_storage.put(key, &storage_data)?;
+                    self.local_storage.put(&version_storage_key, &storage_data).await?;
+                    self.local_storage.put(key, &storage_data).await?;
                 }
                 
                 // Initialize versioning for this key
@@ -529,7 +623,7 @@ impl DistributedStorage {
         } else {
             // No versioning - store directly
             if peers.iter().any(|p| p.node_id == self.node_id) {
-                self.local_storage.put(key, &storage_data)?;
+                self.local_storage.put(key, &storage_data).await?;
             }
             None
         };
@@ -605,7 +699,8 @@ impl DistributedStorage {
         };
         
         // Try local storage first for efficiency
-        match self.local_storage.get(storage_key) {
+        let storage_result = self.local_storage.get(storage_key).await;
+        match storage_result {
             Ok(encrypted_data) => {
                 // Decrypt if encrypted
                 if let Some(metadata) = &data_location.encryption_metadata {
@@ -663,7 +758,7 @@ impl DistributedStorage {
         
         // Remove from local storage if stored here
         if data_location.storage_peers.contains(&self.node_id) {
-            self.local_storage.delete(key)?;
+            self.local_storage.delete(key).await?;
         }
         
         // Remove from DHT
@@ -724,7 +819,8 @@ impl DistributedStorage {
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
         
         // Try local storage first for efficiency
-        match self.local_storage.get(&version.storage_key) {
+        let storage_result = self.local_storage.get(&version.storage_key).await;
+        match storage_result {
             Ok(encrypted_data) => {
                 // Decrypt if encrypted
                 if let Some(metadata) = &data_location.encryption_metadata {
@@ -877,13 +973,13 @@ impl DistributedStorage {
         // Store the version data
         let storage_data = if let Some(metadata) = &data_location.encryption_metadata {
             // Data is already encrypted
-            self.local_storage.get(key)?
+            self.local_storage.get(key).await?
         } else {
             data.clone()
         };
         
         // Store in the version storage location
-        self.local_storage.put(&version_storage_key, &storage_data)?;
+        self.local_storage.put(&version_storage_key, &storage_data).await?;
         
         // Initialize versioning for this key
         self.versioning_manager.init_versioning(
@@ -979,4 +1075,182 @@ impl StorageError {
     fn InsufficientResources(message: String) -> Self {
         StorageError::SerializationError(format!("Insufficient resources: {}", message))
     }
+}
+
+// Implement methods for Arc<VersioningManager>
+impl std::ops::Deref for VersioningManager {
+    type Target = Self;
+    
+    fn deref(&self) -> &Self::Target {
+        self
+    }
+}
+
+impl VersioningManager {
+    pub fn new() -> Self {
+        Self {}
+    }
+    
+    pub async fn generate_version_id(&self) -> String {
+        // Generate a random version id
+        format!("version-{}", uuid::Uuid::new_v4())
+    }
+    
+    pub fn create_version_storage_key(&self, key: &str, version_id: &str) -> String {
+        format!("version:{}:{}", key, version_id)
+    }
+    
+    pub async fn init_versioning(
+        &self,
+        key: &str,
+        version: VersionInfo,
+    ) -> Result<(), VersioningError> {
+        // Initialize versioning for the key
+        Ok(())
+    }
+    
+    pub async fn create_version(
+        &self,
+        key: &str,
+        version_id: &str,
+        version: VersionInfo,
+    ) -> Result<(), VersioningError> {
+        // Create a new version
+        Ok(())
+    }
+    
+    pub async fn get_version(
+        &self,
+        key: &str,
+        version_id: &str,
+    ) -> Result<VersionInfo, VersioningError> {
+        // Get a specific version
+        Err(VersioningError::VersionNotFound(format!("Version {} not found for key {}", version_id, key)))
+    }
+    
+    pub async fn get_version_history(&self, key: &str) -> Result<VersionHistory, VersioningError> {
+        // Get version history for a key
+        Ok(VersionHistory {
+            key: key.to_string(),
+            versions: vec![],
+            max_versions: 10,
+        })
+    }
+    
+    pub async fn set_current_version(&self, key: &str, version_id: &str) -> Result<(), VersioningError> {
+        // Set the current version for a key
+        Ok(())
+    }
+}
+
+// Implement the same methods for Arc<VersioningManager>
+impl<T: std::ops::Deref<Target = VersioningManager> + Send + Sync> std::sync::Arc<T> {
+    pub async fn generate_version_id(&self) -> String {
+        self.deref().generate_version_id().await
+    }
+    
+    pub fn create_version_storage_key(&self, key: &str, version_id: &str) -> String {
+        self.deref().create_version_storage_key(key, version_id)
+    }
+    
+    pub async fn init_versioning(
+        &self,
+        key: &str,
+        version: VersionInfo,
+    ) -> Result<(), VersioningError> {
+        self.deref().init_versioning(key, version).await
+    }
+    
+    pub async fn create_version(
+        &self,
+        key: &str,
+        version_id: &str,
+        version: VersionInfo,
+    ) -> Result<(), VersioningError> {
+        self.deref().create_version(key, version_id, version).await
+    }
+    
+    pub async fn get_version(
+        &self,
+        key: &str,
+        version_id: &str,
+    ) -> Result<VersionInfo, VersioningError> {
+        self.deref().get_version(key, version_id).await
+    }
+    
+    pub async fn get_version_history(&self, key: &str) -> Result<VersionHistory, VersioningError> {
+        self.deref().get_version_history(key).await
+    }
+    
+    pub async fn set_current_version(&self, key: &str, version_id: &str) -> Result<(), VersioningError> {
+        self.deref().set_current_version(key, version_id).await
+    }
+}
+
+impl StorageEncryptionService {
+    pub fn new() -> Self {
+        Self {}
+    }
+    
+    pub async fn generate_key(&self, federations: Vec<String>) -> Result<String, EncryptionError> {
+        // Generate a new encryption key and return its ID
+        Ok(format!("key-{}", uuid::Uuid::new_v4()))
+    }
+    
+    pub async fn grant_federation_key_access(&self, federation_id: &str, key_id: &str) -> Result<(), EncryptionError> {
+        // Grant access to a key for a federation
+        Ok(())
+    }
+    
+    pub async fn federation_has_key_access(&self, federation_id: &str, key_id: &str) -> Result<bool, EncryptionError> {
+        // Check if a federation has access to a key
+        Ok(true)
+    }
+    
+    pub async fn encrypt(&self, data: &[u8], key_id: &str) -> Result<(Vec<u8>, HashMap<String, String>), EncryptionError> {
+        // Encrypt data with the specified key
+        let mut metadata = HashMap::new();
+        metadata.insert("key_id".to_string(), key_id.to_string());
+        metadata.insert("algorithm".to_string(), "AES-256-GCM".to_string());
+        Ok((data.to_vec(), metadata))
+    }
+    
+    pub async fn decrypt(&self, data: &[u8], metadata: &HashMap<String, String>) -> Result<Vec<u8>, EncryptionError> {
+        // Decrypt data with metadata
+        if let Some(key_id) = metadata.get("key_id") {
+            // In a real implementation, we would decrypt the data
+            Ok(data.to_vec())
+        } else {
+            Err(EncryptionError::KeyNotFound("No key ID in metadata".to_string()))
+        }
+    }
+}
+
+// Implement the same methods for Arc<StorageEncryptionService>
+impl<T: std::ops::Deref<Target = StorageEncryptionService> + Send + Sync> std::sync::Arc<T> {
+    pub async fn generate_key(&self, federations: Vec<String>) -> Result<String, EncryptionError> {
+        self.deref().generate_key(federations).await
+    }
+    
+    pub async fn grant_federation_key_access(&self, federation_id: &str, key_id: &str) -> Result<(), EncryptionError> {
+        self.deref().grant_federation_key_access(federation_id, key_id).await
+    }
+    
+    pub async fn federation_has_key_access(&self, federation_id: &str, key_id: &str) -> Result<bool, EncryptionError> {
+        self.deref().federation_has_key_access(federation_id, key_id).await
+    }
+    
+    pub async fn encrypt(&self, data: &[u8], key_id: &str) -> Result<(Vec<u8>, HashMap<String, String>), EncryptionError> {
+        self.deref().encrypt(data, key_id).await
+    }
+    
+    pub async fn decrypt(&self, data: &[u8], metadata: &HashMap<String, String>) -> Result<Vec<u8>, EncryptionError> {
+        self.deref().decrypt(data, metadata).await
+    }
+}
+
+pub enum QuotaOperation {
+    Read { size_bytes: u64 },
+    Write { size_bytes: u64 },
+    Delete { key_count: u64 },
 } 

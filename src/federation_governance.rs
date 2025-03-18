@@ -159,13 +159,13 @@ pub struct Resolution {
 // Federation governance system
 pub struct FederationGovernance {
     identity: Arc<Identity>,
-    storage: Arc<Storage>,
+    storage: Arc<dyn Storage>,
     reputation: Option<Arc<ReputationSystem>>,
 }
 
 impl FederationGovernance {
     // Create a new governance system
-    pub fn new(identity: Arc<Identity>, storage: Arc<Storage>) -> Self {
+    pub fn new(identity: Arc<Identity>, storage: Arc<dyn Storage>) -> Self {
         FederationGovernance {
             identity,
             storage,
