@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::distributed_storage::{DistributedStorage, DataAccessPolicy, AccessType};
 use crate::federation::coordination::FederationCoordinator;
-use crate::storage::StorageError;
+use icn_core::storage::StorageError;
 
 // Storage route information
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -6,8 +6,9 @@ use rand::rngs::OsRng;
 use ed25519_dalek::{Keypair, PublicKey, SecretKey, Signature, Signer, Verifier};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::storage::Storage;
-use crate::crypto::CryptoUtils;
+use icn_core::storage::Storage;
+use hex;
+use bs58;
 
 // DID Method specific to ICN
 const DID_METHOD: &str = "icn";

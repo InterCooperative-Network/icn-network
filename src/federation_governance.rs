@@ -3,9 +3,9 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
-use serde_json::{self, json, Value};
+use serde_json::{self, json};
 use crate::identity::Identity;
-use crate::storage::Storage;
+use icn_core::storage::Storage;
 use crate::reputation::{ReputationSystem, AttestationType, Evidence as ReputationEvidence};
 
 // Governance error types

@@ -3,7 +3,7 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use crate::identity::Identity;
-use crate::storage::Storage;
+use icn_core::storage::Storage;
 use crate::federation_governance::{Proposal, ProposalType, ProposalStatus};
 use std::sync::Arc;
 

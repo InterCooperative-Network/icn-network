@@ -4,13 +4,95 @@ use tokio::sync::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
 use crate::federation::coordination::{FederationCoordinator, SharedResource};
-use crate::storage::{Storage, StorageOptions, StorageError};
-use crate::storage::{VersionInfo, VersionHistory, VersioningManager, VersioningError};
-use crate::networking::overlay::dht::DistributedHashTable;
-use crate::crypto::{StorageEncryptionService, EncryptionMetadata, EncryptionError};
-use crate::storage::{
+use icn_core::storage::{Storage, StorageOptions, StorageError, StorageResult};
+use icn_core::storage::{VersionInfo, VersionHistory, VersioningManager, VersioningError};
+use networking::overlay::dht::DistributedHashTable;
+use crypto::{StorageEncryptionService, EncryptionMetadata, EncryptionError};
+use icn_core::storage::{
     QuotaManager, OperationScheduler, QuotaOperation
 };
+
+// Add missing enum for quota checking
+#[derive(Debug, Clone)]
+pub enum QuotaCheckResult {
+    Allowed,
+    Throttled { reason: String, retry_after_secs: u64 },
+    Denied { reason: String },
+}
+
+// Declare missing types as placeholders since they don't exist in core yet
+pub struct VersionInfo {
+    pub version_id: String,
+    pub created_at: u64,
+    pub size_bytes: u64,
+    pub metadata: HashMap<String, String>,
+}
+
+pub struct VersionHistory {
+    pub key: String,
+    pub versions: Vec<VersionInfo>,
+    pub max_versions: u32,
+}
+
+pub struct VersioningManager {}
+
+#[derive(Debug, thiserror::Error)]
+pub enum VersioningError {
+    #[error("Version not found: {0}")]
+    VersionNotFound(String),
+    #[error("Storage error: {0}")]
+    StorageError(#[from] StorageError),
+    #[error("Other error: {0}")]
+    Other(String),
+}
+
+// Placeholder for networking module
+pub mod networking {
+    pub mod overlay {
+        pub mod dht {
+            use std::sync::Arc;
+            
+            pub struct DistributedHashTable {}
+            
+            impl DistributedHashTable {
+                pub fn new() -> Self {
+                    Self {}
+                }
+            }
+        }
+    }
+}
+
+// Placeholder for crypto services
+pub struct StorageEncryptionService {}
+pub struct EncryptionMetadata {
+    pub key_id: String,
+    pub algorithm: String,
+    pub iv: Vec<u8>,
+    pub auth_tag: Option<Vec<u8>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum EncryptionError {
+    #[error("Encryption failed: {0}")]
+    EncryptionFailed(String),
+    #[error("Decryption failed: {0}")]
+    DecryptionFailed(String),
+    #[error("Key management error: {0}")]
+    KeyManagementError(String),
+}
+
+// Add placeholders for quota management
+pub struct QuotaManager {}
+pub struct OperationScheduler {}
+pub enum QuotaOperation {
+    Read { size_bytes: u64 },
+    Write { size_bytes: u64 },
+    Delete { key_count: u64 },
+}
+
+// Use the placeholders instead of importing them
+use networking::overlay::dht::DistributedHashTable;
 
 // Storage peer information with proximity scoring
 #[derive(Debug, Clone, Serialize, Deserialize)]

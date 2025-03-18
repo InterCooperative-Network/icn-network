@@ -4,11 +4,8 @@
 //! including mutual credit systems, incentives, and tokenized economic transactions.
 
 use std::collections::HashMap;
-use std::error::Error;
-use std::sync::Arc;
 use thiserror::Error;
 use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
 
 // Re-export mutual credit system
 pub use icn_mutual_credit::{

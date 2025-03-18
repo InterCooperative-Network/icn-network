@@ -80,13 +80,11 @@ pub async fn run_node() -> Result<(), Box<dyn Error>> {
 
 // Export the core types we need
 pub use identity::Identity;
-pub use storage::Storage;
-pub use crypto::CryptoUtils;
-pub use federation::*;
+pub use icn_core::storage::Storage;
 pub use federation_governance::*;
 pub use cross_federation_governance::*;
-pub use resource_sharing::ResourceSharingSystem;
 pub use reputation::ReputationSystem;
 pub use distributed_storage::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType};
 pub use federation_storage_router::{FederationStorageRouter, StorageRoute};
-pub use economic::{MutualCreditSystem, Account, Transaction, TransactionType, TransactionStatus, Amount, CreditLimit};
+pub use icn_economic::{EconomicSystem, FederationEconomicConfig, EconomicError};
+pub use icn_mutual_credit::{Transaction, TransactionType, TransactionStatus, Amount, CreditLimit, Account};
