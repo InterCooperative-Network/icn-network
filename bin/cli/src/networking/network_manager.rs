@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use std::collections::HashMap;
 use anyhow::Result;
 use libp2p::{Multiaddr, PeerId};
 use tokio::sync::RwLock;
@@ -34,6 +35,83 @@ pub struct DiscoveredPeer {
     pub address: String,
 }
 
+/// Federation network configuration
+#[derive(Clone, Debug)]
+pub struct FederationNetworkConfig {
+    /// Federation identifier
+    pub federation_id: String,
+    /// Bootstrap peers for this federation
+    pub bootstrap_peers: Vec<String>,
+    /// Whether this federation allows connections from other federations
+    pub allow_cross_federation: bool,
+    /// Allowed federations for cross-federation communication
+    pub allowed_federations: Vec<String>,
+    /// Whether to encrypt federation traffic 
+    pub encrypt_traffic: bool,
+    /// Whether to use WireGuard for this federation
+    pub use_wireguard: bool,
+    /// DHT namespace for this federation
+    pub dht_namespace: String,
+    /// Topic prefix for federation-specific messaging
+    pub topic_prefix: String,
+}
+
+impl Default for FederationNetworkConfig {
+    fn default() -> Self {
+        Self {
+            federation_id: "default".to_string(),
+            bootstrap_peers: Vec::new(),
+            allow_cross_federation: false,
+            allowed_federations: Vec::new(),
+            encrypt_traffic: true,
+            use_wireguard: false,
+            dht_namespace: "icn-default".to_string(),
+            topic_prefix: "icn.default".to_string(),
+        }
+    }
+}
+
+/// Federation network state
+struct FederationState {
+    /// Federation network configuration
+    config: FederationNetworkConfig,
+    /// Connected peers within this federation
+    peers: HashMap<PeerId, PeerInfo>,
+    /// Active WireGuard overlay for this federation
+    wireguard: Option<Arc<RwLock<WireGuardOverlay>>>,
+    /// Federation-specific metrics
+    metrics: FederationMetrics,
+}
+
+/// Federation network metrics
+struct FederationMetrics {
+    /// Total messages sent within federation
+    messages_sent: u64,
+    /// Total messages received within federation
+    messages_received: u64,
+    /// Cross-federation messages sent
+    cross_federation_sent: u64,
+    /// Cross-federation messages received
+    cross_federation_received: u64,
+    /// Total connected peers
+    peer_count: usize,
+    /// Last federation sync time
+    last_sync: Option<std::time::Instant>,
+}
+
+impl FederationMetrics {
+    fn new() -> Self {
+        Self {
+            messages_sent: 0,
+            messages_received: 0,
+            cross_federation_sent: 0,
+            cross_federation_received: 0,
+            peer_count: 0,
+            last_sync: None,
+        }
+    }
+}
+
 /// Manager for network operations
 pub struct NetworkManager {
     /// Storage service for persisting network data
@@ -44,6 +122,10 @@ pub struct NetworkManager {
     connections: Arc<RwLock<Vec<PeerId>>>,
     /// WireGuard overlay for secure tunneling
     wireguard: Option<Arc<RwLock<WireGuardOverlay>>>,
+    /// Federations managed by this node
+    federations: Arc<RwLock<HashMap<String, FederationState>>>,
+    /// Current active federation
+    active_federation: Arc<RwLock<String>>,
 }
 
 impl NetworkManager {
@@ -66,11 +148,25 @@ impl NetworkManager {
         network.start().await
             .map_err(|e| anyhow::anyhow!("Failed to start network: {}", e))?;
         
+        // Create initial federations map with default federation
+        let mut federations = HashMap::new();
+        federations.insert(
+            "default".to_string(),
+            FederationState {
+                config: FederationNetworkConfig::default(),
+                peers: HashMap::new(),
+                wireguard: None,
+                metrics: FederationMetrics::new(),
+            }
+        );
+        
         Ok(Self {
             storage,
             network: Arc::new(network),
             connections: Arc::new(RwLock::new(Vec::new())),
             wireguard: None,
+            federations: Arc::new(RwLock::new(federations)),
+            active_federation: Arc::new(RwLock::new("default".to_string())),
         })
     }
     
@@ -139,6 +235,14 @@ impl NetworkManager {
         // Store the connection
         self.connections.write().await.push(peer_id);
         
+        // Update federation peer list based on active federation
+        let federation = {
+            let active_fed = self.active_federation.read().await;
+            active_fed.clone()
+        };
+        
+        self.add_peer_to_federation(&federation, peer_id, addr).await?;
+        
         Ok(peer_id.to_string())
     }
     
@@ -153,6 +257,13 @@ impl NetworkManager {
         // Remove from connections list
         let mut connections = self.connections.write().await;
         connections.retain(|p| p != &peer_id);
+        
+        // Remove from all federation peer lists
+        let mut federations = self.federations.write().await;
+        for (_, fed_state) in federations.iter_mut() {
+            fed_state.peers.remove(&peer_id);
+            fed_state.metrics.peer_count = fed_state.peers.len();
+        }
         
         Ok(())
     }
@@ -178,6 +289,20 @@ impl NetworkManager {
         self.network.send_to(&peer_id, custom_message).await
             .map_err(|e| anyhow::anyhow!("Failed to send message: {}", e))?;
             
+        // Update federation metrics
+        let active_fed = self.active_federation.read().await.clone();
+        let mut federations = self.federations.write().await;
+        
+        if let Some(fed_state) = federations.get_mut(&active_fed) {
+            fed_state.metrics.messages_sent += 1;
+            
+            // Check if this is cross-federation communication
+            let is_cross_federation = !fed_state.peers.contains_key(&peer_id);
+            if is_cross_federation {
+                fed_state.metrics.cross_federation_sent += 1;
+            }
+        }
+        
         Ok(())
     }
     
@@ -209,6 +334,15 @@ impl NetworkManager {
             
         // Store the connection
         self.connections.write().await.push(peer_id);
+        
+        // Update federation peer list based on active federation
+        let federation = {
+            let active_fed = self.active_federation.read().await;
+            active_fed.clone()
+        };
+        
+        // Use the relay address as a placeholder for now
+        self.add_peer_to_federation(&federation, peer_id, relay_multi_addr).await?;
         
         Ok(peer_id.to_string())
     }
@@ -259,6 +393,208 @@ impl NetworkManager {
         Ok(tunnel_name)
     }
     
+    /// Create a new federation
+    pub async fn create_federation(&self, federation_id: &str, config: FederationNetworkConfig) -> Result<()> {
+        let mut federations = self.federations.write().await;
+        
+        // Check if federation already exists
+        if federations.contains_key(federation_id) {
+            return Err(anyhow::anyhow!("Federation {} already exists", federation_id));
+        }
+        
+        // Create new federation state
+        let fed_state = FederationState {
+            config,
+            peers: HashMap::new(),
+            wireguard: None,
+            metrics: FederationMetrics::new(),
+        };
+        
+        // Add federation to map
+        federations.insert(federation_id.to_string(), fed_state);
+        
+        Ok(())
+    }
+    
+    /// Get federations managed by this node
+    pub async fn get_federations(&self) -> Vec<String> {
+        let federations = self.federations.read().await;
+        federations.keys().cloned().collect()
+    }
+    
+    /// Switch active federation
+    pub async fn set_active_federation(&self, federation_id: &str) -> Result<()> {
+        let federations = self.federations.read().await;
+        
+        // Check if federation exists
+        if !federations.contains_key(federation_id) {
+            return Err(anyhow::anyhow!("Federation {} does not exist", federation_id));
+        }
+        
+        // Set active federation
+        let mut active_fed = self.active_federation.write().await;
+        *active_fed = federation_id.to_string();
+        
+        Ok(())
+    }
+    
+    /// Get current active federation
+    pub async fn get_active_federation(&self) -> String {
+        self.active_federation.read().await.clone()
+    }
+    
+    /// Get federation configuration
+    pub async fn get_federation_config(&self, federation_id: &str) -> Result<FederationNetworkConfig> {
+        let federations = self.federations.read().await;
+        
+        // Check if federation exists
+        match federations.get(federation_id) {
+            Some(fed_state) => Ok(fed_state.config.clone()),
+            None => Err(anyhow::anyhow!("Federation {} does not exist", federation_id)),
+        }
+    }
+    
+    /// Update federation configuration
+    pub async fn update_federation_config(&self, federation_id: &str, config: FederationNetworkConfig) -> Result<()> {
+        let mut federations = self.federations.write().await;
+        
+        // Check if federation exists
+        match federations.get_mut(federation_id) {
+            Some(fed_state) => {
+                fed_state.config = config;
+                Ok(())
+            },
+            None => Err(anyhow::anyhow!("Federation {} does not exist", federation_id)),
+        }
+    }
+    
+    /// Get federation metrics
+    pub async fn get_federation_metrics(&self, federation_id: &str) -> Result<serde_json::Value> {
+        let federations = self.federations.read().await;
+        
+        // Check if federation exists
+        match federations.get(federation_id) {
+            Some(fed_state) => {
+                let metrics = &fed_state.metrics;
+                
+                // Convert metrics to JSON
+                let metrics_json = serde_json::json!({
+                    "messages_sent": metrics.messages_sent,
+                    "messages_received": metrics.messages_received,
+                    "cross_federation_sent": metrics.cross_federation_sent,
+                    "cross_federation_received": metrics.cross_federation_received,
+                    "peer_count": metrics.peer_count,
+                    "last_sync": metrics.last_sync.map(|t| t.elapsed().as_secs()).unwrap_or(0),
+                });
+                
+                Ok(metrics_json)
+            },
+            None => Err(anyhow::anyhow!("Federation {} does not exist", federation_id)),
+        }
+    }
+    
+    /// Get federation peers
+    pub async fn get_federation_peers(&self, federation_id: &str) -> Result<Vec<PeerInfo>> {
+        let federations = self.federations.read().await;
+        
+        // Check if federation exists
+        match federations.get(federation_id) {
+            Some(fed_state) => {
+                let peers = fed_state.peers.values().cloned().collect();
+                Ok(peers)
+            },
+            None => Err(anyhow::anyhow!("Federation {} does not exist", federation_id)),
+        }
+    }
+    
+    /// Enable WireGuard for a specific federation
+    pub async fn enable_federation_wireguard(&self, federation_id: &str) -> Result<()> {
+        let mut federations = self.federations.write().await;
+        
+        // Check if federation exists
+        let fed_state = match federations.get_mut(federation_id) {
+            Some(fed_state) => fed_state,
+            None => return Err(anyhow::anyhow!("Federation {} does not exist", federation_id)),
+        };
+        
+        // Create a new WireGuard interface with federation-specific name
+        let interface_name = format!("wg-icn-{}", federation_id);
+        let listen_port = 51820 + rand::random::<u16>() % 100;
+        
+        let wg = WireGuardOverlay::new(&interface_name, listen_port).await?;
+        let wg_arc = Arc::new(RwLock::new(wg));
+        
+        // Set federation wireguard
+        fed_state.wireguard = Some(wg_arc);
+        
+        // Update federation config
+        fed_state.config.use_wireguard = true;
+        
+        Ok(())
+    }
+    
+    /// Send message to all peers in a federation
+    pub async fn broadcast_to_federation(&self, federation_id: &str, message_type: &str, data: serde_json::Value) -> Result<()> {
+        let federations = self.federations.read().await;
+        
+        // Check if federation exists
+        let fed_state = match federations.get(federation_id) {
+            Some(fed_state) => fed_state,
+            None => return Err(anyhow::anyhow!("Federation {} does not exist", federation_id)),
+        };
+        
+        // Create a custom message
+        let custom_message = NetworkMessage::Custom(icn_network::CustomMessage {
+            message_type: message_type.to_string(),
+            data: data.as_object().unwrap_or(&serde_json::Map::new()).clone(),
+        });
+        
+        // Get all peer IDs in this federation
+        let peer_ids: Vec<PeerId> = fed_state.peers.keys().cloned().collect();
+        
+        // Drop the read lock to avoid deadlock
+        drop(federations);
+        
+        // Send message to all peers
+        for peer_id in peer_ids {
+            if let Err(e) = self.network.send_to(&peer_id, custom_message.clone()).await {
+                println!("Failed to send message to peer {}: {}", peer_id, e);
+            }
+        }
+        
+        // Update federation metrics
+        let mut federations = self.federations.write().await;
+        if let Some(fed_state) = federations.get_mut(federation_id) {
+            fed_state.metrics.messages_sent += 1;
+        }
+        
+        Ok(())
+    }
+    
+    /// Helper function to add a peer to a federation
+    async fn add_peer_to_federation(&self, federation_id: &str, peer_id: PeerId, addr: Multiaddr) -> Result<()> {
+        let mut federations = self.federations.write().await;
+        
+        // Check if federation exists
+        match federations.get_mut(federation_id) {
+            Some(fed_state) => {
+                // Get peer info
+                let peer_info = match self.network.get_peer_info(&peer_id).await {
+                    Ok(info) => info,
+                    Err(e) => return Err(anyhow::anyhow!("Failed to get peer info: {}", e)),
+                };
+                
+                // Add peer to federation
+                fed_state.peers.insert(peer_id, peer_info);
+                fed_state.metrics.peer_count = fed_state.peers.len();
+                fed_state.metrics.last_sync = Some(std::time::Instant::now());
+                
+                Ok(())
+            },
+            None => Err(anyhow::anyhow!("Federation {} does not exist", federation_id)),
+        }
+    }
+    
     /// Stop the network
     pub async fn shutdown(&self) -> Result<()> {
         // Clean up WireGuard interfaces
@@ -268,8 +604,22 @@ impl NetworkManager {
                 wg_read.interface_name.clone()
             };
             
-            // Remove the WireGuard interface
-            // This would use wireguard_control to clean up
+            // Clean up the WireGuard interface
+            let wg_interface = wg.read().await;
+            if let Err(e) = wg_interface.cleanup().await {
+                println!("Failed to clean up WireGuard interface {}: {}", interface_name, e);
+            }
+        }
+        
+        // Clean up federation WireGuard interfaces
+        let federations = self.federations.read().await;
+        for (fed_id, fed_state) in federations.iter() {
+            if let Some(wg) = &fed_state.wireguard {
+                let wg_interface = wg.read().await;
+                if let Err(e) = wg_interface.cleanup().await {
+                    println!("Failed to clean up federation {} WireGuard interface: {}", fed_id, e);
+                }
+            }
         }
         
         // Stop the network service

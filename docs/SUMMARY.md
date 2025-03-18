@@ -389,3 +389,18 @@ A demonstration script (`examples/compute_demo.sh`) showcases the system's capab
 ### Conclusion
 
 The ICN Network Distributed Compute System represents a significant advancement in secure, democratically governed distributed computing. By integrating with our identity and credential frameworks, it ensures that computation maintains the same security properties and governance controls as data storage, creating a comprehensive solution for secure, collaborative data processing in a federated environment. 
+
+## Storage
+
+- [Storage CLI Commands](storage_cli.md)
+- [Distributed Storage](distributed_storage.md)
+- [Storage Federation](storage/README.md)
+  - [Encrypted Storage](storage/encrypted.md)
+  - [Federation Storage](storage/federation.md)
+  - [Governance Storage](storage/governance.md)
+  - [Identity Storage](storage/identity.md)
+  - [Credential Storage](storage/credential.md)
+
+## Domain-Specific Language (DSL)
+
+- [DSL Overview](dsl/README.md) 

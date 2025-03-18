@@ -4,6 +4,20 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use wireguard_control::{Backend, Device, DeviceUpdate, InterfaceName, Key, KeyPair};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use serde_json;
+use std::collections::HashMap;
+use tokio::fs;
+use chrono;
+use crate::utils::*;
+use anyhow::{anyhow, Context, Result};
+use cli_format::*;
+use dsl::events::DslEvent;
+use primitive_types::U256;
+use std::{collections::BTreeMap, fs, io::Write, path::{Path, PathBuf}, str::FromStr, time::Duration};
+use tokio::{net::TcpStream, time::sleep};
+use tracing::*;
 
 mod storage;
 use storage::StorageService;
@@ -15,7 +29,10 @@ mod governance_storage;
 mod identity_storage;
 mod credential_storage;
 mod compute;
-use networking::NetworkManager;
+mod dsl;
+use networking::{NetworkManager, FederationNetworkConfig, FederationNetworkProposalType, FederationGovernanceService};
+use governance::{GovernanceService, Vote};
+use dsl::{DslSystem, DslEvent};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about = "ICN Command Line Interface")]
@@ -30,7 +47,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Show node status
+    /// Check node status
     Status {},
     
     /// Network operations
@@ -39,7 +56,7 @@ enum Commands {
         command: NetworkCommands,
     },
     
-    /// Storage system operations
+    /// Storage operations
     Storage {
         #[clap(subcommand)]
         command: StorageCommands,
@@ -50,14 +67,14 @@ enum Commands {
         #[clap(subcommand)]
         command: GovernanceCommands,
     },
-
-    /// Governance-controlled storage operations
+    
+    /// Governed storage operations
     GovernedStorage {
         #[clap(subcommand)]
         command: GovernedStorageCommands,
     },
-
-    /// Identity-integrated storage operations
+    
+    /// Identity-based storage operations
     IdentityStorage {
         #[clap(subcommand)]
         command: IdentityStorageCommands,
@@ -68,10 +85,15 @@ enum Commands {
         #[clap(subcommand)]
         command: CredentialStorageCommands,
     },
-    
-    /// Distributed compute operations
-    #[command(subcommand)]
+
+    /// Compute operations
     Compute(ComputeCommands),
+    
+    /// Domain-Specific Language operations
+    Dsl {
+        #[clap(subcommand)]
+        command: DslCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -132,6 +154,166 @@ enum NetworkCommands {
         #[clap(short, long)]
         content: String,
     },
+    
+    /// Create a new federation
+    CreateFederation {
+        /// Federation ID
+        #[clap(short, long)]
+        id: String,
+        
+        /// Federation bootstrap peers (comma-separated)
+        #[clap(short, long)]
+        bootstrap: Option<String>,
+        
+        /// Whether to allow cross-federation communication
+        #[clap(short, long)]
+        allow_cross_federation: bool,
+        
+        /// Allowed federations for cross-federation communication (comma-separated)
+        #[clap(short, long)]
+        allowed_federations: Option<String>,
+        
+        /// Whether to encrypt federation traffic
+        #[clap(short, long, default_value = "true")]
+        encrypt: bool,
+        
+        /// Whether to use WireGuard for this federation
+        #[clap(long)]
+        use_wireguard: bool,
+        
+        /// DHT namespace for this federation
+        #[clap(long)]
+        dht_namespace: Option<String>,
+    },
+    
+    /// List federations
+    ListFederations {},
+    
+    /// Switch active federation
+    SwitchFederation {
+        /// Federation ID to switch to
+        #[clap(short, long)]
+        id: String,
+    },
+    
+    /// Show federation information
+    FederationInfo {
+        /// Federation ID
+        #[clap(short, long)]
+        id: Option<String>,
+    },
+    
+    /// Send message to all peers in a federation
+    BroadcastToFederation {
+        /// Federation ID
+        #[clap(short, long)]
+        id: Option<String>,
+        
+        /// Message type
+        #[clap(short, long, default_value = "broadcast")]
+        message_type: String,
+        
+        /// Message content (JSON format)
+        #[clap(short, long)]
+        content: String,
+    },
+    
+    /// List peers in a federation
+    FederationPeers {
+        /// Federation ID
+        #[clap(short, long)]
+        id: Option<String>,
+    },
+    
+    /// Enable WireGuard for a specific federation
+    EnableFederationWireGuard {
+        /// Federation ID
+        #[clap(short, long)]
+        id: Option<String>,
+    },
+    
+    /// Show federation metrics
+    FederationMetrics {
+        /// Federation ID
+        #[clap(short, long)]
+        id: Option<String>,
+    },
+    
+    /// Federation governance operations
+    Governance {
+        #[clap(subcommand)]
+        command: FederationGovernanceCommands,
+    },
+}
+
+/// Federation governance commands for democratic network operations
+#[derive(Subcommand, Debug)]
+enum FederationGovernanceCommands {
+    /// Create a network governance proposal
+    CreateProposal {
+        /// Proposal title
+        #[clap(short, long)]
+        title: String,
+        
+        /// Proposal description
+        #[clap(short, long)]
+        description: String,
+        
+        /// Member ID of the proposer
+        #[clap(short, long)]
+        proposer: String,
+        
+        /// Proposal type: add-peer, remove-peer, update-config, enable-cross, disable-cross, enable-wireguard, disable-wireguard, add-bootstrap
+        #[clap(short, long)]
+        proposal_type: String,
+        
+        /// Additional JSON parameters for the proposal
+        #[clap(short, long)]
+        params: String,
+    },
+    
+    /// List network governance proposals
+    ListProposals {},
+    
+    /// Show details of a specific network governance proposal
+    ShowProposal {
+        /// Proposal ID
+        #[clap(short, long)]
+        id: String,
+    },
+    
+    /// Cast a vote on a network governance proposal
+    Vote {
+        /// Proposal ID
+        #[clap(short, long)]
+        id: String,
+        
+        /// Member ID casting the vote
+        #[clap(short, long)]
+        member: String,
+        
+        /// Vote (yes, no, abstain)
+        #[clap(short, long)]
+        vote: String,
+        
+        /// Optional comment with the vote
+        #[clap(short, long)]
+        comment: Option<String>,
+        
+        /// Voting weight (defaults to 1.0)
+        #[clap(short, long, default_value = "1.0")]
+        weight: f64,
+    },
+    
+    /// Execute an approved network governance proposal
+    ExecuteProposal {
+        /// Proposal ID
+        #[clap(short, long)]
+        id: String,
+    },
+    
+    /// Sync governance data with the federation
+    SyncGovernance {},
 }
 
 #[derive(Subcommand, Debug)]
@@ -1157,6 +1339,45 @@ enum ComputeCommands {
     },
 }
 
+/// Domain-Specific Language (DSL) commands for cooperative governance and automation
+#[derive(Subcommand, Debug)]
+enum DslCommands {
+    /// Execute a DSL script from a file
+    ExecuteScript {
+        /// The path to the script file
+        file: String,
+        /// The federation to execute the script in
+        #[clap(short, long)]
+        federation: Option<String>,
+    },
+    
+    /// Execute a DSL script provided as a string
+    ExecuteScriptString {
+        /// The script content
+        script: String,
+        /// The federation to execute the script in
+        #[clap(short, long)]
+        federation: Option<String>,
+    },
+    
+    /// Create a template DSL script
+    CreateTemplate {
+        /// The type of template to create (governance, network, economic)
+        template_type: String,
+        /// The output file path
+        output: String,
+    },
+    
+    /// Validate a DSL script without executing it
+    Validate {
+        /// The path to the script file
+        file: String,
+    },
+    
+    /// Show DSL documentation
+    ShowDocs {},
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -1195,215 +1416,15 @@ async fn main() -> Result<()> {
         Commands::Compute(compute_cmd) => {
             handle_compute_command(compute_cmd).await
         },
+        Commands::Dsl { command } => {
+            handle_dsl_command(command).await?;
+        },
     }
     
     Ok(())
 }
 
 async fn handle_storage_command(command: StorageCommands) -> Result<()> {
-    match command {
-        StorageCommands::Init { path, encrypted } => {
-            println!("Initializing storage at {} (encryption: {})", path, if encrypted { "enabled" } else { "disabled" });
-            
-            // Create path if it doesn't exist
-            let path = PathBuf::from(path);
-            tokio::fs::create_dir_all(&path).await?;
-            
-            // Initialize storage service
-            let mut service = StorageService::new(&path).await?;
-            
-            // Initialize default federation with encryption setting
-            service.init_federation("default", encrypted).await?;
-            
-            println!("Storage environment initialized successfully");
-        },
-        StorageCommands::Put { file, key, encrypted, federation } => {
-            let key = key.unwrap_or_else(|| file.split('/').last().unwrap_or(&file).to_string());
-            println!("Storing file {} with key {} in federation {} (encryption: {})", 
-                file, key, federation, if encrypted { "enabled" } else { "disabled" });
-            
-            // Initialize storage service with data directory
-            let service = StorageService::new("./data").await?;
-            
-            // Store the file
-            service.store_file(file, &key, &federation, encrypted).await?;
-            
-            println!("File stored successfully");
-        },
-        StorageCommands::Get { key, output, version, federation } => {
-            let output = output.unwrap_or_else(|| key.clone());
-            println!("Retrieving key {} from federation {} to {}{}", 
-                key, federation, output, 
-                if let Some(ver) = &version { format!(" (version: {})", ver) } else { String::new() });
-            
-            // Initialize storage service with data directory
-            let service = StorageService::new("./data").await?;
-            
-            // Retrieve the file
-            service.retrieve_file(&key, &output, &federation, version.as_deref()).await?;
-            
-            println!("File retrieved successfully");
-        },
-        StorageCommands::List { prefix, federation } => {
-            println!("Listing files in federation {}{}", 
-                federation,
-                if let Some(pre) = &prefix { format!(" with prefix {}", pre) } else { String::new() });
-            
-            // Initialize storage service with data directory
-            let service = StorageService::new("./data").await?;
-            
-            // List files
-            let files = service.list_files(&federation, prefix.as_deref()).await?;
-            
-            if files.is_empty() {
-                println!("No files found");
-            } else {
-                println!("Found {} files:", files.len());
-                println!("{:<30} {:<20} {:<10} {:<20}", "Key", "Current Version", "Versions", "Last Modified");
-                println!("{:-<30} {:-<20} {:-<10} {:-<20}", "", "", "", "");
-                
-                for file in files {
-                    // Extract the key from metadata key (remove "meta:" prefix)
-                    let key = file.filename;
-                    
-                    // Format timestamp as ISO date
-                    let modified = chrono::DateTime::from_timestamp(file.modified_at as i64, 0)
-                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                        .unwrap_or_else(|| "Unknown".to_string());
-                    
-                    println!("{:<30} {:<20} {:<10} {:<20}", 
-                        key, 
-                        &file.current_version[0..8], // Show first 8 chars of version ID
-                        file.versions.len(),
-                        modified
-                    );
-                }
-            }
-        },
-        StorageCommands::History { key, limit, federation } => {
-            println!("Showing version history for {} in federation {} (limit: {})", key, federation, limit);
-            
-            // Initialize storage service with data directory
-            let service = StorageService::new("./data").await?;
-            
-            // Get history
-            let versions = service.get_history(&key, &federation, limit).await?;
-            
-            if versions.is_empty() {
-                println!("No versions found");
-            } else {
-                println!("Version history (most recent first):");
-                println!("{:<36} {:<20} {:<10} {:<20}", "Version ID", "Timestamp", "Size", "Content Hash");
-                println!("{:-<36} {:-<20} {:-<10} {:-<20}", "", "", "", "");
-                
-                for version in versions {
-                    // Format timestamp as ISO date
-                    let timestamp = chrono::DateTime::from_timestamp(version.timestamp as i64, 0)
-                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                        .unwrap_or_else(|| "Unknown".to_string());
-                    
-                    // Format size
-                    let size = if version.size < 1024 {
-                        format!("{}B", version.size)
-                    } else if version.size < 1024 * 1024 {
-                        format!("{:.1}KB", version.size as f64 / 1024.0)
-                    } else {
-                        format!("{:.1}MB", version.size as f64 / (1024.0 * 1024.0))
-                    };
-                    
-                    println!("{:<36} {:<20} {:<10} {:<20}", 
-                        version.id, 
-                        timestamp,
-                        size,
-                        &version.content_hash[0..8] // Show first 8 chars of hash
-                    );
-                }
-            }
-        },
-        StorageCommands::GenerateKey { output } => {
-            println!("Generating encryption key to {}", output);
-            
-            // Initialize storage service with data directory
-            let service = StorageService::new("./data").await?;
-            
-            // Generate key
-            service.generate_key(output).await?;
-            
-            println!("Encryption key generated successfully");
-        },
-        StorageCommands::GenerateKeyPair { output_dir } => {
-            println!("Generating asymmetric key pair for recipient-specific encryption");
-            
-            // Initialize storage service with data directory
-            let service = StorageService::new("./data").await?;
-            
-            // Generate key pair
-            service.generate_key_pair(output_dir).await?;
-            
-            println!("Asymmetric key pair generated successfully");
-        },
-        StorageCommands::ExportKey { federation, output } => {
-            println!("Exporting encryption key for federation {}", federation);
-            
-            // Initialize storage service with data directory
-            let service = StorageService::new("./data").await?;
-            
-            // Export encryption key
-            service.export_encryption_key(&federation, &output).await?;
-            
-            println!("Encryption key exported successfully to {}", output);
-        },
-        StorageCommands::ImportKey { federation, key_file } => {
-            println!("Importing encryption key for federation {}", federation);
-            
-            // Initialize storage service with data directory
-            let service = StorageService::new("./data").await?;
-            
-            // Import encryption key
-            service.import_encryption_key(&federation, &key_file).await?;
-            
-            println!("Encryption key imported successfully");
-        },
-        StorageCommands::EncryptFor { input, output, recipients } => {
-            println!("Encrypting file {} for specific recipients", input);
-            
-            // Parse recipient public key files
-            let recipient_list: Vec<String> = recipients.split(',').map(|s| s.trim().to_string()).collect();
-            
-            // Read all recipient public keys
-            let mut recipient_keys = Vec::new();
-            for key_file in &recipient_list {
-                println!("Reading recipient public key from {}", key_file);
-                let key_data = tokio::fs::read(key_file).await?;
-                recipient_keys.push(key_data);
-            }
-            
-            // Initialize storage service with data directory
-            let service = StorageService::new("./data").await?;
-            
-            // Encrypt file for recipients
-            service.encrypt_for_recipients(&input, &output, &recipient_keys).await?;
-            
-            println!("File encrypted successfully for {} recipients", recipient_list.len());
-        },
-        StorageCommands::DecryptWith { input, output, private_key } => {
-            println!("Decrypting file {} with private key", input);
-            
-            // Read private key
-            let key_data = tokio::fs::read(&private_key).await?;
-            
-            // Initialize storage service with data directory
-            let service = StorageService::new("./data").await?;
-            
-            // Decrypt file
-            service.decrypt_with_private_key(&input, &output, &key_data).await?;
-            
-            println!("File decrypted successfully to {}", output);
-        },
-    }
-    Ok(())
-}
-
 async fn handle_governance_command(command: GovernanceCommands) -> Result<()> {
     match command {
         GovernanceCommands::CreateProposal { 
@@ -2903,7 +2924,7 @@ async fn handle_compute_command(command: ComputeCommands) -> Result<()> {
 async fn handle_network_command(command: NetworkCommands) -> Result<()> {
     // Initialize the network manager with default configuration
     let storage = StorageService::new("./data").await?;
-    let network_manager = NetworkManager::new(storage).await?;
+    let network_manager = NetworkManager::new(storage.clone()).await?;
     
     match command {
         NetworkCommands::Connect { server } => {
@@ -3061,6 +3082,554 @@ async fn handle_network_command(command: NetworkCommands) -> Result<()> {
                 }
             }
         },
+        NetworkCommands::CreateFederation { id, bootstrap, allow_cross_federation, allowed_federations, encrypt, use_wireguard, dht_namespace } => {
+            println!("Creating new federation '{}'...", id);
+            
+            // Parse bootstrap peers
+            let bootstrap_peers = match bootstrap {
+                Some(peers) => peers.split(',').map(|s| s.trim().to_string()).collect(),
+                None => Vec::new(),
+            };
+            
+            // Parse allowed federations
+            let allowed_feds = match allowed_federations {
+                Some(feds) => feds.split(',').map(|s| s.trim().to_string()).collect(),
+                None => Vec::new(),
+            };
+            
+            // Create federation configuration
+            let dht_ns = dht_namespace.unwrap_or_else(|| format!("icn-{}", id));
+            let config = networking::FederationNetworkConfig {
+                federation_id: id.clone(),
+                bootstrap_peers,
+                allow_cross_federation,
+                allowed_federations: allowed_feds,
+                encrypt_traffic: encrypt,
+                use_wireguard,
+                dht_namespace: dht_ns,
+                topic_prefix: format!("icn.{}", id),
+            };
+            
+            // Create the federation
+            match network_manager.create_federation(&id, config).await {
+                Ok(_) => {
+                    println!("Federation '{}' created successfully", id);
+                    if use_wireguard {
+                        println!("Enabling WireGuard for federation...");
+                        match network_manager.enable_federation_wireguard(&id).await {
+                            Ok(_) => println!("WireGuard enabled for federation '{}'", id),
+                            Err(e) => println!("Warning: Failed to enable WireGuard: {}", e),
+                        }
+                    }
+                },
+                Err(e) => {
+                    println!("Failed to create federation: {}", e);
+                    return Err(anyhow::anyhow!("Failed to create federation: {}", e));
+                }
+            }
+        },
+        
+        NetworkCommands::ListFederations {} => {
+            println!("Listing federations...");
+            
+            let federations = network_manager.get_federations().await;
+            let active_federation = network_manager.get_active_federation().await;
+            
+            if federations.is_empty() {
+                println!("No federations found");
+            } else {
+                println!("Federations:");
+                for (i, fed) in federations.iter().enumerate() {
+                    let active_marker = if *fed == active_federation { " (active)" } else { "" };
+                    println!("  {}. {}{}", i+1, fed, active_marker);
+                }
+            }
+        },
+        
+        NetworkCommands::SwitchFederation { id } => {
+            println!("Switching to federation '{}'...", id);
+            
+            match network_manager.set_active_federation(&id).await {
+                Ok(_) => {
+                    println!("Switched to federation '{}'", id);
+                },
+                Err(e) => {
+                    println!("Failed to switch federation: {}", e);
+                    return Err(anyhow::anyhow!("Failed to switch federation: {}", e));
+                }
+            }
+        },
+        
+        NetworkCommands::FederationInfo { id } => {
+            // Use provided ID or active federation
+            let federation_id = match id {
+                Some(id) => id,
+                None => network_manager.get_active_federation().await,
+            };
+            
+            println!("Federation information for '{}':", federation_id);
+            
+            match network_manager.get_federation_config(&federation_id).await {
+                Ok(config) => {
+                    println!("  ID: {}", config.federation_id);
+                    println!("  DHT namespace: {}", config.dht_namespace);
+                    println!("  Topic prefix: {}", config.topic_prefix);
+                    println!("  Cross-federation: {}", if config.allow_cross_federation { "allowed" } else { "disallowed" });
+                    println!("  Encryption: {}", if config.encrypt_traffic { "enabled" } else { "disabled" });
+                    println!("  WireGuard: {}", if config.use_wireguard { "enabled" } else { "disabled" });
+                    
+                    if !config.bootstrap_peers.is_empty() {
+                        println!("  Bootstrap peers:");
+                        for (i, peer) in config.bootstrap_peers.iter().enumerate() {
+                            println!("    {}. {}", i+1, peer);
+                        }
+                    }
+                    
+                    if !config.allowed_federations.is_empty() {
+                        println!("  Allowed federations:");
+                        for (i, fed) in config.allowed_federations.iter().enumerate() {
+                            println!("    {}. {}", i+1, fed);
+                        }
+                    }
+                    
+                    // Also display metrics
+                    match network_manager.get_federation_metrics(&federation_id).await {
+                        Ok(metrics) => {
+                            println!("\nFederation metrics:");
+                            println!("  Connected peers: {}", metrics["peer_count"]);
+                            println!("  Messages sent: {}", metrics["messages_sent"]);
+                            println!("  Messages received: {}", metrics["messages_received"]);
+                            println!("  Cross-federation messages sent: {}", metrics["cross_federation_sent"]);
+                            println!("  Cross-federation messages received: {}", metrics["cross_federation_received"]);
+                            println!("  Last sync: {} seconds ago", metrics["last_sync"]);
+                        },
+                        Err(e) => println!("Failed to get federation metrics: {}", e),
+                    }
+                },
+                Err(e) => {
+                    println!("Failed to get federation info: {}", e);
+                    return Err(anyhow::anyhow!("Failed to get federation info: {}", e));
+                }
+            }
+        },
+        
+        NetworkCommands::BroadcastToFederation { id, message_type, content } => {
+            // Use provided ID or active federation
+            let federation_id = match id {
+                Some(id) => id,
+                None => network_manager.get_active_federation().await,
+            };
+            
+            println!("Broadcasting '{}' message to federation '{}'...", message_type, federation_id);
+            
+            // Parse content as JSON
+            let content_json = match serde_json::from_str(&content) {
+                Ok(json) => json,
+                Err(e) => {
+                    println!("Failed to parse message content as JSON: {}", e);
+                    return Err(anyhow::anyhow!("Invalid JSON content: {}", e));
+                }
+            };
+            
+            match network_manager.broadcast_to_federation(&federation_id, &message_type, content_json).await {
+                Ok(_) => {
+                    println!("Message broadcast to federation '{}' successfully", federation_id);
+                },
+                Err(e) => {
+                    println!("Failed to broadcast message: {}", e);
+                    return Err(anyhow::anyhow!("Failed to broadcast message: {}", e));
+                }
+            }
+        },
+        
+        NetworkCommands::FederationPeers { id } => {
+            // Use provided ID or active federation
+            let federation_id = match id {
+                Some(id) => id,
+                None => network_manager.get_active_federation().await,
+            };
+            
+            println!("Listing peers in federation '{}'...", federation_id);
+            
+            match network_manager.get_federation_peers(&federation_id).await {
+                Ok(peers) => {
+                    if peers.is_empty() {
+                        println!("No peers found in federation '{}'", federation_id);
+                    } else {
+                        println!("Peers in federation '{}':", federation_id);
+                        for (i, peer) in peers.iter().enumerate() {
+                            println!("  {}. {} ({})", i+1, peer.peer_id, 
+                                peer.addresses.join(", "));
+                            if let Some(agent) = &peer.agent_version {
+                                println!("     Agent: {}", agent);
+                            }
+                            if let Some(proto) = &peer.protocol_version {
+                                println!("     Protocol: {}", proto);
+                            }
+                        }
+                    }
+                },
+                Err(e) => {
+                    println!("Failed to list federation peers: {}", e);
+                    return Err(anyhow::anyhow!("Failed to list federation peers: {}", e));
+                }
+            }
+        },
+        
+        NetworkCommands::EnableFederationWireGuard { id } => {
+            // Use provided ID or active federation
+            let federation_id = match id {
+                Some(id) => id,
+                None => network_manager.get_active_federation().await,
+            };
+            
+            println!("Enabling WireGuard for federation '{}'...", federation_id);
+            
+            match network_manager.enable_federation_wireguard(&federation_id).await {
+                Ok(_) => {
+                    println!("WireGuard enabled for federation '{}'", federation_id);
+                },
+                Err(e) => {
+                    println!("Failed to enable WireGuard: {}", e);
+                    return Err(anyhow::anyhow!("Failed to enable WireGuard: {}", e));
+                }
+            }
+        },
+        
+        NetworkCommands::FederationMetrics { id } => {
+            // Use provided ID or active federation
+            let federation_id = match id {
+                Some(id) => id,
+                None => network_manager.get_active_federation().await,
+            };
+            
+            println!("Federation metrics for '{}':", federation_id);
+            
+            match network_manager.get_federation_metrics(&federation_id).await {
+                Ok(metrics) => {
+                    println!("  Connected peers: {}", metrics["peer_count"]);
+                    println!("  Messages sent: {}", metrics["messages_sent"]);
+                    println!("  Messages received: {}", metrics["messages_received"]);
+                    println!("  Cross-federation messages sent: {}", metrics["cross_federation_sent"]);
+                    println!("  Cross-federation messages received: {}", metrics["cross_federation_received"]);
+                    println!("  Last sync: {} seconds ago", metrics["last_sync"]);
+                },
+                Err(e) => {
+                    println!("Failed to get federation metrics: {}", e);
+                    return Err(anyhow::anyhow!("Failed to get federation metrics: {}", e));
+                }
+            }
+        },
+        
+        NetworkCommands::Governance { command } => {
+            handle_federation_governance_command(command, network_manager, storage).await?;
+        },
+    }
+    
+    Ok(())
+}
+
+async fn handle_federation_governance_command(
+    command: FederationGovernanceCommands, 
+    network_manager: NetworkManager,
+    storage: StorageService
+) -> Result<()> {
+    println!("Initializing federation governance...");
+    
+    // Initialize governance service for the active federation
+    let active_federation = network_manager.get_active_federation().await;
+    let governance_path = format!("./data/governance/{}", active_federation);
+    
+    let governance_service = GovernanceService::new(&active_federation, governance_path).await?;
+    
+    // Initialize federation governance service
+    let network_manager = Arc::new(network_manager);
+    let governance_service = Arc::new(RwLock::new(governance_service));
+    let fed_governance = FederationGovernanceService::new(
+        network_manager.clone(),
+        governance_service.clone(),
+    ).await?;
+    
+    match command {
+        FederationGovernanceCommands::CreateProposal { title, description, proposer, proposal_type, params } => {
+            println!("Creating network governance proposal: {}", title);
+            
+            // Parse proposal type
+            let proposal_type = match proposal_type.as_str() {
+                "add-peer" => {
+                    // Parse params for add-peer
+                    let params: serde_json::Value = serde_json::from_str(&params)
+                        .map_err(|e| anyhow::anyhow!("Invalid JSON params: {}", e))?;
+                    
+                    let peer_id = params["peer_id"].as_str()
+                        .ok_or_else(|| anyhow::anyhow!("Missing peer_id in params"))?;
+                    let peer_address = params["peer_address"].as_str()
+                        .ok_or_else(|| anyhow::anyhow!("Missing peer_address in params"))?;
+                    
+                    FederationNetworkProposalType::AddPeer {
+                        peer_id: peer_id.to_string(),
+                        peer_address: peer_address.to_string(),
+                    }
+                },
+                "remove-peer" => {
+                    // Parse params for remove-peer
+                    let params: serde_json::Value = serde_json::from_str(&params)
+                        .map_err(|e| anyhow::anyhow!("Invalid JSON params: {}", e))?;
+                    
+                    let peer_id = params["peer_id"].as_str()
+                        .ok_or_else(|| anyhow::anyhow!("Missing peer_id in params"))?;
+                    
+                    FederationNetworkProposalType::RemovePeer {
+                        peer_id: peer_id.to_string(),
+                    }
+                },
+                "update-config" => {
+                    // Parse params for update-config
+                    let config: FederationNetworkConfig = serde_json::from_str(&params)
+                        .map_err(|e| anyhow::anyhow!("Invalid federation config: {}", e))?;
+                    
+                    FederationNetworkProposalType::UpdateConfig {
+                        config,
+                    }
+                },
+                "enable-cross" => {
+                    // Parse params for enable-cross-federation
+                    let params: serde_json::Value = serde_json::from_str(&params)
+                        .map_err(|e| anyhow::anyhow!("Invalid JSON params: {}", e))?;
+                    
+                    let target_federation = params["target_federation"].as_str()
+                        .ok_or_else(|| anyhow::anyhow!("Missing target_federation in params"))?;
+                    
+                    FederationNetworkProposalType::EnableCrossFederation {
+                        target_federation: target_federation.to_string(),
+                    }
+                },
+                "disable-cross" => {
+                    // Parse params for disable-cross-federation
+                    let params: serde_json::Value = serde_json::from_str(&params)
+                        .map_err(|e| anyhow::anyhow!("Invalid JSON params: {}", e))?;
+                    
+                    let target_federation = params["target_federation"].as_str()
+                        .ok_or_else(|| anyhow::anyhow!("Missing target_federation in params"))?;
+                    
+                    FederationNetworkProposalType::DisableCrossFederation {
+                        target_federation: target_federation.to_string(),
+                    }
+                },
+                "enable-wireguard" => {
+                    FederationNetworkProposalType::EnableWireGuard
+                },
+                "disable-wireguard" => {
+                    FederationNetworkProposalType::DisableWireGuard
+                },
+                "add-bootstrap" => {
+                    // Parse params for add-bootstrap-peers
+                    let params: serde_json::Value = serde_json::from_str(&params)
+                        .map_err(|e| anyhow::anyhow!("Invalid JSON params: {}", e))?;
+                    
+                    let peers = params["peers"].as_array()
+                        .ok_or_else(|| anyhow::anyhow!("Missing peers array in params"))?;
+                    
+                    let peers = peers.iter()
+                        .map(|p| p.as_str().unwrap_or("").to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect::<Vec<_>>();
+                    
+                    FederationNetworkProposalType::AddBootstrapPeers {
+                        peers,
+                    }
+                },
+                _ => return Err(anyhow::anyhow!("Unknown proposal type: {}", proposal_type)),
+            };
+            
+            // Create the proposal
+            let proposal_id = fed_governance.create_network_proposal(
+                &title,
+                &description,
+                proposal_type,
+                &proposer,
+            ).await?;
+            
+            println!("Created proposal with ID: {}", proposal_id);
+            println!("Proposal is now in draft state and can be voted on.");
+        },
+        
+        FederationGovernanceCommands::ListProposals {} => {
+            println!("Listing network governance proposals for federation '{}'...", active_federation);
+            
+            // Get all proposals from governance service
+            let proposals = {
+                let governance = governance_service.read().await;
+                governance.get_proposals().to_vec()
+            };
+            
+            if proposals.is_empty() {
+                println!("No proposals found for federation '{}'", active_federation);
+                return Ok(());
+            }
+            
+            println!("Found {} proposals:", proposals.len());
+            for (i, proposal) in proposals.iter().enumerate() {
+                let proposal_type = match serde_json::from_value::<FederationNetworkProposalType>(proposal.content.clone()) {
+                    Ok(pt) => format!("{:?}", pt),
+                    Err(_) => "Unknown".to_string(),
+                };
+                
+                println!("{}. [{}] {} - {}", i+1, proposal.status, proposal.id, proposal.title);
+                println!("   Type: {}", proposal_type);
+                println!("   Proposer: {}", proposal.proposer);
+                println!("   Votes: {} (of {} required)", proposal.votes.len(), proposal.quorum_percentage);
+                println!();
+            }
+        },
+        
+        FederationGovernanceCommands::ShowProposal { id } => {
+            println!("Showing details for proposal {}...", id);
+            
+            // Get the proposal
+            let proposal = {
+                let governance = governance_service.read().await;
+                match governance.get_proposal(&id) {
+                    Some(p) => p.clone(),
+                    None => {
+                        println!("Proposal {} not found", id);
+                        return Ok(());
+                    }
+                }
+            };
+            
+            // Parse network proposal type
+            let proposal_type = match serde_json::from_value::<FederationNetworkProposalType>(proposal.content.clone()) {
+                Ok(pt) => format!("{:?}", pt),
+                Err(_) => "Unknown".to_string(),
+            };
+            
+            // Display proposal details
+            println!("Proposal ID: {}", proposal.id);
+            println!("Title: {}", proposal.title);
+            println!("Description: {}", proposal.description);
+            println!("Type: {}", proposal_type);
+            println!("Status: {:?}", proposal.status);
+            println!("Proposer: {}", proposal.proposer);
+            println!("Created: {} (timestamp: {})", 
+                     chrono::NaiveDateTime::from_timestamp_opt(proposal.created_at as i64, 0)
+                     .unwrap_or_default(),
+                     proposal.created_at);
+            
+            if let Some(starts) = proposal.voting_starts_at {
+                println!("Voting starts: {}", 
+                         chrono::NaiveDateTime::from_timestamp_opt(starts as i64, 0)
+                         .unwrap_or_default());
+            }
+            
+            if let Some(ends) = proposal.voting_ends_at {
+                println!("Voting ends: {}", 
+                         chrono::NaiveDateTime::from_timestamp_opt(ends as i64, 0)
+                         .unwrap_or_default());
+            }
+            
+            println!("Quorum required: {}%", proposal.quorum_percentage);
+            println!("Approval required: {}%", proposal.approval_percentage);
+            
+            // Show votes
+            if proposal.votes.is_empty() {
+                println!("\nNo votes cast yet");
+            } else {
+                println!("\nVotes cast ({}):", proposal.votes.len());
+                for (i, vote) in proposal.votes.iter().enumerate() {
+                    println!("  {}. {} voted {:?} (weight: {})", 
+                             i+1, vote.member_id, vote.vote, vote.weight);
+                    if let Some(comment) = &vote.comment {
+                        println!("     Comment: {}", comment);
+                    }
+                }
+            }
+        },
+        
+        FederationGovernanceCommands::Vote { id, member, vote, comment, weight } => {
+            println!("Casting vote for proposal {}...", id);
+            
+            // Convert vote string to Vote enum
+            let vote_enum = match vote.to_lowercase().as_str() {
+                "yes" => governance::Vote::Yes,
+                "no" => governance::Vote::No,
+                "abstain" => governance::Vote::Abstain,
+                _ => return Err(anyhow::anyhow!("Invalid vote type. Must be 'yes', 'no', or 'abstain'")),
+            };
+            
+            // Cast the vote
+            fed_governance.cast_network_vote(
+                &id,
+                &member,
+                vote_enum,
+                comment,
+                weight,
+            ).await?;
+            
+            println!("Vote cast successfully for proposal {}", id);
+            
+            // Show updated vote count
+            let proposal = {
+                let governance = governance_service.read().await;
+                match governance.get_proposal(&id) {
+                    Some(p) => p.clone(),
+                    None => {
+                        println!("Warning: Proposal not found after voting");
+                        return Ok(());
+                    }
+                }
+            };
+            
+            println!("Current votes: {} (of {}% quorum required)", 
+                     proposal.votes.len(), proposal.quorum_percentage);
+        },
+        
+        FederationGovernanceCommands::ExecuteProposal { id } => {
+            println!("Executing proposal {}...", id);
+            
+            // First, check if proposal is approved
+            let is_approved = {
+                let governance = governance_service.read().await;
+                match governance.get_proposal(&id) {
+                    Some(p) => p.status == governance::ProposalStatus::Approved,
+                    None => {
+                        println!("Proposal {} not found", id);
+                        return Ok(());
+                    }
+                }
+            };
+            
+            if !is_approved {
+                println!("Proposal {} is not approved and cannot be executed", id);
+                
+                // Check current status
+                let status = {
+                    let governance = governance_service.read().await;
+                    governance.get_proposal(&id)
+                        .map(|p| format!("{:?}", p.status))
+                        .unwrap_or_else(|| "Unknown".to_string())
+                };
+                
+                println!("Current status: {}", status);
+                return Ok(());
+            }
+            
+            // Execute the proposal
+            match fed_governance.execute_network_proposal(&id).await {
+                Ok(_) => println!("Proposal {} executed successfully", id),
+                Err(e) => println!("Failed to execute proposal: {}", e),
+            }
+        },
+        
+        FederationGovernanceCommands::SyncGovernance {} => {
+            println!("Syncing governance data with federation '{}'...", active_federation);
+            
+            // Sync with federation
+            fed_governance.sync_with_federation().await?;
+            
+            println!("Governance sync request sent to federation");
+            println!("Sync process will happen in the background");
+        },
     }
     
     Ok(())
@@ -3102,4 +3671,211 @@ impl WireGuardOverlay {
     pub async fn add_peer(&mut self, peer_id: PeerId, endpoint: SocketAddr, allowed_ips: Vec<IpNetwork>) -> Result<()> {
         // Configure peer connection
     }
+}
+
+/// Handle DSL commands
+async fn handle_dsl_command(command: DslCommands) -> Result<()> {
+    match command {
+        DslCommands::ExecuteScript { file, federation } => {
+            println!("Executing DSL script from file: {}", file);
+            
+            // Create DSL system
+            let (dsl_system, mut event_rx) = dsl::create_default_system().await;
+            
+            // Start event handler in a separate task
+            let event_task = tokio::spawn(async move {
+                while let Some(event) = event_rx.recv().await {
+                    match event {
+                        DslEvent::Log(message) => println!("DSL: {}", message),
+                        DslEvent::Error(error) => println!("DSL Error: {}", error),
+                        DslEvent::ProposalCreated { id, title, .. } => {
+                            println!("DSL: Proposal created: {} ({})", title, id)
+                        },
+                        DslEvent::VoteCast { proposal_id, voter_id, vote } => {
+                            println!("DSL: Vote cast by {} on proposal {}", voter_id, proposal_id)
+                        },
+                        DslEvent::ProposalExecuted { id, result } => {
+                            println!(
+                                "DSL: Proposal {} {}",
+                                id,
+                                if result { "executed" } else { "rejected" }
+                            )
+                        },
+                        DslEvent::Transaction { from, to, amount, asset_type } => {
+                            println!(
+                                "DSL: Transaction of {} {} from {} to {}",
+                                amount, asset_type, from, to
+                            )
+                        },
+                    }
+                }
+            });
+            
+            // Execute script
+            dsl_system.execute_script_file(file).await?;
+            
+            // Wait for event task to finish
+            event_task.abort();
+            
+            println!("Script execution completed");
+        },
+        DslCommands::ExecuteScriptString { script, federation } => {
+            println!("Executing DSL script string");
+            
+            // Create DSL system
+            let (dsl_system, mut event_rx) = dsl::create_default_system().await;
+            
+            // Start event handler in a separate task
+            let event_task = tokio::spawn(async move {
+                while let Some(event) = event_rx.recv().await {
+                    match event {
+                        DslEvent::Log(message) => println!("DSL: {}", message),
+                        DslEvent::Error(error) => println!("DSL Error: {}", error),
+                        DslEvent::ProposalCreated { id, title, .. } => {
+                            println!("DSL: Proposal created: {} ({})", title, id)
+                        },
+                        DslEvent::VoteCast { proposal_id, voter_id, vote } => {
+                            println!("DSL: Vote cast by {} on proposal {}", voter_id, proposal_id)
+                        },
+                        DslEvent::ProposalExecuted { id, result } => {
+                            println!(
+                                "DSL: Proposal {} {}",
+                                id,
+                                if result { "executed" } else { "rejected" }
+                            )
+                        },
+                        DslEvent::Transaction { from, to, amount, asset_type } => {
+                            println!(
+                                "DSL: Transaction of {} {} from {} to {}",
+                                amount, asset_type, from, to
+                            )
+                        },
+                    }
+                }
+            });
+            
+            // Execute script
+            dsl_system.execute_script(&script).await?;
+            
+            // Wait for event task to finish
+            event_task.abort();
+            
+            println!("Script execution completed");
+        },
+        DslCommands::CreateTemplate { template_type, output } => {
+            println!("Creating {} template at {}", template_type, output);
+            
+            let template = match template_type.as_str() {
+                "governance" => {
+                    r#"// ICN DSL Governance Template
+proposal "MyProposal" {
+    title: "My Governance Proposal"
+    description: "This is a proposal to change something"
+    voting_method: majority
+    quorum: 60%
+    execution {
+        log("Proposal executed")
+    }
+}
+"#
+                },
+                "network" => {
+                    r#"// ICN DSL Network Template
+asset "NetworkResource" {
+    type: "resource"
+    initial_supply: 1000
+}
+
+federation "MyFederation" {
+    bootstrap_peers: ["peer1", "peer2"]
+    allow_cross_federation: true
+    encrypt: true
+    use_wireguard: true
+}
+"#
+                },
+                "economic" => {
+                    r#"// ICN DSL Economic Template
+asset "MutualCredit" {
+    type: "mutual_credit"
+    initial_supply: 10000
+}
+
+transaction {
+    from: "member1"
+    to: "member2"
+    amount: 100
+    asset: "MutualCredit"
+}
+"#
+                },
+                _ => {
+                    return Err(anyhow::anyhow!("Unknown template type: {}", template_type));
+                }
+            };
+            
+            // Write template to file
+            fs::write(&output, template).await?;
+            
+            println!("Template created successfully");
+        },
+        DslCommands::Validate { file } => {
+            println!("Validating DSL script: {}", file);
+            
+            // Read script
+            let script = fs::read_to_string(&file).await?;
+            
+            // Parse script to check syntax
+            dsl::parser::parse_script(&script)?;
+            
+            println!("Script is valid");
+        },
+        DslCommands::ShowDocs {} => {
+            println!("ICN Domain-Specific Language (DSL) Documentation");
+            println!("===============================================");
+            println!("");
+            println!("The ICN DSL provides a simple, human-readable syntax for expressing cooperative governance rules, economic transactions, and resource allocations.");
+            println!("");
+            println!("Basic Syntax Elements:");
+            println!("1. Comments: // Single line comment");
+            println!("");
+            println!("2. Proposals:");
+            println!("   proposal \"ProposalName\" {");
+            println!("     title: \"Proposal Title\"");
+            println!("     description: \"Proposal Description\"");
+            println!("     voting_method: majority | ranked_choice | quadratic");
+            println!("     quorum: 60%");
+            println!("     execution {");
+            println!("       action1(\"param1\", \"param2\")");
+            println!("       action2(\"param\")");
+            println!("     }");
+            println!("   }");
+            println!("");
+            println!("3. Assets:");
+            println!("   asset \"AssetName\" {");
+            println!("     type: \"mutual_credit\" | \"token\" | \"resource\"");
+            println!("     initial_supply: 1000");
+            println!("   }");
+            println!("");
+            println!("4. Transactions:");
+            println!("   transaction {");
+            println!("     from: \"member1\"");
+            println!("     to: \"member2\"");
+            println!("     amount: 100");
+            println!("     asset: \"AssetName\"");
+            println!("   }");
+            println!("");
+            println!("5. Federations:");
+            println!("   federation \"FederationName\" {");
+            println!("     bootstrap_peers: [\"peer1\", \"peer2\"]");
+            println!("     allow_cross_federation: true | false");
+            println!("     encrypt: true | false");
+            println!("     use_wireguard: true | false");
+            println!("   }");
+            println!("");
+            println!("For more details, see the documentation at docs/dsl/README.md");
+        },
+    }
+    
+    Ok(())
 }
