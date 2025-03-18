@@ -47,6 +47,9 @@ pub enum StorageError {
     #[error("Serialization error: {0}")]
     SerializationError(String),
     
+    #[error("Deserialization error: {0}")]
+    DeserializationError(String),
+    
     #[error("Key not found: {0}")]
     KeyNotFound(String),
     
@@ -71,7 +74,11 @@ impl From<std::io::Error> for StorageError {
 
 impl From<serde_json::Error> for StorageError {
     fn from(err: serde_json::Error) -> Self {
-        StorageError::SerializationError(err.to_string())
+        if err.is_data() {
+            StorageError::DeserializationError(err.to_string())
+        } else {
+            StorageError::SerializationError(err.to_string())
+        }
     }
 }
 
@@ -138,36 +145,14 @@ pub trait JsonStorage: Storage {
     async fn get_json<T: DeserializeOwned + Send>(&self, key: &str) -> StorageResult<T> {
         let data = self.get(key).await?;
         serde_json::from_slice(&data)
-            .map_err(|e| StorageError::SerializationError(e.to_string()))
-    }
-}
-
-// Implement JsonStorage for any type that implements Storage
-#[async_trait]
-impl<T: Storage + ?Sized> JsonStorage for T {}
-
-// Implement JsonStorage for Arc<dyn Storage>
-impl JsonStorage for Arc<dyn Storage> {
-    async fn get_json<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<T, StorageError> {
-        let data = self.get(key).await?;
-        match serde_json::from_slice(&data) {
-            Ok(value) => Ok(value),
-            Err(e) => Err(StorageError::DeserializationError(e.to_string())),
-        }
+            .map_err(|e| StorageError::DeserializationError(e.to_string()))
     }
 
-    async fn put_json<T: Serialize>(&self, key: &str, value: &T) -> Result<(), StorageError> {
-        let json_data = match serde_json::to_vec(value) {
-            Ok(data) => data,
-            Err(e) => return Err(StorageError::SerializationError(e.to_string())),
-        };
-        self.put(key, &json_data).await
-    }
-
-    async fn update_json<T, F>(&self, key: &str, update_fn: F) -> Result<T, StorageError>
+    /// Update a JSON value at the specified key with a transformation function
+    async fn update_json<T, F>(&self, key: &str, update_fn: F) -> StorageResult<T>
     where
-        T: for<'de> Deserialize<'de> + Serialize,
-        F: FnOnce(&mut T) -> Result<(), StorageError>,
+        T: DeserializeOwned + Serialize + Send,
+        F: FnOnce(&mut T) -> StorageResult<()> + Send,
     {
         // Get existing data
         let data = match self.get(key).await {
@@ -179,24 +164,24 @@ impl JsonStorage for Arc<dyn Storage> {
         };
 
         // Deserialize
-        let mut value: T = match serde_json::from_slice(&data) {
-            Ok(value) => value,
-            Err(e) => return Err(StorageError::DeserializationError(e.to_string())),
-        };
+        let mut value: T = serde_json::from_slice(&data)
+            .map_err(|e| StorageError::DeserializationError(e.to_string()))?;
 
         // Apply update
         update_fn(&mut value)?;
 
         // Serialize and store
-        let json_data = match serde_json::to_vec(&value) {
-            Ok(data) => data,
-            Err(e) => return Err(StorageError::SerializationError(e.to_string())),
-        };
+        let json_data = serde_json::to_vec(&value)
+            .map_err(|e| StorageError::SerializationError(e.to_string()))?;
         self.put(key, &json_data).await?;
 
         Ok(value)
     }
 }
+
+// Implement JsonStorage for any type that implements Storage
+#[async_trait]
+impl<T: Storage + ?Sized> JsonStorage for T {}
 
 // A basic file system-based storage implementation 
 pub struct FileStorage {

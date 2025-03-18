@@ -1,0 +1,23 @@
+[package]
+name = "icn-dsl"
+version = "0.1.0"
+edition = "2021"
+description = "Domain-Specific Language for ICN Network governance and economic systems"
+authors = ["ICN Developers"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+pest = "2.7"
+pest_derive = "2.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
+async-trait = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+tokio = { version = "1.32", features = ["full"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+pretty_assertions = "1.4" 

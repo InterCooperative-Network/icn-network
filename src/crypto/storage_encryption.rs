@@ -135,14 +135,13 @@ impl StorageEncryptionService {
         Ok(key_id)
     }
     
-    /// Check if a federation has access to a key
-    pub async fn federation_has_key_access(&self, federation_id: &str, key_id: &str) -> bool {
-        let keys = self.keys.read().unwrap();
+    /// Check if a federation has access to a specific key
+    pub async fn federation_has_key_access(&self, federation_id: &str, key_id: &str) -> Result<bool, EncryptionError> {
+        let keys = self.keys.read().map_err(|e| EncryptionError::Other(format!("Lock error: {}", e)))?;
         
-        if let Some(key_data) = keys.get(key_id) {
-            key_data.info.federations.contains(federation_id)
-        } else {
-            false
+        match keys.get(key_id) {
+            Some(key_data) => Ok(key_data.info.federations.contains(federation_id)),
+            None => Err(EncryptionError::KeyNotFound(key_id.to_string())),
         }
     }
     
@@ -180,92 +179,99 @@ impl StorageEncryptionService {
             .collect()
     }
     
-    /// Encrypt data using a key
+    /// Encrypt data using the specified key
     pub async fn encrypt(
         &self,
+        data: &[u8],
         key_id: &str,
-        plaintext: &[u8],
-    ) -> Result<(Vec<u8>, EncryptionMetadata), EncryptionError> {
-        let keys = self.keys.read().unwrap();
+    ) -> Result<(Vec<u8>, HashMap<String, String>), EncryptionError> {
+        // Get the key
+        let keys = self.keys.read().map_err(|e| EncryptionError::Other(format!("Lock error: {}", e)))?;
+        let key_data = keys.get(key_id).ok_or_else(|| EncryptionError::KeyNotFound(key_id.to_string()))?;
         
-        let key_data = keys.get(key_id)
-            .ok_or_else(|| EncryptionError::KeyNotFound(key_id.to_string()))?;
+        // Generate a random IV
+        let mut iv = [0u8; AES_GCM_NONCE_LEN];
+        self.rng.fill(&mut iv).map_err(|e| EncryptionError::EncryptionFailed(format!("Failed to generate IV: {:?}", e)))?;
         
-        // Create a nonce
-        let mut nonce_bytes = [0u8; AES_GCM_NONCE_LEN];
-        self.rng.fill(&mut nonce_bytes)
-            .map_err(|_| EncryptionError::EncryptionFailed("Failed to generate nonce".to_string()))?;
+        // Create a nonce sequence
+        let nonce_sequence = FixedNonceSequence(iv);
         
-        // Create a copy of the plaintext that we can modify (for in-place encryption)
-        let mut in_out = plaintext.to_vec();
-        
-        // Set up encryption
+        // Get the unbound key
         let unbound_key = UnboundKey::new(&aead::AES_256_GCM, &key_data.key_material)
-            .map_err(|_| EncryptionError::EncryptionFailed("Invalid key".to_string()))?;
-        
-        let nonce_sequence = FixedNonceSequence(nonce_bytes);
+            .map_err(|e| EncryptionError::EncryptionFailed(format!("Failed to create key: {:?}", e)))?;
+            
+        // Create AAD (empty for now)
         let aad = Aad::empty();
         
-        let mut sealing_key = SealingKey::new(unbound_key, nonce_sequence);
+        // Copy the plaintext to a mutable buffer for in-place encryption
+        let mut in_out = data.to_vec();
         
-        // Encrypt in place
-        sealing_key.seal_in_place_append_tag(aad, &mut in_out)
-            .map_err(|_| EncryptionError::EncryptionFailed("Encryption failed".to_string()))?;
+        // Reserve space for the authentication tag
+        in_out.extend_from_slice(&[0u8; AES_GCM_TAG_LEN]);
+        
+        // Perform the encryption
+        let sealing_key = aead::SealingKey::new(unbound_key, nonce_sequence);
+        let encrypted_len = sealing_key.seal_in_place_append_tag(aad, &mut in_out)
+            .map_err(|e| EncryptionError::EncryptionFailed(format!("Encryption failed: {:?}", e)))?;
+            
+        // Resize to the actual encrypted length
+        in_out.truncate(encrypted_len);
         
         // Create metadata
-        let metadata = EncryptionMetadata {
-            key_id: key_id.to_string(),
-            algorithm: key_data.info.algorithm.clone(),
-            iv: nonce_bytes.to_vec(),
-            auth_tag: None, // Tag is appended to the ciphertext with ring
-            version: 1,
-        };
+        let mut metadata = HashMap::new();
+        metadata.insert("key_id".to_string(), key_id.to_string());
+        metadata.insert("algorithm".to_string(), "AES-256-GCM".to_string());
+        metadata.insert("iv".to_string(), hex::encode(&iv));
+        metadata.insert("version".to_string(), "1".to_string());
         
         Ok((in_out, metadata))
     }
     
-    /// Decrypt data using a key
+    /// Decrypt data using the specified key
     pub async fn decrypt(
         &self,
-        key_id: &str,
-        ciphertext: &[u8],
-        metadata: &EncryptionMetadata,
+        data: &[u8],
+        metadata: &HashMap<String, String>,
     ) -> Result<Vec<u8>, EncryptionError> {
-        let keys = self.keys.read().unwrap();
+        // Extract key_id from metadata
+        let key_id = metadata.get("key_id").ok_or_else(|| 
+            EncryptionError::InvalidParameters("Missing key_id in metadata".to_string()))?;
+            
+        // Extract IV from metadata
+        let iv_hex = metadata.get("iv").ok_or_else(|| 
+            EncryptionError::InvalidParameters("Missing IV in metadata".to_string()))?;
+        let iv = hex::decode(iv_hex)
+            .map_err(|e| EncryptionError::InvalidParameters(format!("Invalid IV format: {}", e)))?;
+            
+        // Get the key
+        let keys = self.keys.read().map_err(|e| EncryptionError::Other(format!("Lock error: {}", e)))?;
+        let key_data = keys.get(key_id).ok_or_else(|| EncryptionError::KeyNotFound(key_id.to_string()))?;
         
-        let key_data = keys.get(key_id)
-            .ok_or_else(|| EncryptionError::KeyNotFound(key_id.to_string()))?;
+        // Create a nonce from the IV
+        let nonce_sequence = FixedNonceSequence(
+            iv.try_into().map_err(|_| EncryptionError::InvalidParameters("Invalid IV length".to_string()))?
+        );
         
-        // Verify metadata
-        if metadata.key_id != key_id {
-            return Err(EncryptionError::InvalidParameters("Key ID mismatch".to_string()));
-        }
-        
-        if metadata.iv.len() != AES_GCM_NONCE_LEN {
-            return Err(EncryptionError::InvalidParameters("Invalid nonce length".to_string()));
-        }
-        
-        // Convert IV to fixed array
-        let mut nonce_bytes = [0u8; AES_GCM_NONCE_LEN]; 
-        nonce_bytes.copy_from_slice(&metadata.iv);
-        
-        // Create a copy of the ciphertext that we can modify (for in-place decryption)
-        let mut in_out = ciphertext.to_vec();
-        
-        // Set up decryption
+        // Get the unbound key
         let unbound_key = UnboundKey::new(&aead::AES_256_GCM, &key_data.key_material)
-            .map_err(|_| EncryptionError::DecryptionFailed("Invalid key".to_string()))?;
+            .map_err(|e| EncryptionError::DecryptionFailed(format!("Failed to create key: {:?}", e)))?;
             
-        let nonce = Nonce::try_assume_unique_for_key(&nonce_bytes)
-            .map_err(|_| EncryptionError::DecryptionFailed("Invalid nonce".to_string()))?;
-            
+        // Create AAD (empty for now)
         let aad = Aad::empty();
         
-        // Decrypt in place
-        let decrypted = ring::aead::open_in_place(unbound_key, nonce, aad, 0, &mut in_out)
-            .map_err(|_| EncryptionError::DecryptionFailed("Decryption failed - data may be corrupted".to_string()))?;
+        // Copy the ciphertext to a mutable buffer for in-place decryption
+        let mut in_out = data.to_vec();
         
-        Ok(decrypted.to_vec())
+        // Perform the decryption
+        let opening_key = aead::OpeningKey::new(unbound_key, nonce_sequence);
+        let decrypted_len = opening_key.open_in_place(aad, &mut in_out)
+            .map_err(|e| EncryptionError::DecryptionFailed(format!("Decryption failed: {:?}", e)))?
+            .len();
+            
+        // Resize to the actual decrypted length
+        in_out.truncate(decrypted_len);
+        
+        Ok(in_out)
     }
     
     // Helper to generate a key ID from bytes
@@ -288,13 +294,13 @@ mod tests {
         
         // Encrypt data
         let plaintext = b"This is a secret message";
-        let (ciphertext, metadata) = service.encrypt(&key_id, plaintext).await.unwrap();
+        let (ciphertext, metadata) = service.encrypt(plaintext, &key_id).await.unwrap();
         
         // Ciphertext should be different
         assert_ne!(&ciphertext[..], plaintext);
         
         // Decrypt data
-        let decrypted = service.decrypt(&key_id, &ciphertext, &metadata).await.unwrap();
+        let decrypted = service.decrypt(&ciphertext, &metadata).await.unwrap();
         
         // Decrypted data should match original
         assert_eq!(&decrypted[..], plaintext);
@@ -309,20 +315,20 @@ mod tests {
         let key_id = service.generate_key(federations).await.unwrap();
         
         // Check access
-        assert!(service.federation_has_key_access("fed1", &key_id).await);
-        assert!(!service.federation_has_key_access("fed2", &key_id).await);
+        assert!(service.federation_has_key_access("fed1", &key_id).await.unwrap());
+        assert!(!service.federation_has_key_access("fed2", &key_id).await.unwrap());
         
         // Grant access to fed2
         service.grant_federation_key_access("fed2", &key_id).await.unwrap();
         
         // Check access again
-        assert!(service.federation_has_key_access("fed2", &key_id).await);
+        assert!(service.federation_has_key_access("fed2", &key_id).await.unwrap());
         
         // Revoke access from fed2
         service.revoke_federation_key_access("fed2", &key_id).await.unwrap();
         
         // Check access again
-        assert!(!service.federation_has_key_access("fed2", &key_id).await);
+        assert!(!service.federation_has_key_access("fed2", &key_id).await.unwrap());
     }
     
     #[tokio::test]

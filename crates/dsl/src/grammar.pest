@@ -1,0 +1,90 @@
+// Basic tokens
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ "//" ~ (!"\n" ~ ANY)* | "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+// Identifiers and literals
+identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+string = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+number = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+boolean = { "true" | "false" }
+
+// Basic types
+value = { string | number | boolean | identifier }
+
+// Expressions
+expression = { value | function_call | object | array }
+function_call = { identifier ~ "(" ~ (expression ~ ("," ~ expression)*)? ~ ")" }
+object = { "{" ~ (field ~ ("," ~ field)*)? ~ "}" }
+field = { identifier ~ ":" ~ expression }
+array = { "[" ~ (expression ~ ("," ~ expression)*)? ~ "]" }
+
+// Governance primitives
+proposal = {
+    "proposal" ~ identifier ~ "{"
+    ~ (proposal_field ~ ";")*
+    ~ "}"
+}
+
+proposal_field = {
+    ("title" | "description") ~ "=" ~ string
+    | "quorum" ~ "=" ~ number ~ "%"
+    | "voting" ~ "=" ~ voting_method
+    | "execution" ~ "=" ~ execution_block
+}
+
+voting_method = {
+    "majority" | "consensus" | "ranked_choice"
+    | "{" ~ voting_method_field* ~ "}"
+}
+
+voting_method_field = {
+    identifier ~ "=" ~ value ~ ";"
+}
+
+execution_block = {
+    "{" ~ (execution_statement ~ ";")* ~ "}"
+}
+
+execution_statement = {
+    function_call
+}
+
+// Asset definitions
+asset = {
+    "asset" ~ identifier ~ "{"
+    ~ (asset_field ~ ";")*
+    ~ "}"
+}
+
+asset_field = {
+    "type" ~ "=" ~ string
+    | "initial_supply" ~ "=" ~ number
+    | "permissions" ~ "=" ~ permissions_block
+}
+
+permissions_block = {
+    "{" ~ (permission_rule ~ ";")* ~ "}"
+}
+
+permission_rule = {
+    identifier ~ "=" ~ value
+}
+
+// Role definitions
+role = {
+    "role" ~ identifier ~ "{"
+    ~ (role_field ~ ";")*
+    ~ "}"
+}
+
+role_field = {
+    "permissions" ~ "=" ~ array
+    | identifier ~ "=" ~ value
+}
+
+// Complete file
+file = {
+    SOI
+    ~ (proposal | asset | role)*
+    ~ EOI
+} 

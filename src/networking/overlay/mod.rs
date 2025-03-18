@@ -4,8 +4,8 @@
 //! using IPv6 addresses and tunneling.
 
 pub mod address;
-pub mod routing;
 pub mod dht;
+pub mod routing;
 pub mod onion;
 pub mod tunneling;
 
@@ -13,4 +13,7 @@ pub use address::{OverlayAddress, AddressAllocator, AddressSpace, AddressAllocat
 pub use routing::{RouteManager, RouteInfo, RoutingTable};
 pub use dht::{DistributedHashTable, NodeInfo, Key, Value};
 pub use onion::{OnionRouter, Circuit};
-pub use tunneling::{TunnelManager, TunnelStats, TunnelStatus, TunnelError, WireGuardConfig}; 
+pub use tunneling::{TunnelManager, TunnelStats, TunnelStatus, TunnelError, WireGuardConfig};
+
+// Re-export some common types
+pub use dht::DistributedHashTable; 

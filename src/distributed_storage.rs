@@ -4,10 +4,10 @@ use tokio::sync::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
 use crate::federation::coordination::{FederationCoordinator, SharedResource};
-use icn_core::storage::{Storage, StorageOptions, StorageError, StorageResult};
-use icn_core::storage::{VersionInfo, VersionHistory, VersioningManager as CoreVersioningManager, VersioningError};
-use networking::overlay::dht::DistributedHashTable;
-use crypto::{StorageEncryptionService, EncryptionMetadata, EncryptionError};
+use icn_core::storage::{Storage, StorageError, StorageResult};
+use icn_core::storage::versioning::{VersionInfo as CoreVersionInfo, VersionHistory as CoreVersionHistory, VersioningManager as CoreVersioningManager, VersioningError as CoreVersioningError};
+use icn_core::networking::overlay::dht::DistributedHashTable;
+use crate::crypto::{StorageEncryptionService as ImportedStorageEncryptionService, EncryptionMetadata as ImportedEncryptionMetadata, EncryptionError as ImportedEncryptionError};
 use icn_core::storage::{
     QuotaManager, OperationScheduler, QuotaOperation
 };
@@ -20,8 +20,8 @@ pub enum QuotaCheckResult {
     Denied { reason: String },
 }
 
-// Declare missing types as placeholders since they don't exist in core yet
-#[derive(Clone)]
+// Now using our own version of these types
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionInfo {
     pub version_id: String,
     pub created_at: u64,
@@ -38,6 +38,9 @@ pub struct VersionHistory {
     pub key: String,
     pub versions: Vec<VersionInfo>,
     pub max_versions: u32,
+    // Add missing fields
+    pub current_version_id: String,
+    pub total_size_bytes: u64,
 }
 
 pub struct VersioningManager {}
@@ -105,11 +108,12 @@ pub mod networking {
 
 // Placeholder for crypto services
 pub struct StorageEncryptionService {}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptionMetadata {
     pub key_id: String,
-    pub algorithm: String,
     pub iv: Vec<u8>,
-    pub auth_tag: Option<Vec<u8>>,
+    pub tag: Vec<u8>,
+    pub encryption_type: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -282,7 +286,7 @@ impl DistributedStorage {
         federation_coordinator: Arc<FederationCoordinator>,
     ) -> Self {
         let encryption_service = Arc::new(StorageEncryptionService::new());
-        let versioning_manager = Arc::new(VersioningManager::new(encryption_service.clone()));
+        let versioning_manager = Arc::new(VersioningManager::new());
         
         Self {
             local_storage,
@@ -308,7 +312,7 @@ impl DistributedStorage {
         federation_coordinator: Arc<FederationCoordinator>,
         encryption_service: Arc<StorageEncryptionService>,
     ) -> Self {
-        let versioning_manager = Arc::new(VersioningManager::new(encryption_service.clone()));
+        let versioning_manager = Arc::new(VersioningManager::new());
         
         Self {
             local_storage,
@@ -1066,17 +1070,6 @@ fn compute_hash(data: &[u8]) -> String {
     format!("{:x}", result)
 }
 
-// Error type for StorageError::PermissionDenied that we added
-impl StorageError {
-    fn PermissionDenied(message: String) -> Self {
-        StorageError::SerializationError(format!("Permission denied: {}", message))
-    }
-    
-    fn InsufficientResources(message: String) -> Self {
-        StorageError::SerializationError(format!("Insufficient resources: {}", message))
-    }
-}
-
 // Implement methods for Arc<VersioningManager>
 impl std::ops::Deref for VersioningManager {
     type Target = Self;
@@ -1088,16 +1081,16 @@ impl std::ops::Deref for VersioningManager {
 
 impl VersioningManager {
     pub fn new() -> Self {
-        Self {}
+        VersioningManager {}
     }
     
     pub async fn generate_version_id(&self) -> String {
-        // Generate a random version id
-        format!("version-{}", uuid::Uuid::new_v4())
+        use uuid::Uuid;
+        Uuid::new_v4().to_string()
     }
     
     pub fn create_version_storage_key(&self, key: &str, version_id: &str) -> String {
-        format!("version:{}:{}", key, version_id)
+        format!("{}:versions:{}", key, version_id)
     }
     
     pub async fn init_versioning(
@@ -1105,7 +1098,16 @@ impl VersioningManager {
         key: &str,
         version: VersionInfo,
     ) -> Result<(), VersioningError> {
-        // Initialize versioning for the key
+        let current_version_id = version.version_id.clone();
+        
+        let history = VersionHistory {
+            key: key.to_string(),
+            versions: vec![version],
+            max_versions: 10,
+            current_version_id,
+            total_size_bytes: 0,
+        };
+        
         Ok(())
     }
     
@@ -1115,7 +1117,6 @@ impl VersioningManager {
         version_id: &str,
         version: VersionInfo,
     ) -> Result<(), VersioningError> {
-        // Create a new version
         Ok(())
     }
     
@@ -1124,21 +1125,20 @@ impl VersioningManager {
         key: &str,
         version_id: &str,
     ) -> Result<VersionInfo, VersioningError> {
-        // Get a specific version
-        Err(VersioningError::VersionNotFound(format!("Version {} not found for key {}", version_id, key)))
+        Err(VersioningError::VersionNotFound(version_id.to_string()))
     }
     
     pub async fn get_version_history(&self, key: &str) -> Result<VersionHistory, VersioningError> {
-        // Get version history for a key
         Ok(VersionHistory {
             key: key.to_string(),
-            versions: vec![],
+            versions: Vec::new(),
             max_versions: 10,
+            current_version_id: String::new(),
+            total_size_bytes: 0,
         })
     }
     
     pub async fn set_current_version(&self, key: &str, version_id: &str) -> Result<(), VersioningError> {
-        // Set the current version for a key
         Ok(())
     }
 }
@@ -1249,8 +1249,10 @@ impl<T: std::ops::Deref<Target = StorageEncryptionService> + Send + Sync> std::s
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum QuotaOperation {
     Read { size_bytes: u64 },
     Write { size_bytes: u64 },
     Delete { key_count: u64 },
+    Put { size_bytes: u64 },
 } 

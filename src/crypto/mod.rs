@@ -7,6 +7,9 @@ use sha2::{Sha256, Digest};
 use thiserror::Error;
 use std::fmt;
 
+// Re-export storage encryption types
+pub use storage_encryption::{StorageEncryptionService, EncryptionMetadata, EncryptionError};
+
 #[derive(Debug, Error)]
 pub enum CryptoError {
     #[error("Key generation error: {0}")]
@@ -35,13 +38,6 @@ pub enum CryptoError {
 }
 
 pub type CryptoResult<T> = Result<T, CryptoError>;
-
-// Exported types
-pub use storage_encryption::{
-    StorageEncryptionService,
-    EncryptionMetadata,
-    EncryptionError,
-};
 
 /// Hash type for cryptographic operations
 #[derive(Debug, Clone, PartialEq, Eq)]

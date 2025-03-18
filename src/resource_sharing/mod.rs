@@ -1,6 +1,8 @@
 mod ml_optimizer;
 
 use std::error::Error;
+use std::fmt;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
@@ -9,12 +11,12 @@ use thiserror::Error;
 use crate::federation::coordination::{
     FederationCoordinator,
     SharedResource,
-    ResourceUsageLimits,
+    ResourceUsageLimits as FederationResourceUsageLimits,
 };
 use crate::identity::Identity;
 use self::ml_optimizer::MLOptimizer;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceStatus {
     Available,
     Maintenance,
@@ -67,7 +69,7 @@ pub struct ResourceAllocation {
     pub metadata: serde_json::Value,
     pub priority: AllocationPriority,
     pub constraints: Option<ResourceConstraints>,
-    pub usage_limits: Option<ResourceUsageLimits>,
+    pub usage_limits: Option<FederationResourceUsageLimits>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,10 +81,10 @@ pub struct ResourceConstraints {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceUsageLimits {
-    pub max_concurrent_allocations: Option<u64>,
-    pub max_total_allocations: Option<u64>,
-    pub max_allocation_amount: Option<u64>,
-    pub max_allocation_duration: Option<u64>,
+    pub max_concurrent_allocations: u32,
+    pub max_duration_per_allocation: u64,
+    pub max_total_duration_per_day: u64,
+    pub restricted_hours: HashSet<u32>,
 }
 
 pub struct ResourceSharingSystem {
@@ -291,7 +293,7 @@ impl ResourceSharingSystem {
         federation_id: &str,
         requested_amount: u64,
         requested_duration: u64,
-        limits: &ResourceUsageLimits,
+        limits: &FederationResourceUsageLimits,
     ) -> Result<(), Box<dyn Error>> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let day_start = now - (now % 86400);
@@ -380,6 +382,7 @@ impl ResourceSharingSystem {
 
             // Check if usage limits were respected
             if let Some(limits) = &allocation.usage_limits {
+                let actual_duration = allocation.end_time - allocation.start_time;
                 let within_limits = actual_duration <= limits.max_duration_per_allocation;
                 compliance_score *= if within_limits { 1.0 } else { 0.8 };
             }

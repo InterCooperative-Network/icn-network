@@ -52,15 +52,14 @@ anyhow = "1.0"
 [workspace]
 members = [
     "crates/core",
-    "crates/identity",
+    "crates/dsl",
+    "crates/vm",
     "crates/governance",
-    "crates/ledger",
-    "crates/apps",
-    "bin/node",
-    "bin/cli",
-    "crates/network",
     "crates/economic",
-    "crates/economic/icn-mutual-credit",
+    "crates/identity",
+    "crates/network",
+    "crates/storage",
+    "crates/node",
 ]
 resolver = "2"
 
@@ -77,8 +76,8 @@ tracing-subscriber = "0.3"
 ed25519-dalek = { version = "1.0" }
 ring = "0.17"
 hex = "0.4"
-bs58 = "0.4"
-rand = "0.7"
+bs58 = "0.5"
+rand = "0.8"
 icn-economic = { path = "crates/economic" }
 icn-mutual-credit = { path = "crates/economic/icn-mutual-credit" }
 

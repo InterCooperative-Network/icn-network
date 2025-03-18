@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Intercooperative Network (ICN) - A decentralized infrastructure for cooperative economies
 //!
 //! This crate provides the core functionality for the Intercooperative Network,
@@ -8,6 +10,33 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 use log::{info, error};
+use std::sync::Arc;
+use serde::{Serialize, de::DeserializeOwned};
+use async_trait::async_trait;
+
+// Add trait extension for icn_core::storage::Storage
+// This will provide the necessary functionality for get_json and put_json methods
+#[async_trait]
+pub trait JsonStorage {
+    /// Store a serializable value at the specified key
+    async fn put_json<T: Serialize + Send + Sync>(&self, key: &str, value: &T) -> Result<(), Box<dyn Error>>;
+    
+    /// Retrieve and deserialize a value from the specified key
+    async fn get_json<T: DeserializeOwned + Send>(&self, key: &str) -> Result<T, Box<dyn Error>>;
+}
+
+#[async_trait]
+impl JsonStorage for Arc<dyn icn_core::storage::Storage> {
+    async fn put_json<T: Serialize + Send + Sync>(&self, key: &str, value: &T) -> Result<(), Box<dyn Error>> {
+        let json_data = serde_json::to_vec_pretty(value)?;
+        self.put(key, &json_data).await.map_err(|e| e.into())
+    }
+    
+    async fn get_json<T: DeserializeOwned + Send>(&self, key: &str) -> Result<T, Box<dyn Error>> {
+        let data = self.get(key).await.map_err(|e| Box::new(e) as Box<dyn Error>)?;
+        serde_json::from_slice(&data).map_err(|e| e.into())
+    }
+}
 
 // Public modules
 pub mod identity;

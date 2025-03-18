@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use serde::{Deserialize, Serialize};
 use crate::identity::{Identity, DidDocument};
+use crate::crypto::CryptoUtils;
 use icn_core::storage::Storage;
 // Import directly from the crate
 use ed25519_dalek::{Keypair, PublicKey, Signature};
