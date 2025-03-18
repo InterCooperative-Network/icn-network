@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::federation::coordination::{FederationCoordinator, SharedResource};
 use icn_core::storage::{Storage, StorageOptions, StorageError, StorageResult};
-use icn_core::storage::{VersionInfo, VersionHistory, VersioningManager, VersioningError};
+use icn_core::storage::{VersionInfo, VersionHistory, VersioningManager as CoreVersioningManager, VersioningError};
 use networking::overlay::dht::DistributedHashTable;
 use crypto::{StorageEncryptionService, EncryptionMetadata, EncryptionError};
 use icn_core::storage::{
