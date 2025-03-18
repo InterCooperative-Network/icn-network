@@ -1,38 +1,37 @@
 /// Token module for the DSL parser
 ///
-/// This module defines the tokens used by the DSL lexer.
+/// This module defines the token types used by the lexical analyzer (lexer)
+/// to categorize parts of the DSL input.
 
-/// Token types for the DSL
-#[derive(Debug, PartialEq, Clone)]
+/// Token types for the DSL lexer
+#[derive(Debug, Clone, PartialEq)]
 pub enum Token {
-    /// Keyword (e.g., "proposal", "asset", "transaction")
+    /// A keyword such as 'proposal', 'asset', etc.
     Keyword(String),
-    /// Identifier (e.g., variable names)
+    /// An identifier (variable or entity name)
     Identifier(String),
-    /// String literal
+    /// A string literal enclosed in double quotes
     String(String),
-    /// Number literal
+    /// A numeric literal
     Number(String),
-    /// Single character symbol
-    Symbol(char),
-    /// Opening brace {
+    /// An opening brace '{'
     OpenBrace,
-    /// Closing brace }
+    /// A closing brace '}'
     CloseBrace,
-    /// Opening parenthesis (
+    /// An opening parenthesis '('
     OpenParen,
-    /// Closing parenthesis )
+    /// A closing parenthesis ')'
     CloseParen,
-    /// Opening bracket [
+    /// An opening square bracket '['
     OpenBracket,
-    /// Closing bracket ]
+    /// A closing square bracket ']'
     CloseBracket,
-    /// Colon :
+    /// A colon ':'
     Colon,
-    /// Comma ,
+    /// A comma ','
     Comma,
-    /// Whitespace
-    Whitespace,
-    /// Comment
+    /// A comment (line starting with '//')
     Comment,
+    /// Any other symbol
+    Symbol(char),
 } 

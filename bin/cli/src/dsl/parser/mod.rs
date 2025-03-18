@@ -1,868 +1,490 @@
-/// DSL Parser Module
+/// Parser module for the DSL
 ///
-/// This module is responsible for parsing DSL scripts into an Abstract Syntax Tree (AST)
-/// that can be executed by the VM.
+/// This module handles the parsing of DSL scripts into an Abstract Syntax Tree (AST)
+/// which can then be executed by the Virtual Machine (VM).
 
-use anyhow::{Context, Result, anyhow};
+pub mod ast;
+pub mod lexer;
+pub mod token;
+
+use anyhow::{Result, anyhow};
+use self::ast::{Program, Statement, ProposalStatement, AssetStatement, TransactionStatement, 
+    FederationStatement, VoteStatement, RoleStatement, PermissionStatement, LogStatement, Expression};
+use self::lexer::Lexer;
+use self::token::Token;
 use std::collections::HashMap;
-use std::str::FromStr;
 
-/// Parse a DSL script into an AST
-pub fn parse_script(script: &str) -> Result<Ast> {
-    let mut parser = Parser::new(script);
-    parser.parse()
-}
-
-/// Parser for DSL scripts
-struct Parser {
-    input: String,
+/// Parser for converting DSL scripts into an AST
+pub struct Parser<'a> {
+    /// The lexer that tokenizes the input
+    lexer: Lexer<'a>,
+    /// The current tokens being processed
     tokens: Vec<Token>,
+    /// The current position in the token stream
     position: usize,
 }
 
-impl Parser {
-    /// Create a new parser
-    fn new(input: &str) -> Self {
-        Self {
-            input: input.to_string(),
-            tokens: Vec::new(),
+impl<'a> Parser<'a> {
+    /// Create a new parser from an input string
+    pub fn new(input: &'a str) -> Result<Self> {
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize()?;
+        
+        Ok(Self {
+            lexer,
+            tokens,
             position: 0,
-        }
+        })
     }
     
-    /// Parse the input into an AST
-    fn parse(&mut self) -> Result<Ast> {
-        // Tokenize the input
-        self.tokenize()?;
-        
-        // Parse the tokens into an AST
-        let mut ast = Ast::new();
+    /// Parse the input script into an AST program
+    pub fn parse_script(&mut self) -> Result<Program> {
+        let mut statements = Vec::new();
         
         while self.position < self.tokens.len() {
-            match self.tokens[self.position] {
-                Token::Keyword(ref keyword) => {
-                    match keyword.as_str() {
-                        "proposal" => {
-                            let proposal = self.parse_proposal()?;
-                            ast.nodes.push(AstNode::Proposal(proposal));
-                        },
-                        "asset" => {
-                            let asset = self.parse_asset()?;
-                            ast.nodes.push(AstNode::Asset(asset));
-                        },
-                        "transaction" => {
-                            let transaction = self.parse_transaction()?;
-                            ast.nodes.push(AstNode::Transaction(transaction));
-                        },
-                        "federation" => {
-                            let federation = self.parse_federation()?;
-                            ast.nodes.push(AstNode::Federation(federation));
-                        },
-                        "vote" => {
-                            let vote = self.parse_vote()?;
-                            ast.nodes.push(AstNode::Vote(vote));
-                        },
-                        "role" => {
-                            let role = self.parse_role()?;
-                            ast.nodes.push(AstNode::Role(role));
-                        },
-                        "permission" => {
-                            let permission = self.parse_permission()?;
-                            ast.nodes.push(AstNode::Permission(permission));
-                        },
-                        "log" => {
-                            let log = self.parse_log()?;
-                            ast.nodes.push(AstNode::Log(log));
-                        },
-                        _ => {
-                            return Err(anyhow!("Unknown keyword: {}", keyword));
-                        }
-                    }
-                },
-                Token::Comment => {
-                    // Skip comments
-                    self.position += 1;
-                },
-                Token::Whitespace => {
-                    // Skip whitespace
-                    self.position += 1;
-                },
-                _ => {
-                    return Err(anyhow!("Unexpected token: {:?}", self.tokens[self.position]));
-                }
-            }
+            let statement = self.parse_statement()?;
+            statements.push(statement);
         }
         
-        Ok(ast)
+        Ok(Program { statements })
     }
     
-    /// Tokenize the input
-    fn tokenize(&mut self) -> Result<()> {
-        // Simple tokenization logic for now
-        let mut chars = self.input.chars().peekable();
-        let mut tokens = Vec::new();
+    /// Parse a statement from the token stream
+    fn parse_statement(&mut self) -> Result<Statement> {
+        let token = self.current_token()?;
         
-        while let Some(c) = chars.next() {
-            match c {
-                ' ' | '\t' | '\n' | '\r' => {
-                    tokens.push(Token::Whitespace);
-                },
-                '/' => {
-                    if let Some('/') = chars.peek() {
-                        // Comment
-                        chars.next(); // Consume the second '/'
-                        while let Some(c) = chars.peek() {
-                            if *c == '\n' {
-                                break;
-                            }
-                            chars.next();
-                        }
-                        tokens.push(Token::Comment);
-                    } else {
-                        tokens.push(Token::Symbol('/'));
-                    }
-                },
-                '{' => tokens.push(Token::OpenBrace),
-                '}' => tokens.push(Token::CloseBrace),
-                '(' => tokens.push(Token::OpenParen),
-                ')' => tokens.push(Token::CloseParen),
-                '[' => tokens.push(Token::OpenBracket),
-                ']' => tokens.push(Token::CloseBracket),
-                ':' => tokens.push(Token::Colon),
-                ',' => tokens.push(Token::Comma),
-                '"' => {
-                    // String literal
-                    let mut string = String::new();
-                    while let Some(c) = chars.next() {
-                        if c == '"' {
-                            break;
-                        }
-                        string.push(c);
-                    }
-                    tokens.push(Token::String(string));
-                },
-                c if c.is_alphabetic() => {
-                    // Identifier or keyword
-                    let mut identifier = String::new();
-                    identifier.push(c);
+        match token {
+            Token::Keyword(keyword) => {
+                match keyword.as_str() {
+                    "proposal" => self.parse_proposal_statement(),
+                    "asset" => self.parse_asset_statement(),
+                    "transaction" => self.parse_transaction_statement(),
+                    "federation" => self.parse_federation_statement(),
+                    "vote" => self.parse_vote_statement(),
+                    "role" => self.parse_role_statement(),
+                    "permission" => self.parse_permission_statement(),
+                    "log" => self.parse_log_statement(),
+                    _ => Err(anyhow!("Unexpected keyword: {}", keyword)),
+                }
+            },
+            _ => Err(anyhow!("Expected a statement keyword, found: {:?}", token)),
+        }
+    }
+    
+    /// Parse a proposal statement
+    fn parse_proposal_statement(&mut self) -> Result<Statement> {
+        self.advance_token(); // Consume 'proposal'
+        
+        let identifier = self.parse_identifier()?;
+        let properties = self.parse_properties()?;
+        
+        self.expect_token(Token::OpenBrace)?;
+        self.advance_token(); // Consume '{'
+        
+        let mut body = Vec::new();
+        
+        while !self.matches_token(&Token::CloseBrace) && self.position < self.tokens.len() {
+            let statement = self.parse_statement()?;
+            body.push(statement);
+        }
+        
+        self.expect_token(Token::CloseBrace)?;
+        self.advance_token(); // Consume '}'
+        
+        Ok(Statement::Proposal(ProposalStatement {
+            identifier,
+            properties,
+            body,
+        }))
+    }
+    
+    /// Parse an asset statement
+    fn parse_asset_statement(&mut self) -> Result<Statement> {
+        self.advance_token(); // Consume 'asset'
+        
+        let identifier = self.parse_identifier()?;
+        let properties = self.parse_properties()?;
+        
+        let body = if self.matches_token(&Token::OpenBrace) {
+            self.advance_token(); // Consume '{'
+            
+            let mut statements = Vec::new();
+            
+            while !self.matches_token(&Token::CloseBrace) && self.position < self.tokens.len() {
+                let statement = self.parse_statement()?;
+                statements.push(statement);
+            }
+            
+            self.expect_token(Token::CloseBrace)?;
+            self.advance_token(); // Consume '}'
+            
+            Some(statements)
+        } else {
+            None
+        };
+        
+        Ok(Statement::Asset(AssetStatement {
+            identifier,
+            properties,
+            body,
+        }))
+    }
+    
+    /// Parse a transaction statement
+    fn parse_transaction_statement(&mut self) -> Result<Statement> {
+        self.advance_token(); // Consume 'transaction'
+        
+        let identifier = self.parse_identifier()?;
+        let properties = self.parse_properties()?;
+        
+        let body = if self.matches_token(&Token::OpenBrace) {
+            self.advance_token(); // Consume '{'
+            
+            let mut statements = Vec::new();
+            
+            while !self.matches_token(&Token::CloseBrace) && self.position < self.tokens.len() {
+                let statement = self.parse_statement()?;
+                statements.push(statement);
+            }
+            
+            self.expect_token(Token::CloseBrace)?;
+            self.advance_token(); // Consume '}'
+            
+            Some(statements)
+        } else {
+            None
+        };
+        
+        Ok(Statement::Transaction(TransactionStatement {
+            identifier,
+            properties,
+            body,
+        }))
+    }
+    
+    /// Parse a federation statement
+    fn parse_federation_statement(&mut self) -> Result<Statement> {
+        self.advance_token(); // Consume 'federation'
+        
+        let identifier = self.parse_identifier()?;
+        let properties = self.parse_properties()?;
+        
+        self.expect_token(Token::OpenBrace)?;
+        self.advance_token(); // Consume '{'
+        
+        let mut body = Vec::new();
+        
+        while !self.matches_token(&Token::CloseBrace) && self.position < self.tokens.len() {
+            let statement = self.parse_statement()?;
+            body.push(statement);
+        }
+        
+        self.expect_token(Token::CloseBrace)?;
+        self.advance_token(); // Consume '}'
+        
+        Ok(Statement::Federation(FederationStatement {
+            identifier,
+            properties,
+            body,
+        }))
+    }
+    
+    /// Parse a vote statement
+    fn parse_vote_statement(&mut self) -> Result<Statement> {
+        self.advance_token(); // Consume 'vote'
+        
+        let identifier = self.parse_identifier()?;
+        let properties = self.parse_properties()?;
+        
+        let body = if self.matches_token(&Token::OpenBrace) {
+            self.advance_token(); // Consume '{'
+            
+            let mut statements = Vec::new();
+            
+            while !self.matches_token(&Token::CloseBrace) && self.position < self.tokens.len() {
+                let statement = self.parse_statement()?;
+                statements.push(statement);
+            }
+            
+            self.expect_token(Token::CloseBrace)?;
+            self.advance_token(); // Consume '}'
+            
+            Some(statements)
+        } else {
+            None
+        };
+        
+        Ok(Statement::Vote(VoteStatement {
+            identifier,
+            properties,
+            body,
+        }))
+    }
+    
+    /// Parse a role statement
+    fn parse_role_statement(&mut self) -> Result<Statement> {
+        self.advance_token(); // Consume 'role'
+        
+        let identifier = self.parse_identifier()?;
+        let properties = self.parse_properties()?;
+        
+        self.expect_token(Token::OpenBrace)?;
+        self.advance_token(); // Consume '{'
+        
+        let mut body = Vec::new();
+        
+        while !self.matches_token(&Token::CloseBrace) && self.position < self.tokens.len() {
+            let statement = self.parse_statement()?;
+            body.push(statement);
+        }
+        
+        self.expect_token(Token::CloseBrace)?;
+        self.advance_token(); // Consume '}'
+        
+        Ok(Statement::Role(RoleStatement {
+            identifier,
+            properties,
+            body,
+        }))
+    }
+    
+    /// Parse a permission statement
+    fn parse_permission_statement(&mut self) -> Result<Statement> {
+        self.advance_token(); // Consume 'permission'
+        
+        let identifier = self.parse_identifier()?;
+        let properties = self.parse_properties()?;
+        
+        let body = if self.matches_token(&Token::OpenBrace) {
+            self.advance_token(); // Consume '{'
+            
+            let mut statements = Vec::new();
+            
+            while !self.matches_token(&Token::CloseBrace) && self.position < self.tokens.len() {
+                let statement = self.parse_statement()?;
+                statements.push(statement);
+            }
+            
+            self.expect_token(Token::CloseBrace)?;
+            self.advance_token(); // Consume '}'
+            
+            Some(statements)
+        } else {
+            None
+        };
+        
+        Ok(Statement::Permission(PermissionStatement {
+            identifier,
+            properties,
+            body,
+        }))
+    }
+    
+    /// Parse a log statement
+    fn parse_log_statement(&mut self) -> Result<Statement> {
+        self.advance_token(); // Consume 'log'
+        
+        let message = self.parse_expression()?;
+        
+        Ok(Statement::Log(LogStatement { message }))
+    }
+    
+    /// Parse an identifier
+    fn parse_identifier(&mut self) -> Result<String> {
+        let token = self.current_token()?;
+        
+        match token {
+            Token::Identifier(identifier) => {
+                self.advance_token();
+                Ok(identifier)
+            },
+            _ => Err(anyhow!("Expected an identifier, found: {:?}", token)),
+        }
+    }
+    
+    /// Parse properties (key-value pairs)
+    fn parse_properties(&mut self) -> Result<HashMap<String, Expression>> {
+        let mut properties = HashMap::new();
+        
+        if self.matches_token(&Token::OpenParen) {
+            self.advance_token(); // Consume '('
+            
+            while !self.matches_token(&Token::CloseParen) && self.position < self.tokens.len() {
+                let key = self.parse_identifier()?;
+                
+                self.expect_token(Token::Colon)?;
+                self.advance_token(); // Consume ':'
+                
+                let value = self.parse_expression()?;
+                
+                properties.insert(key, value);
+                
+                if self.matches_token(&Token::Comma) {
+                    self.advance_token(); // Consume ','
+                } else {
+                    break;
+                }
+            }
+            
+            self.expect_token(Token::CloseParen)?;
+            self.advance_token(); // Consume ')'
+        }
+        
+        Ok(properties)
+    }
+    
+    /// Parse an expression
+    fn parse_expression(&mut self) -> Result<Expression> {
+        let token = self.current_token()?;
+        
+        match token {
+            Token::String(s) => {
+                self.advance_token();
+                Ok(Expression::String(s))
+            },
+            Token::Number(n) => {
+                self.advance_token();
+                // Convert string number to f64
+                match n.parse::<f64>() {
+                    Ok(num) => Ok(Expression::Number(num)),
+                    Err(_) => Err(anyhow!("Invalid number: {}", n)),
+                }
+            },
+            Token::Identifier(id) => {
+                self.advance_token();
+                
+                // Check if it's a function call
+                if self.matches_token(&Token::OpenParen) {
+                    self.advance_token(); // Consume '('
                     
-                    while let Some(&c) = chars.peek() {
-                        if c.is_alphanumeric() || c == '_' {
-                            identifier.push(c);
-                            chars.next();
+                    let mut arguments = Vec::new();
+                    
+                    while !self.matches_token(&Token::CloseParen) && self.position < self.tokens.len() {
+                        let arg = self.parse_expression()?;
+                        arguments.push(arg);
+                        
+                        if self.matches_token(&Token::Comma) {
+                            self.advance_token(); // Consume ','
                         } else {
                             break;
                         }
                     }
                     
-                    // Check if it's a keyword
-                    let keywords = ["proposal", "asset", "transaction", "federation", "vote", "role", "permission", "log"];
-                    if keywords.contains(&identifier.as_str()) {
-                        tokens.push(Token::Keyword(identifier));
-                    } else {
-                        tokens.push(Token::Identifier(identifier));
-                    }
-                },
-                c if c.is_digit(10) => {
-                    // Number
-                    let mut number = String::new();
-                    number.push(c);
+                    self.expect_token(Token::CloseParen)?;
+                    self.advance_token(); // Consume ')'
                     
-                    while let Some(&c) = chars.peek() {
-                        if c.is_digit(10) || c == '.' {
-                            number.push(c);
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-                    
-                    tokens.push(Token::Number(number));
-                },
-                _ => {
-                    tokens.push(Token::Symbol(c));
+                    Ok(Expression::FunctionCall {
+                        name: id,
+                        arguments,
+                    })
+                } else {
+                    Ok(Expression::Identifier(id))
                 }
-            }
-        }
-        
-        self.tokens = tokens;
-        Ok(())
-    }
-    
-    /// Parse a proposal
-    fn parse_proposal(&mut self) -> Result<ProposalNode> {
-        // Expect "proposal" keyword
-        self.expect_token(Token::Keyword("proposal".to_string()))?;
-        self.position += 1;
-        
-        // Expect identifier or string
-        let id = match &self.tokens[self.position] {
-            Token::Identifier(id) => id.clone(),
-            Token::String(id) => id.clone(),
-            _ => return Err(anyhow!("Expected identifier or string after 'proposal'")),
-        };
-        self.position += 1;
-        
-        // Expect open brace
-        self.expect_token(Token::OpenBrace)?;
-        self.position += 1;
-        
-        // Parse proposal fields
-        let mut title = id.clone();
-        let mut description = String::new();
-        let mut voting_method = VotingMethodNode::Majority;
-        let mut execution = Vec::new();
-        
-        while self.position < self.tokens.len() {
-            match &self.tokens[self.position] {
-                Token::Identifier(field) => {
-                    self.position += 1;
+            },
+            Token::OpenBracket => {
+                self.advance_token(); // Consume '['
+                
+                let mut elements = Vec::new();
+                
+                while !self.matches_token(&Token::CloseBracket) && self.position < self.tokens.len() {
+                    let element = self.parse_expression()?;
+                    elements.push(element);
                     
-                    // Expect colon
-                    self.expect_token(Token::Colon)?;
-                    self.position += 1;
-                    
-                    match field.as_str() {
-                        "title" => {
-                            // Expect string
-                            match &self.tokens[self.position] {
-                                Token::String(value) => {
-                                    title = value.clone();
-                                    self.position += 1;
-                                },
-                                _ => return Err(anyhow!("Expected string after 'title:'")),
-                            }
-                        },
-                        "description" => {
-                            // Expect string
-                            match &self.tokens[self.position] {
-                                Token::String(value) => {
-                                    description = value.clone();
-                                    self.position += 1;
-                                },
-                                _ => return Err(anyhow!("Expected string after 'description:'")),
-                            }
-                        },
-                        "voting_method" => {
-                            // Expect identifier
-                            match &self.tokens[self.position] {
-                                Token::Identifier(value) => {
-                                    voting_method = match value.as_str() {
-                                        "majority" => VotingMethodNode::Majority,
-                                        "ranked_choice" => VotingMethodNode::RankedChoice,
-                                        "quadratic" => VotingMethodNode::Quadratic,
-                                        _ => return Err(anyhow!("Unknown voting method: {}", value)),
-                                    };
-                                    self.position += 1;
-                                },
-                                _ => return Err(anyhow!("Expected identifier after 'voting_method:'")),
-                            }
-                        },
-                        "execution" => {
-                            // Expect open brace
-                            self.expect_token(Token::OpenBrace)?;
-                            self.position += 1;
-                            
-                            // Parse execution steps
-                            while self.position < self.tokens.len() {
-                                match &self.tokens[self.position] {
-                                    Token::Identifier(action) => {
-                                        let action_name = action.clone();
-                                        self.position += 1;
-                                        
-                                        // Expect open paren
-                                        self.expect_token(Token::OpenParen)?;
-                                        self.position += 1;
-                                        
-                                        // Parse parameters
-                                        let mut params = HashMap::new();
-                                        let mut param_index = 0;
-                                        
-                                        while self.position < self.tokens.len() {
-                                            match &self.tokens[self.position] {
-                                                Token::String(value) => {
-                                                    params.insert(param_index.to_string(), value.clone());
-                                                    param_index += 1;
-                                                    self.position += 1;
-                                                    
-                                                    // Check for comma or closing paren
-                                                    if self.tokens[self.position] == Token::Comma {
-                                                        self.position += 1;
-                                                    } else if self.tokens[self.position] == Token::CloseParen {
-                                                        self.position += 1;
-                                                        break;
-                                                    } else {
-                                                        return Err(anyhow!("Expected comma or closing paren"));
-                                                    }
-                                                },
-                                                Token::CloseParen => {
-                                                    self.position += 1;
-                                                    break;
-                                                },
-                                                _ => return Err(anyhow!("Expected string or closing paren")),
-                                            }
-                                        }
-                                        
-                                        execution.push(ExecutionStepNode {
-                                            action: action_name,
-                                            params,
-                                        });
-                                    },
-                                    Token::CloseBrace => {
-                                        self.position += 1;
-                                        break;
-                                    },
-                                    Token::Whitespace | Token::Comment => {
-                                        self.position += 1;
-                                    },
-                                    _ => return Err(anyhow!("Expected identifier or closing brace")),
-                                }
-                            }
-                        },
-                        _ => return Err(anyhow!("Unknown field: {}", field)),
+                    if self.matches_token(&Token::Comma) {
+                        self.advance_token(); // Consume ','
+                    } else {
+                        break;
                     }
-                },
-                Token::CloseBrace => {
-                    self.position += 1;
-                    break;
-                },
-                Token::Whitespace | Token::Comment => {
-                    self.position += 1;
-                },
-                _ => return Err(anyhow!("Expected identifier or closing brace")),
-            }
-        }
-        
-        Ok(ProposalNode {
-            id,
-            title,
-            description,
-            voting_method,
-            execution,
-        })
-    }
-    
-    /// Parse an asset
-    fn parse_asset(&mut self) -> Result<AssetNode> {
-        // Expect "asset" keyword
-        self.expect_token(Token::Keyword("asset".to_string()))?;
-        self.position += 1;
-        
-        // Expect identifier or string
-        let id = match &self.tokens[self.position] {
-            Token::Identifier(id) => id.clone(),
-            Token::String(id) => id.clone(),
-            _ => return Err(anyhow!("Expected identifier or string after 'asset'")),
-        };
-        self.position += 1;
-        
-        // Expect open brace
-        self.expect_token(Token::OpenBrace)?;
-        self.position += 1;
-        
-        // Parse asset fields
-        let mut asset_type = AssetType::Token;
-        let mut initial_supply = 0;
-        
-        while self.position < self.tokens.len() {
-            match &self.tokens[self.position] {
-                Token::Identifier(field) => {
-                    self.position += 1;
+                }
+                
+                self.expect_token(Token::CloseBracket)?;
+                self.advance_token(); // Consume ']'
+                
+                Ok(Expression::Array(elements))
+            },
+            Token::OpenBrace => {
+                self.advance_token(); // Consume '{'
+                
+                let mut object = HashMap::new();
+                
+                while !self.matches_token(&Token::CloseBrace) && self.position < self.tokens.len() {
+                    let key = self.parse_identifier()?;
                     
-                    // Expect colon
                     self.expect_token(Token::Colon)?;
-                    self.position += 1;
+                    self.advance_token(); // Consume ':'
                     
-                    match field.as_str() {
-                        "type" => {
-                            // Expect string
-                            match &self.tokens[self.position] {
-                                Token::String(value) => {
-                                    asset_type = match value.as_str() {
-                                        "mutual_credit" => AssetType::MutualCredit,
-                                        "token" => AssetType::Token,
-                                        "resource" => AssetType::Resource,
-                                        _ => return Err(anyhow!("Unknown asset type: {}", value)),
-                                    };
-                                    self.position += 1;
-                                },
-                                Token::Identifier(value) => {
-                                    asset_type = match value.as_str() {
-                                        "mutual_credit" => AssetType::MutualCredit,
-                                        "token" => AssetType::Token,
-                                        "resource" => AssetType::Resource,
-                                        _ => return Err(anyhow!("Unknown asset type: {}", value)),
-                                    };
-                                    self.position += 1;
-                                },
-                                _ => return Err(anyhow!("Expected string after 'type:'")),
-                            }
-                        },
-                        "initial_supply" => {
-                            // Expect number
-                            match &self.tokens[self.position] {
-                                Token::Number(value) => {
-                                    initial_supply = value.parse::<u64>().context("Invalid initial supply")?;
-                                    self.position += 1;
-                                },
-                                _ => return Err(anyhow!("Expected number after 'initial_supply:'")),
-                            }
-                        },
-                        _ => return Err(anyhow!("Unknown field: {}", field)),
+                    let value = self.parse_expression()?;
+                    
+                    object.insert(key, value);
+                    
+                    if self.matches_token(&Token::Comma) {
+                        self.advance_token(); // Consume ','
+                    } else {
+                        break;
                     }
-                },
-                Token::CloseBrace => {
-                    self.position += 1;
-                    break;
-                },
-                Token::Whitespace | Token::Comment => {
-                    self.position += 1;
-                },
-                _ => return Err(anyhow!("Expected identifier or closing brace")),
-            }
+                }
+                
+                self.expect_token(Token::CloseBrace)?;
+                self.advance_token(); // Consume '}'
+                
+                Ok(Expression::Object(object))
+            },
+            _ => Err(anyhow!("Expected an expression, found: {:?}", token)),
         }
-        
-        Ok(AssetNode {
-            id,
-            asset_type,
-            initial_supply,
-        })
     }
     
-    /// Parse a transaction
-    fn parse_transaction(&mut self) -> Result<TransactionNode> {
-        // Expect "transaction" keyword
-        self.expect_token(Token::Keyword("transaction".to_string()))?;
-        self.position += 1;
-        
-        // Expect open brace
-        self.expect_token(Token::OpenBrace)?;
-        self.position += 1;
-        
-        // Parse transaction fields
-        let mut from = String::new();
-        let mut to = String::new();
-        let mut amount = 0;
-        let mut asset_id = String::new();
-        
-        while self.position < self.tokens.len() {
-            match &self.tokens[self.position] {
-                Token::Identifier(field) => {
-                    self.position += 1;
-                    
-                    // Expect colon
-                    self.expect_token(Token::Colon)?;
-                    self.position += 1;
-                    
-                    match field.as_str() {
-                        "from" => {
-                            // Expect string
-                            match &self.tokens[self.position] {
-                                Token::String(value) => {
-                                    from = value.clone();
-                                    self.position += 1;
-                                },
-                                _ => return Err(anyhow!("Expected string after 'from:'")),
-                            }
-                        },
-                        "to" => {
-                            // Expect string
-                            match &self.tokens[self.position] {
-                                Token::String(value) => {
-                                    to = value.clone();
-                                    self.position += 1;
-                                },
-                                _ => return Err(anyhow!("Expected string after 'to:'")),
-                            }
-                        },
-                        "amount" => {
-                            // Expect number
-                            match &self.tokens[self.position] {
-                                Token::Number(value) => {
-                                    amount = value.parse::<u64>().context("Invalid amount")?;
-                                    self.position += 1;
-                                },
-                                _ => return Err(anyhow!("Expected number after 'amount:'")),
-                            }
-                        },
-                        "asset" => {
-                            // Expect string
-                            match &self.tokens[self.position] {
-                                Token::String(value) => {
-                                    asset_id = value.clone();
-                                    self.position += 1;
-                                },
-                                Token::Identifier(value) => {
-                                    asset_id = value.clone();
-                                    self.position += 1;
-                                },
-                                _ => return Err(anyhow!("Expected string after 'asset:'")),
-                            }
-                        },
-                        _ => return Err(anyhow!("Unknown field: {}", field)),
-                    }
-                },
-                Token::CloseBrace => {
-                    self.position += 1;
-                    break;
-                },
-                Token::Whitespace | Token::Comment => {
-                    self.position += 1;
-                },
-                _ => return Err(anyhow!("Expected identifier or closing brace")),
-            }
-        }
-        
-        Ok(TransactionNode {
-            from,
-            to,
-            amount,
-            asset_id,
-        })
-    }
-    
-    /// Parse a federation
-    fn parse_federation(&mut self) -> Result<FederationNode> {
-        // Placeholder implementation
-        // In a real implementation, this would parse a federation declaration
-        self.position += 1; // Skip "federation" keyword
-        
-        // Skip until we find a closing brace
-        while self.position < self.tokens.len() && self.tokens[self.position] != Token::CloseBrace {
-            self.position += 1;
-        }
-        
+    /// Get the current token
+    fn current_token(&self) -> Result<&Token> {
         if self.position < self.tokens.len() {
-            self.position += 1; // Skip closing brace
+            Ok(&self.tokens[self.position])
+        } else {
+            Err(anyhow!("Unexpected end of input"))
         }
-        
-        Ok(FederationNode {
-            id: "federation".to_string(),
-            name: "Default Federation".to_string(),
-            bootstrap_peers: Vec::new(),
-            allow_cross_federation: false,
-            encrypt: true,
-        })
     }
     
-    /// Parse a vote
-    fn parse_vote(&mut self) -> Result<VoteNode> {
-        // Placeholder implementation
-        // In a real implementation, this would parse a vote declaration
-        self.position += 1; // Skip "vote" keyword
-        
-        // Skip until we find a closing brace
-        while self.position < self.tokens.len() && self.tokens[self.position] != Token::CloseBrace {
-            self.position += 1;
-        }
-        
+    /// Advance to the next token
+    fn advance_token(&mut self) {
+        self.position += 1;
+    }
+    
+    /// Check if the current token matches the expected token
+    fn matches_token(&self, expected: &Token) -> bool {
         if self.position < self.tokens.len() {
-            self.position += 1; // Skip closing brace
+            matches_token_type(&self.tokens[self.position], expected)
+        } else {
+            false
         }
-        
-        Ok(VoteNode {
-            proposal_id: "proposal".to_string(),
-            voter_id: "voter".to_string(),
-            vote: VoteType::Yes,
-        })
     }
     
-    /// Parse a role
-    fn parse_role(&mut self) -> Result<RoleNode> {
-        // Placeholder implementation
-        // In a real implementation, this would parse a role declaration
-        self.position += 1; // Skip "role" keyword
-        
-        // Skip until we find a closing brace
-        while self.position < self.tokens.len() && self.tokens[self.position] != Token::CloseBrace {
-            self.position += 1;
-        }
-        
-        if self.position < self.tokens.len() {
-            self.position += 1; // Skip closing brace
-        }
-        
-        Ok(RoleNode {
-            id: "role".to_string(),
-            name: "Default Role".to_string(),
-            permissions: Vec::new(),
-        })
-    }
-    
-    /// Parse a permission
-    fn parse_permission(&mut self) -> Result<PermissionNode> {
-        // Placeholder implementation
-        // In a real implementation, this would parse a permission declaration
-        self.position += 1; // Skip "permission" keyword
-        
-        // Skip until we find a closing brace
-        while self.position < self.tokens.len() && self.tokens[self.position] != Token::CloseBrace {
-            self.position += 1;
-        }
-        
-        if self.position < self.tokens.len() {
-            self.position += 1; // Skip closing brace
-        }
-        
-        Ok(PermissionNode {
-            id: "permission".to_string(),
-            name: "Default Permission".to_string(),
-            description: "Default permission description".to_string(),
-        })
-    }
-    
-    /// Parse a log
-    fn parse_log(&mut self) -> Result<LogNode> {
-        // Expect "log" keyword
-        self.expect_token(Token::Keyword("log".to_string()))?;
-        self.position += 1;
-        
-        // Expect open paren
-        self.expect_token(Token::OpenParen)?;
-        self.position += 1;
-        
-        // Expect string
-        let message = match &self.tokens[self.position] {
-            Token::String(message) => message.clone(),
-            _ => return Err(anyhow!("Expected string in log statement")),
-        };
-        self.position += 1;
-        
-        // Expect close paren
-        self.expect_token(Token::CloseParen)?;
-        self.position += 1;
-        
-        Ok(LogNode {
-            message,
-        })
-    }
-    
-    /// Expect a specific token
+    /// Expect a specific token, returning an error if it doesn't match
     fn expect_token(&self, expected: Token) -> Result<()> {
-        if self.position >= self.tokens.len() {
-            return Err(anyhow!("Unexpected end of input"));
-        }
+        let token = self.current_token()?;
         
-        if self.tokens[self.position] != expected {
-            return Err(anyhow!("Expected {:?}, found {:?}", expected, self.tokens[self.position]));
+        if matches_token_type(token, &expected) {
+            Ok(())
+        } else {
+            Err(anyhow!("Expected {:?}, found {:?}", expected, token))
         }
-        
-        Ok(())
     }
 }
 
-/// Token types
-#[derive(Debug, PartialEq, Clone)]
-enum Token {
-    Keyword(String),
-    Identifier(String),
-    String(String),
-    Number(String),
-    Symbol(char),
-    OpenBrace,
-    CloseBrace,
-    OpenParen,
-    CloseParen,
-    OpenBracket,
-    CloseBracket,
-    Colon,
-    Comma,
-    Whitespace,
-    Comment,
-}
-
-/// The Abstract Syntax Tree representing a parsed DSL script
-#[derive(Debug, Clone)]
-pub struct Ast {
-    pub nodes: Vec<AstNode>,
-}
-
-impl Ast {
-    /// Create a new empty AST
-    pub fn new() -> Self {
-        Self { nodes: Vec::new() }
+/// Check if two tokens match in type (ignoring their values)
+fn matches_token_type(a: &Token, b: &Token) -> bool {
+    match (a, b) {
+        (Token::Keyword(_), Token::Keyword(_)) => true,
+        (Token::Identifier(_), Token::Identifier(_)) => true,
+        (Token::String(_), Token::String(_)) => true,
+        (Token::Number(_), Token::Number(_)) => true,
+        (Token::OpenBrace, Token::OpenBrace) => true,
+        (Token::CloseBrace, Token::CloseBrace) => true,
+        (Token::OpenParen, Token::OpenParen) => true,
+        (Token::CloseParen, Token::CloseParen) => true,
+        (Token::OpenBracket, Token::OpenBracket) => true,
+        (Token::CloseBracket, Token::CloseBracket) => true,
+        (Token::Colon, Token::Colon) => true,
+        (Token::Comma, Token::Comma) => true,
+        (Token::Comment, Token::Comment) => true,
+        (Token::Symbol(a), Token::Symbol(b)) => a == b,
+        _ => a == b,
     }
-}
-
-/// A node in the AST
-#[derive(Debug, Clone)]
-pub enum AstNode {
-    /// A proposal definition
-    Proposal(ProposalNode),
-    /// An asset definition
-    Asset(AssetNode),
-    /// A transaction
-    Transaction(TransactionNode),
-    /// A federation
-    Federation(FederationNode),
-    /// A vote
-    Vote(VoteNode),
-    /// A role definition
-    Role(RoleNode),
-    /// A permission definition
-    Permission(PermissionNode),
-    /// A voting method definition
-    VotingMethod(VotingMethodNode),
-    /// An execution step
-    ExecutionStep(ExecutionStepNode),
-    /// A governance module
-    GovernanceModule(GovernanceModuleNode),
-    /// A log statement
-    Log(LogNode),
-}
-
-/// A proposal definition node
-#[derive(Debug, Clone)]
-pub struct ProposalNode {
-    /// Proposal ID
-    pub id: String,
-    /// Proposal title
-    pub title: String,
-    /// Proposal description
-    pub description: String,
-    /// Voting method to use
-    pub voting_method: VotingMethodNode,
-    /// Execution steps to perform if approved
-    pub execution: Vec<ExecutionStepNode>,
-}
-
-/// An asset definition node
-#[derive(Debug, Clone)]
-pub struct AssetNode {
-    /// Asset ID
-    pub id: String,
-    /// Asset type
-    pub asset_type: AssetType,
-    /// Initial supply
-    pub initial_supply: u64,
-}
-
-/// A transaction node
-#[derive(Debug, Clone)]
-pub struct TransactionNode {
-    /// From account
-    pub from: String,
-    /// To account
-    pub to: String,
-    /// Amount
-    pub amount: u64,
-    /// Asset ID
-    pub asset_id: String,
-}
-
-/// A federation node
-#[derive(Debug, Clone)]
-pub struct FederationNode {
-    /// Federation ID
-    pub id: String,
-    /// Federation name
-    pub name: String,
-    /// Bootstrap peers
-    pub bootstrap_peers: Vec<String>,
-    /// Whether to allow cross-federation communication
-    pub allow_cross_federation: bool,
-    /// Whether to encrypt federation traffic
-    pub encrypt: bool,
-}
-
-/// A vote node
-#[derive(Debug, Clone)]
-pub struct VoteNode {
-    /// Proposal ID
-    pub proposal_id: String,
-    /// Voter ID
-    pub voter_id: String,
-    /// Vote type
-    pub vote: VoteType,
-}
-
-/// Vote type
-#[derive(Debug, Clone)]
-pub enum VoteType {
-    /// Yes vote
-    Yes,
-    /// No vote
-    No,
-    /// Abstain vote
-    Abstain,
-    /// Ranked choice vote
-    RankedChoice(Vec<String>),
-}
-
-/// Asset types
-#[derive(Debug, Clone)]
-pub enum AssetType {
-    /// Mutual credit asset
-    MutualCredit,
-    /// Token asset
-    Token,
-    /// Resource asset (e.g., CPU, storage)
-    Resource,
-}
-
-/// A role definition node
-#[derive(Debug, Clone)]
-pub struct RoleNode {
-    /// Role ID
-    pub id: String,
-    /// Role name
-    pub name: String,
-    /// Role permissions
-    pub permissions: Vec<String>,
-}
-
-/// A permission definition node
-#[derive(Debug, Clone)]
-pub struct PermissionNode {
-    /// Permission ID
-    pub id: String,
-    /// Permission name
-    pub name: String,
-    /// Permission description
-    pub description: String,
-}
-
-/// A voting method node
-#[derive(Debug, Clone)]
-pub enum VotingMethodNode {
-    /// Simple majority vote
-    Majority,
-    /// Ranked choice vote
-    RankedChoice,
-    /// Quadratic vote
-    Quadratic,
-    /// Custom vote with threshold
-    Custom {
-        /// Voting method name
-        name: String,
-        /// Threshold percentage
-        threshold: f64,
-    },
-}
-
-/// An execution step node
-#[derive(Debug, Clone)]
-pub struct ExecutionStepNode {
-    /// Action to perform
-    pub action: String,
-    /// Parameters for the action
-    pub params: HashMap<String, String>,
-}
-
-/// A governance module node
-#[derive(Debug, Clone)]
-pub struct GovernanceModuleNode {
-    /// Module ID
-    pub id: String,
-    /// Module name
-    pub name: String,
-    /// Module components
-    pub components: Vec<AstNode>,
-}
-
-/// A log node
-#[derive(Debug, Clone)]
-pub struct LogNode {
-    /// Log message
-    pub message: String,
 }

@@ -16,6 +16,8 @@ pub mod integration;
 use anyhow::Result;
 use tokio::sync::mpsc;
 use std::path::Path;
+use parser::Parser;
+use parser::ast::Program;
 
 /// Main entry point for the DSL system
 pub struct DslSystem {
@@ -90,4 +92,43 @@ pub async fn create_default_system() -> (DslSystem, mpsc::Receiver<DslEvent>) {
     let (tx, rx) = mpsc::channel(100);
     let system = DslSystem::new(tx);
     (system, rx)
+}
+
+/// Parse a DSL script into an Abstract Syntax Tree (AST)
+///
+/// # Arguments
+///
+/// * `input` - The DSL script as a string
+///
+/// # Returns
+///
+/// The parsed AST as a `Program` struct
+///
+/// # Errors
+///
+/// Returns an error if the input cannot be parsed
+pub fn parse(input: &str) -> Result<Program> {
+    let mut parser = Parser::new(input)?;
+    parser.parse_script()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    #[test]
+    fn test_parse_example() {
+        let example_path = Path::new("bin/cli/src/dsl/examples/governance.dsl");
+        let input = fs::read_to_string(example_path).expect("Failed to read example file");
+        
+        let result = parse(&input);
+        assert!(result.is_ok(), "Failed to parse example DSL: {:?}", result.err());
+        
+        let program = result.unwrap();
+        
+        // Verify the program contains the expected elements
+        assert!(!program.statements.is_empty(), "Program should have statements");
+    }
 }
