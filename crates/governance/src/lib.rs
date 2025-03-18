@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 use serde::{Serialize, Deserialize};
+use thiserror::Error;
 
 use icn_core::{
     crypto::{Signature, Hash, identity::NodeId, sha256},
@@ -100,8 +101,8 @@ impl Default for ProposalStatus {
     }
 }
 
-/// Types of proposals
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Type of proposal
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProposalType {
     /// Change in configuration
     ConfigChange,
@@ -126,7 +127,7 @@ impl Default for ProposalType {
 }
 
 /// A vote on a proposal
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Vote {
     /// The proposal ID this vote is for
     pub proposal_id: String,
@@ -142,6 +143,22 @@ pub struct Vote {
     pub timestamp: u64,
     /// The signature from the voter
     pub signature: Signature,
+}
+
+// Manual implementation of Eq that ignores the floating point field
+impl Eq for Vote {}
+
+// Manual implementation of Hash that ignores the floating point field
+impl std::hash::Hash for Vote {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.proposal_id.hash(state);
+        self.voter.hash(state);
+        self.approve.hash(state);
+        self.comment.hash(state);
+        // Skip self.weight since f64 doesn't implement Hash
+        self.timestamp.hash(state);
+        // Skip self.signature for now
+    }
 }
 
 impl Vote {
@@ -513,9 +530,16 @@ impl ProposalManager {
             id: proposal_id.to_string(),
             title: "Stub Proposal".to_string(),
             description: "This is a stub proposal".to_string(),
-            status: ProposalStatus::Active,
+            status: ProposalStatus::Open,
             created_at: icn_core::utils::timestamp_secs(),
-            updated_at: icn_core::utils::timestamp_secs(),
+            proposer: NodeId::from_string("stub-proposer"),
+            proposal_type: ProposalType::Generic,
+            voting_starts_at: icn_core::utils::timestamp_secs(),
+            voting_ends_at: icn_core::utils::timestamp_secs() + 86400,
+            processed_at: None,
+            result: None,
+            attributes: HashMap::new(),
+            signature: Signature(Vec::new()),
         })
     }
     
@@ -664,39 +688,357 @@ pub mod reputation {
     }
 }
 
-/// Add a new vote to a proposal
-pub async fn add_vote(&self, proposal_id: &str, vote: Vote) -> GovernanceResult<()> {
-    // Verify the proposal exists
-    let mut proposal = self.get_proposal(proposal_id).await?;
-    
-    // Verify proposal is in voting status
-    if proposal.status != ProposalStatus::Voting {
-        return Err(GovernanceError::InvalidProposalStatus(
-            proposal.id.clone(),
-            proposal.status.to_string(),
-            ProposalStatus::Voting.to_string(),
-        ));
+/// Default implementation of the Governance trait
+pub struct DefaultGovernance<S> {
+    /// The storage implementation
+    storage: Arc<S>,
+    /// The identity provider implementation
+    identity_provider: Arc<dyn IdentityProvider>,
+    /// Local node identity
+    local_identity: NodeId,
+    /// Governance configuration
+    config: RwLock<GovernanceConfig>,
+}
+
+impl<S: Storage + 'static> DefaultGovernance<S> {
+    /// Create a new DefaultGovernance instance
+    pub fn new(
+        storage: Arc<S>,
+        identity_provider: Arc<dyn IdentityProvider>,
+        local_identity: NodeId,
+    ) -> Self {
+        Self {
+            storage,
+            identity_provider,
+            local_identity,
+            config: RwLock::new(GovernanceConfig::default()),
+        }
     }
     
-    // Verify the voter's identity
-    let voter_id = &vote.voter_id;
+    /// Get storage key for a proposal
+    fn proposal_key(&self, id: &str) -> String {
+        format!("governance:proposal:{}", id)
+    }
     
-    // Check if the voter already voted
-    let votes = self.get_votes_for_proposal(proposal_id).await?;
-    if votes.iter().any(|v| v.voter_id == voter_id) {
-        return Err(GovernanceError::AlreadyVoted(
+    /// Get storage key for votes on a proposal
+    fn votes_key(&self, proposal_id: &str) -> String {
+        format!("governance:votes:{}", proposal_id)
+    }
+    
+    /// Get storage key for the governance config
+    fn config_key(&self) -> String {
+        "governance:config".to_string()
+    }
+}
+
+/// Implementation of the Governance trait for DefaultGovernance
+#[async_trait]
+impl<S: Storage + 'static> Governance for DefaultGovernance<S> {
+    async fn get_config(&self) -> GovernanceResult<GovernanceConfig> {
+        // Try to load from storage first
+        match self.storage.get(&self.config_key()).await {
+            Ok(data) => {
+                if let Ok(config) = serde_json::from_slice::<GovernanceConfig>(&data) {
+                    return Ok(config);
+                }
+            }
+            Err(StorageError::KeyNotFound(_)) => {
+                // Return the default config if not found
+                return Ok(GovernanceConfig::default());
+            }
+            Err(e) => return Err(GovernanceError::StorageError(e)),
+        }
+        
+        // If we get here, there was an error deserializing
+        // Return the in-memory config instead
+        let config = self.config.read().await.clone();
+        Ok(config)
+    }
+    
+    async fn set_config(&self, config: GovernanceConfig) -> GovernanceResult<()> {
+        // Update the in-memory config
+        *self.config.write().await = config.clone();
+        
+        // Save to storage
+        let data = serde_json::to_vec(&config)
+            .map_err(|e| GovernanceError::SerializationError(e.to_string()))?;
+            
+        self.storage.put(&self.config_key(), &data).await
+            .map_err(GovernanceError::StorageError)?;
+            
+        Ok(())
+    }
+    
+    async fn create_proposal(
+        &self,
+        title: String,
+        description: String,
+        proposal_type: ProposalType,
+        voting_period: Option<u64>,
+        attributes: HashMap<String, String>,
+    ) -> GovernanceResult<Proposal> {
+        let config = self.get_config().await?;
+        let now = timestamp_secs();
+        
+        // Calculate voting period
+        let voting_period = voting_period.unwrap_or(config.default_voting_period);
+        let voting_starts_at = now;
+        let voting_ends_at = now + voting_period;
+        
+        // Create proposal
+        let mut proposal = Proposal::new(
+            title,
+            description,
+            proposal_type,
+            self.local_identity.clone(),
+            voting_starts_at,
+            voting_ends_at,
+            attributes,
+        );
+        
+        // Sign the proposal
+        let bytes = proposal.bytes_to_sign();
+        let signature_bytes = self.identity_provider.sign(&bytes).await
+            .map_err(|e| GovernanceError::IdentityError(format!("Failed to sign proposal: {:?}", e)))?;
+        proposal.signature = Signature(signature_bytes);
+        
+        // Save the proposal
+        let data = serde_json::to_vec(&proposal)
+            .map_err(|e| GovernanceError::SerializationError(e.to_string()))?;
+            
+        self.storage.put(&self.proposal_key(&proposal.id), &data).await
+            .map_err(GovernanceError::StorageError)?;
+        
+        Ok(proposal)
+    }
+    
+    async fn get_proposal(&self, id: &str) -> GovernanceResult<Option<Proposal>> {
+        match self.storage.get(&self.proposal_key(id)).await {
+            Ok(data) => {
+                let proposal = serde_json::from_slice::<Proposal>(&data)
+                    .map_err(|e| GovernanceError::SerializationError(e.to_string()))?;
+                Ok(Some(proposal))
+            }
+            Err(StorageError::KeyNotFound(_)) => Ok(None),
+            Err(e) => Err(GovernanceError::StorageError(e)),
+        }
+    }
+    
+    async fn list_proposals(&self) -> GovernanceResult<Vec<Proposal>> {
+        // We'll use a prefix to get all proposals
+        let prefix = "governance:proposal:";
+        let result = self.storage.list(&prefix).await
+            .map_err(GovernanceError::StorageError)?;
+            
+        let mut proposals = Vec::new();
+        for key in result {
+            match self.storage.get(&key).await {
+                Ok(data) => {
+                    if let Ok(proposal) = serde_json::from_slice::<Proposal>(&data) {
+                        proposals.push(proposal);
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        
+        Ok(proposals)
+    }
+    
+    async fn vote(
+        &self,
+        proposal_id: &str,
+        approve: bool,
+        comment: Option<String>,
+    ) -> GovernanceResult<Vote> {
+        // Get the proposal
+        let proposal = match self.get_proposal(proposal_id).await? {
+            Some(p) => p,
+            None => return Err(GovernanceError::ProposalNotFound(proposal_id.to_string())),
+        };
+        
+        // Check if voting is open
+        if !proposal.is_open_for_voting() {
+            return Err(GovernanceError::InvalidVote(
+                "Voting is not open for this proposal".to_string()
+            ));
+        }
+        
+        // Create the vote
+        let mut vote = Vote::new(
             proposal_id.to_string(),
-            voter_id.clone(),
-        ));
+            self.local_identity.clone(),
+            approve,
+            comment,
+            None, // No weight for now
+        );
+        
+        // Sign the vote
+        let bytes = vote.bytes_to_sign();
+        let signature_bytes = self.identity_provider.sign(&bytes).await
+            .map_err(|e| GovernanceError::IdentityError(format!("Failed to sign vote: {:?}", e)))?;
+        vote.signature = Signature(signature_bytes);
+        
+        // Save the vote
+        let votes_key = self.votes_key(proposal_id);
+        
+        // Get existing votes
+        let mut votes: Vec<Vote> = match self.storage.get(&votes_key).await {
+            Ok(data) => serde_json::from_slice(&data)
+                .map_err(|e| GovernanceError::SerializationError(e.to_string()))?,
+            Err(StorageError::KeyNotFound(_)) => Vec::new(),
+            Err(e) => return Err(GovernanceError::StorageError(e)),
+        };
+        
+        // Check if the user already voted
+        let voter_id = self.local_identity.to_string();
+        if votes.iter().any(|v| v.voter.to_string() == voter_id) {
+            return Err(GovernanceError::InvalidVote("Already voted".to_string()));
+        }
+        
+        // Add the new vote
+        votes.push(vote.clone());
+        
+        // Save all votes
+        let data = serde_json::to_vec(&votes)
+            .map_err(|e| GovernanceError::SerializationError(e.to_string()))?;
+            
+        self.storage.put(&votes_key, &data).await
+            .map_err(GovernanceError::StorageError)?;
+        
+        Ok(vote)
     }
     
-    // Store the vote
-    let vote_path = format!("{}/{}/{}", VOTES_PATH, proposal_id, vote.id);
-    self.storage.put_json(&vote_path, &vote).await
-        .map_err(|e| GovernanceError::StorageError(e.to_string()))?;
+    async fn get_votes(&self, proposal_id: &str) -> GovernanceResult<Vec<Vote>> {
+        let votes_key = self.votes_key(proposal_id);
+        
+        match self.storage.get(&votes_key).await {
+            Ok(data) => {
+                let votes = serde_json::from_slice::<Vec<Vote>>(&data)
+                    .map_err(|e| GovernanceError::SerializationError(e.to_string()))?;
+                Ok(votes)
+            }
+            Err(StorageError::KeyNotFound(_)) => Ok(Vec::new()),
+            Err(e) => Err(GovernanceError::StorageError(e)),
+        }
+    }
     
-    // Add to the cache
-    {
-        let mut votes_map = self.votes.write().await;
-        let proposal_votes = votes_map
+    async fn process_proposal(&self, proposal_id: &str) -> GovernanceResult<ProposalStatus> {
+        // Get the proposal
+        let mut proposal = match self.get_proposal(proposal_id).await? {
+            Some(p) => p,
+            None => return Err(GovernanceError::ProposalNotFound(proposal_id.to_string())),
+        };
+        
+        // Check if voting is closed
+        if !proposal.is_voting_closed() {
+            return Err(GovernanceError::InvalidProposal("Voting is not closed".to_string()));
+        }
+        
+        // If already processed, return current status
+        if proposal.status == ProposalStatus::Approved || 
+           proposal.status == ProposalStatus::Rejected {
+            return Ok(proposal.status);
+        }
+        
+        // Get the votes
+        let votes = self.get_votes(proposal_id).await?;
+        
+        // Get the config for quorum and approval percentage
+        let config = self.get_config().await?;
+        
+        // Count the votes
+        let mut yes_votes = 0;
+        let mut no_votes = 0;
+        
+        for vote in &votes {
+            if vote.approve {
+                yes_votes += 1;
+            } else {
+                no_votes += 1;
+            }
+        }
+        
+        // Calculate quorum
+        let total_votes = yes_votes + no_votes;
+        let total_possible_votes = 100; // placeholder, should be total members with voting rights
+        
+        let quorum_reached = (total_votes as f64 / total_possible_votes as f64) >= config.quorum_percentage;
+        
+        // Calculate approval
+        let approval_reached = quorum_reached && 
+            (yes_votes as f64 / total_votes as f64) >= config.approval_percentage;
+        
+        // Update proposal status
+        if !quorum_reached {
+            proposal.status = ProposalStatus::Rejected;
+            proposal.result = Some("Quorum not reached".to_string());
+        } else if approval_reached {
+            proposal.status = ProposalStatus::Approved;
+            proposal.result = Some(format!(
+                "Approved with {}/{} yes votes ({}%)", 
+                yes_votes, 
+                total_votes,
+                (yes_votes as f64 / total_votes as f64) * 100.0
+            ));
+        } else {
+            proposal.status = ProposalStatus::Rejected;
+            proposal.result = Some(format!(
+                "Rejected with {}/{} yes votes ({}%)", 
+                yes_votes, 
+                total_votes,
+                (yes_votes as f64 / total_votes as f64) * 100.0
+            ));
+        }
+        
+        proposal.processed_at = Some(timestamp_secs());
+        
+        // Save the updated proposal
+        let data = serde_json::to_vec(&proposal)
+            .map_err(|e| GovernanceError::SerializationError(e.to_string()))?;
+            
+        self.storage.put(&self.proposal_key(&proposal.id), &data).await
+            .map_err(GovernanceError::StorageError)?;
+        
+        Ok(proposal.status)
+    }
+    
+    async fn cancel_proposal(&self, proposal_id: &str) -> GovernanceResult<()> {
+        // Get the proposal
+        let mut proposal = match self.get_proposal(proposal_id).await? {
+            Some(p) => p,
+            None => return Err(GovernanceError::ProposalNotFound(proposal_id.to_string())),
+        };
+        
+        // Check if the user is the proposer
+        let is_proposer = proposal.proposer.to_string() == self.local_identity.to_string();
+        
+        // For simplicity, only the proposer can cancel for now
+        if !is_proposer {
+            return Err(GovernanceError::PermissionDenied(
+                "Only the proposer can cancel a proposal".to_string()
+            ));
+        }
+        
+        // Check if the proposal can be cancelled
+        if proposal.status == ProposalStatus::Executed || 
+           proposal.status == ProposalStatus::Failed {
+            return Err(GovernanceError::InvalidProposal(
+                "Proposal cannot be cancelled in its current state".to_string()
+            ));
+        }
+        
+        // Update the status
+        proposal.status = ProposalStatus::Cancelled;
+        proposal.processed_at = Some(timestamp_secs());
+        
+        // Save the updated proposal
+        let data = serde_json::to_vec(&proposal)
+            .map_err(|e| GovernanceError::SerializationError(e.to_string()))?;
+            
+        self.storage.put(&self.proposal_key(&proposal.id), &data).await
+            .map_err(GovernanceError::StorageError)?;
+        
+        Ok(())
+    }
 } 

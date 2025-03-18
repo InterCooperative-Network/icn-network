@@ -7,16 +7,14 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use serde::{Serialize, Deserialize};
 
 use icn_core::{
-    crypto::{NodeId, KeyPair, Signature, Hash},
+    crypto::{identity::NodeId, Signature},
     utils::timestamp_secs,
 };
 
 use crate::{
     Identity, IdentityProvider, IdentityResult, IdentityError,
-    storage::IdentityStorage,
 };
 
 /// A mock implementation of the IdentityProvider for testing
@@ -122,27 +120,16 @@ impl IdentityProvider for MockIdentityProvider {
     
     /// Update an identity
     async fn update_identity(&self, identity: &Identity) -> IdentityResult<Identity> {
-        let mut identities = self.identities.write().unwrap();
-        
-        // Check if identity exists
-        if !identities.contains_key(&identity.id) {
-            return Err(IdentityError::IdentityNotFound(identity.id.clone()));
-        }
-        
-        // Update the identity
         let mut updated = identity.clone();
         updated.updated_at = timestamp_secs();
-        identities.insert(identity.id.clone(), updated.clone());
         
-        // Update current if needed
-        let current = self.current_identity.read().unwrap();
-        if let Some(current_id) = current.as_ref() {
-            if current_id.id == identity.id {
-                let mut current = self.current_identity.write().unwrap();
-                *current = Some(updated.clone());
-            }
+        let mut identities = self.identities.write().unwrap();
+        
+        if !identities.contains_key(&updated.id) {
+            return Err(IdentityError::IdentityNotFound(updated.id.clone()));
         }
         
+        identities.insert(updated.id.clone(), updated.clone());
         Ok(updated)
     }
     
@@ -150,53 +137,25 @@ impl IdentityProvider for MockIdentityProvider {
     async fn delete_identity(&self, id: &str) -> IdentityResult<()> {
         let mut identities = self.identities.write().unwrap();
         
-        // Check if identity exists
         if !identities.contains_key(id) {
             return Err(IdentityError::IdentityNotFound(id.to_string()));
         }
         
-        // Remove the identity
         identities.remove(id);
-        
-        // Update current if needed
-        let current = self.current_identity.read().unwrap();
-        if let Some(current_id) = current.as_ref() {
-            if current_id.id == id {
-                let mut current = self.current_identity.write().unwrap();
-                *current = None;
-            }
-        }
-        
         Ok(())
     }
     
-    /// Sign data with the current identity
-    async fn sign(&self, data: &[u8]) -> IdentityResult<Signature> {
-        // Mock signature just returns the first few bytes of the data
-        let mut signature = Vec::new();
-        signature.extend_from_slice(if data.len() > 8 { &data[0..8] } else { data });
-        Ok(Signature(signature))
+    /// Sign data
+    async fn sign(&self, _data: &[u8]) -> IdentityResult<Vec<u8>> {
+        // Mock implementation returns a simple signature
+        Ok(vec![0, 1, 2, 3])
     }
     
     /// Verify a signature
-    async fn verify(&self, identity_id: &str, data: &[u8], signature: &[u8]) -> IdentityResult<bool> {
-        // Check if we're configured to always verify
-        let always_verify = self.always_verify.read().unwrap();
-        if *always_verify {
-            return Ok(true);
-        }
-        
-        // In a real implementation, we would:
-        // 1. Get the identity's public key
-        // 2. Use it to verify the signature against the data
-        
-        // For this mock, we'll just check if the signature starts with the data's first few bytes
-        if data.len() > 0 && signature.len() >= 8 {
-            let prefix_len = std::cmp::min(8, data.len());
-            Ok(&data[0..prefix_len] == &signature[0..prefix_len])
-        } else {
-            Ok(false)
-        }
+    async fn verify(&self, _identity_id: &str, _data: &[u8], _signature: &[u8]) -> IdentityResult<bool> {
+        // Use the always_verify flag to determine the result
+        let always_verify = *self.always_verify.read().unwrap();
+        Ok(always_verify)
     }
 }
 
@@ -232,7 +191,7 @@ mod tests {
         let signature = provider.sign(data).await.unwrap();
         
         // Verify the signature
-        let verified = provider.verify(&identity.id, data, &signature.0).await.unwrap();
+        let verified = provider.verify(&identity.id, data, &signature).await.unwrap();
         assert!(verified);
     }
 } 

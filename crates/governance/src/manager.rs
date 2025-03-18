@@ -12,7 +12,7 @@ use serde::{Serialize, Deserialize};
 use async_trait::async_trait;
 
 use icn_core::{
-    storage::{Storage, StorageResult, StorageError},
+    storage::{Storage, StorageResult, StorageError, JsonStorage},
     config::ConfigProvider,
     crypto::{identity::NodeId, Signature, verify_signature},
     utils::timestamp_secs,
@@ -101,32 +101,45 @@ impl GovernanceManager {
     }
     
     /// Load configuration from storage
-    async fn load_config(storage: &dyn Storage) -> GovernanceResult<GovernanceConfig> {
-        match storage.get_json::<GovernanceConfig>(CONFIG_PATH).await {
-            Ok(config) => Ok(config),
-            Err(_) => {
-                // If no config exists, use default and save it
-                let config = GovernanceConfig::default();
-                if let Err(e) = storage.put_json(CONFIG_PATH, &config).await {
-                    warn!("Failed to save default governance configuration: {}", e);
-                }
+    async fn load_config(storage: &Arc<dyn Storage>) -> GovernanceResult<GovernanceConfig> {
+        // Try to load existing config
+        match JsonStorage::get_json(storage.as_ref(), CONFIG_PATH).await {
+            Ok(config) => {
+                // Successfully loaded
                 Ok(config)
+            }
+            Err(StorageError::KeyNotFound(_)) => {
+                // Config not found, create default
+                let config = GovernanceConfig::default();
+                
+                // Persist the new config
+                if let Err(e) = JsonStorage::put_json(storage.as_ref(), CONFIG_PATH, &config).await {
+                    error!("Failed to save default governance config: {}", e);
+                }
+                
+                Ok(config)
+            }
+            Err(e) => {
+                // Other error
+                Err(GovernanceError::StorageError(e))
             }
         }
     }
     
     /// Load proposals from storage
     async fn load_proposals(&self) -> GovernanceResult<()> {
-        let proposal_keys = self.storage.list(PROPOSALS_PATH).await?;
-        let mut proposals = self.proposals.write().await;
+        let prefix = format!("{}/", PROPOSALS_PATH);
+        let keys = self.storage.as_ref().list(&prefix).await?;
         
-        for key in proposal_keys {
-            match self.storage.get_json::<Proposal>(&key).await {
+        let mut proposals = self.proposals.write().await;
+        for key in keys {
+            match JsonStorage::get_json::<Proposal>(self.storage.as_ref(), &key).await {
                 Ok(proposal) => {
                     proposals.insert(proposal.id.clone(), proposal);
                 },
                 Err(e) => {
                     error!("Failed to load proposal {}: {}", key, e);
+                    // Continue to next proposal
                 }
             }
         }
@@ -137,24 +150,22 @@ impl GovernanceManager {
     
     /// Load votes from storage
     async fn load_votes(&self) -> GovernanceResult<()> {
-        let vote_keys = self.storage.list(VOTES_PATH).await?;
-        let mut votes = self.votes.write().await;
+        let prefix = format!("{}/", VOTES_PATH);
+        let keys = self.storage.as_ref().list(&prefix).await?;
         
-        for key in vote_keys {
-            match self.storage.get_json::<Vec<Vote>>(&key).await {
-                Ok(proposal_votes) => {
-                    let proposal_id = key.strip_prefix(VOTES_PATH).unwrap_or(&key);
-                    let proposal_id = proposal_id.trim_start_matches('/');
+        let mut votes = self.votes.write().await;
+        for key in keys {
+            match JsonStorage::get_json::<Vec<Vote>>(self.storage.as_ref(), &key).await {
+                Ok(vote_vec) => {
+                    let vote_set: HashSet<Vote> = vote_vec.into_iter().collect();
                     
-                    let vote_set = votes.entry(proposal_id.to_string())
-                        .or_insert_with(HashSet::new);
-                    
-                    for vote in proposal_votes {
-                        vote_set.insert(vote);
+                    if let Some(proposal_id) = key.strip_prefix(&prefix) {
+                        votes.insert(proposal_id.to_string(), vote_set);
                     }
                 },
                 Err(e) => {
-                    error!("Failed to load votes for {}: {}", key, e);
+                    error!("Failed to load votes {}: {}", key, e);
+                    // Continue to next vote set
                 }
             }
         }
@@ -166,7 +177,7 @@ impl GovernanceManager {
     /// Save a proposal to storage
     async fn save_proposal(&self, proposal: &Proposal) -> GovernanceResult<()> {
         let path = format!("{}/{}", PROPOSALS_PATH, proposal.id);
-        self.storage.put_json(&path, proposal).await?;
+        JsonStorage::put_json(self.storage.as_ref(), &path, proposal).await?;
         
         // Update cache
         let mut proposals = self.proposals.write().await;
@@ -176,13 +187,22 @@ impl GovernanceManager {
     }
     
     /// Save votes for a proposal to storage
-    async fn save_votes(&self, proposal_id: &str) -> GovernanceResult<()> {
-        let votes = self.votes.read().await;
-        if let Some(vote_set) = votes.get(proposal_id) {
-            let path = format!("{}/{}", VOTES_PATH, proposal_id);
-            let vote_vec: Vec<Vote> = vote_set.iter().cloned().collect();
-            self.storage.put_json(&path, &vote_vec).await?;
+    async fn save_votes(&self, proposal_id: &str, votes: &HashSet<Vote>) -> GovernanceResult<()> {
+        let path = format!("{}/{}", VOTES_PATH, proposal_id);
+        let vote_vec: Vec<Vote> = votes.iter().cloned().collect();
+        
+        if !vote_vec.is_empty() {
+            JsonStorage::put_json(self.storage.as_ref(), &path, &vote_vec).await?;
+        } else {
+            // If no votes, delete the entry
+            if let Err(e) = self.storage.as_ref().delete(&path).await {
+                // Ignore KeyNotFound errors
+                if !matches!(e, StorageError::KeyNotFound(_)) {
+                    return Err(GovernanceError::StorageError(e));
+                }
+            }
         }
+        
         Ok(())
     }
     
@@ -313,18 +333,30 @@ impl Governance for GovernanceManager {
         Ok(config.clone())
     }
     
-    async fn set_config(&self, config: GovernanceConfig) -> GovernanceResult<()> {
-        // Save to storage first
-        self.storage.put_json(CONFIG_PATH, &config).await?;
-        
-        // Update local cache
+    /// Update the governance configuration
+    pub async fn set_config(&self, config: GovernanceConfig) -> GovernanceResult<()> {
         {
-            let mut local_config = self.config.write().await;
-            *local_config = config;
+            // Update the in-memory config
+            let mut cfg = self.config.write().await;
+            *cfg = config.clone();
+            
+            // Update the voting scheme if needed
+            let mut voting_scheme = self.voting_scheme.write().await;
+            *voting_scheme = if config.use_weighted_voting {
+                Box::new(WeightedVoting::new(
+                    config.quorum_percentage, 
+                    config.approval_percentage,
+                ))
+            } else {
+                Box::new(SimpleVoting::new(
+                    config.quorum_percentage, 
+                    config.approval_percentage,
+                ))
+            };
         }
         
-        // Update voting scheme
-        self.update_voting_scheme().await?;
+        // Persist to storage
+        JsonStorage::put_json(self.storage.as_ref(), CONFIG_PATH, &config).await?;
         
         Ok(())
     }
@@ -401,45 +433,41 @@ impl Governance for GovernanceManager {
         Ok(result)
     }
     
-    async fn vote(
-        &self,
+    /// Add a vote to a proposal
+    #[async_trait]
+    pub async fn vote(
+        &self, 
         proposal_id: &str,
         approve: bool,
-        comment: Option<String>,
+        comment: Option<String>
     ) -> GovernanceResult<Vote> {
-        // Get the current user's identity
+        // Validate proposal exists and is open for voting
+        let proposal = self.get_proposal(proposal_id).await?;
+        
+        // Check proposal status
+        if proposal.status != ProposalStatus::Open {
+            return Err(GovernanceError::InvalidProposalStatus(
+                format!("Proposal is not open for voting: {:?}", proposal.status)
+            ));
+        }
+        
+        // Verify voter identity
         let identity = self.identity_provider.get_identity().await?;
         
-        // Verify permission
         if !self.verify_voting_permission(&identity.id).await? {
             return Err(GovernanceError::PermissionDenied(
-                format!("Insufficient reputation to vote on proposals")
+                "Voter does not have permission to vote".into()
             ));
         }
         
-        // Get the proposal
-        let proposal = match self.get_proposal(proposal_id).await? {
-            Some(p) => p,
-            None => return Err(GovernanceError::ProposalNotFound(proposal_id.to_string())),
-        };
-        
-        // Check if the proposal is open for voting
-        if !proposal.is_open_for_voting() {
-            return Err(GovernanceError::InvalidVote(
-                format!("Proposal is not open for voting")
-            ));
-        }
-        
-        // Get the user's reputation for weighted voting
-        let config = self.config.read().await;
-        let weight = if config.use_weighted_voting {
+        // Get reputation score for weighted voting
+        let mut weight = None;
+        if self.config.read().await.use_weighted_voting {
             match self.reputation.get_reputation(&identity.id).await {
-                Ok(score) => Some(score.score),
-                Err(e) => return Err(GovernanceError::ReputationError(e)),
+                Ok(score) => weight = Some(score.score()),
+                Err(e) => return Err(GovernanceError::ReputationError(e.to_string())),
             }
-        } else {
-            None
-        };
+        }
         
         // Create the vote
         let mut vote = Vote::new(
@@ -448,32 +476,35 @@ impl Governance for GovernanceManager {
             approve,
             comment,
             weight,
+            timestamp_secs(),
         );
         
         // Sign the vote
-        let bytes_to_sign = vote.bytes_to_sign();
+        let bytes_to_sign = serde_json::to_vec(&vote)
+            .map_err(|e| GovernanceError::SerializationError(e.to_string()))?;
+        
         let signature = self.identity_provider.sign(&bytes_to_sign).await?;
         vote.signature = signature;
         
-        // Add the vote to cache
+        // Save the vote
         {
             let mut votes = self.votes.write().await;
             let vote_set = votes.entry(proposal_id.to_string())
                 .or_insert_with(HashSet::new);
+            
             vote_set.insert(vote.clone());
+            
+            // Save the votes
+            self.save_votes(proposal_id, vote_set).await?;
         }
-        
-        // Save the votes
-        self.save_votes(proposal_id).await?;
         
         // Add governance participation evidence
         self.add_governance_participation_evidence(
             &identity.id,
-            "vote_cast",
-            &format!("Voted on proposal: {}", proposal.title),
-            config.voting_reputation,
-        ).await?;
+            EvidenceType::Voting,
+        ).await;
         
+        // Return the vote
         Ok(vote)
     }
     

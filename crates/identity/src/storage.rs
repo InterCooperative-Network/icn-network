@@ -4,8 +4,7 @@
 
 use std::sync::Arc;
 use async_trait::async_trait;
-use serde::{Serialize, Deserialize};
-use icn_core::storage::{Storage, StorageResult, StorageError};
+use icn_core::storage::{Storage, StorageError};
 use crate::{Identity, IdentityResult, IdentityError};
 
 /// Trait for identity storage operations
@@ -49,51 +48,76 @@ impl DefaultIdentityStorage {
 
 #[async_trait]
 impl IdentityStorage for DefaultIdentityStorage {
+    /// Store an identity
     async fn store_identity(&self, identity: &Identity) -> IdentityResult<()> {
         let key = self.get_key(&identity.id);
-        let data = serde_json::to_vec(identity)
-            .map_err(|e| IdentityError::InvalidIdentityData(format!("Serialization error: {}", e)))?;
         
-        self.storage.put(&key, &data).await
-            .map_err(|e| IdentityError::StorageError(e))?;
+        // Serialize the identity to JSON
+        let json = serde_json::to_string(identity)
+            .map_err(|e| IdentityError::Other(format!("Serialization error: {}", e)))?;
+        
+        // Store in the underlying storage
+        self.storage.put(&key, json.as_bytes()).await
+            .map_err(|e| IdentityError::StorageError(e.to_string()))?;
         
         Ok(())
     }
     
+    /// Retrieve an identity by ID
     async fn get_identity(&self, id: &str) -> IdentityResult<Identity> {
         let key = self.get_key(id);
-        let data = self.storage.get(&key).await
-            .map_err(|e| match e {
-                StorageError::KeyNotFound(_) => IdentityError::IdentityNotFound(id.to_string()),
-                _ => IdentityError::StorageError(e),
-            })?;
         
-        let identity = serde_json::from_slice(&data)
-            .map_err(|e| IdentityError::InvalidIdentityData(format!("Deserialization error: {}", e)))?;
+        // Check if key exists
+        let exists = self.storage.exists(&key).await
+            .map_err(|e| IdentityError::StorageError(e.to_string()))?;
+        
+        if !exists {
+            return Err(IdentityError::IdentityNotFound(id.to_string()));
+        }
+        
+        // Retrieve from storage
+        let data = self.storage.get(&key).await
+            .map_err(|e| IdentityError::StorageError(e.to_string()))?;
+        
+        // Deserialize the identity
+        let identity: Identity = serde_json::from_slice(&data)
+            .map_err(|e| IdentityError::Other(format!("Deserialization error: {}", e)))?;
         
         Ok(identity)
     }
     
+    /// List all identities
     async fn list_identities(&self) -> IdentityResult<Vec<Identity>> {
+        // List all keys with our prefix
         let keys = self.storage.list(&self.prefix).await
-            .map_err(|e| IdentityError::StorageError(e))?;
+            .map_err(|e| IdentityError::StorageError(e.to_string()))?;
         
         let mut identities = Vec::new();
+        
+        // Retrieve each identity
         for key in keys {
-            if let Ok(data) = self.storage.get(&key).await {
-                if let Ok(identity) = serde_json::from_slice::<Identity>(&data) {
-                    identities.push(identity);
-                }
+            // Extract the ID from the key
+            let id = key.strip_prefix(&self.prefix)
+                .ok_or_else(|| IdentityError::Other(format!("Invalid key format: {}", key)))?;
+            
+            // Get the identity
+            match self.get_identity(id).await {
+                Ok(identity) => identities.push(identity),
+                Err(IdentityError::IdentityNotFound(_)) => continue, // Skip not found
+                Err(e) => return Err(e),
             }
         }
         
         Ok(identities)
     }
     
+    /// Delete an identity by ID
     async fn delete_identity(&self, id: &str) -> IdentityResult<()> {
         let key = self.get_key(id);
+        
+        // Delete from storage
         self.storage.delete(&key).await
-            .map_err(|e| IdentityError::StorageError(e))?;
+            .map_err(|e| IdentityError::StorageError(e.to_string()))?;
         
         Ok(())
     }

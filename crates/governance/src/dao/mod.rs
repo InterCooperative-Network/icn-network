@@ -169,8 +169,8 @@ pub struct DaoRole {
     pub metadata: HashMap<String, String>,
 }
 
-/// Permissions for DAO roles
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// A DAO permission
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DaoPermission {
     /// Manage roles (create, modify, delete)
     ManageRoles,
