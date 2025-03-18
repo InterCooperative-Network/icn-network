@@ -7,7 +7,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::time::Instant;
 
@@ -15,10 +17,10 @@ use async_trait::async_trait;
 use futures::prelude::*;
 use libp2p::{
     self,
-    core::{muxing::StreamMuxerBox, transport::OrTransport, upgrade},
+    core::{muxing::StreamMuxerBox, upgrade},
     gossipsub::{self, IdentTopic, MessageAuthenticity, MessageId, ValidationMode},
     identify, kad, mdns, noise, ping, relay,
-    swarm::{self, ConnectionError, NetworkBehaviour, SwarmEvent},
+    swarm::{self, ConnectionError, NetworkBehaviour, SwarmEvent, ConnectionDenied, dial_opts::DialOpts},
     tcp, yamux, Multiaddr, PeerId, Transport,
     identity::Keypair,
     SwarmBuilder,
@@ -39,6 +41,11 @@ use crate::reputation::{ReputationManager, ReputationConfig, ReputationChange};
 use crate::messaging;
 use crate::circuit_relay::{CircuitRelayConfig, CircuitRelayManager, create_relay_transport};
 use crate::tests::MockStorage;
+
+use libp2p::swarm::ConnectionId;
+use libp2p::core::Endpoint;
+use libp2p::core::transport::PortUse;
+use libp2p::swarm::dummy::ConnectionHandler;
 
 // Topic names for gossipsub
 const TOPIC_IDENTITY: &str = "icn/identity/v1";
@@ -133,6 +140,8 @@ pub enum P2pBehaviourEvent {
     Kad(kad::Event),
     /// mDNS events
     Mdns(mdns::Event),
+    /// Kademlia events (for backwards compatibility)
+    Kademlia(kad::Event),
 }
 
 /// Combined events from all protocols
@@ -212,7 +221,7 @@ pub struct P2pNetwork {
     local_peer_id: PeerId,
     /// Network configuration
     config: P2pConfig,
-    /// Command sender
+    /// Command channel sender
     command_tx: Arc<Mutex<mpsc::Sender<Command>>>,
     /// Background task handle
     task_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -272,11 +281,7 @@ impl P2pNetwork {
         // Create reputation manager if enabled
         let reputation = if config.enable_reputation {
             let rep_config = config.reputation_config.clone().unwrap_or_default();
-            let manager = ReputationManager::new(
-                rep_config, 
-                Some(storage.clone()),
-                metrics.clone()
-            ).await?;
+            let manager = ReputationManager::new(rep_config);
             
             // Start decay task
             let _ = manager.start_decay_task().await;
@@ -292,7 +297,11 @@ impl P2pNetwork {
         // Create circuit relay manager if enabled
         let circuit_relay = if config.enable_circuit_relay {
             let relay_config = config.circuit_relay_config.clone().unwrap_or_default();
-            let manager = CircuitRelayManager::new(local_peer_id.clone(), relay_config, metrics.clone());
+            let manager = CircuitRelayManager::new(
+                relay_config,
+                reputation.clone().expect("Reputation manager is required for circuit relay"),
+                metrics.clone().map(Arc::new)
+            );
             
             // Initialize relay manager
             manager.initialize().await?;
@@ -796,7 +805,7 @@ impl P2pNetwork {
                     
                     // Record response time
                     if let Some(rep) = reputation {
-                        let _ = rep.record_response_time(propagation_source, elapsed).await;
+                        let _ = rep.record_response_time(&propagation_source, elapsed).await;
                     }
                     
                     // Update reputation based on processing time
@@ -819,7 +828,7 @@ impl P2pNetwork {
                 
                 // Update reputation based on ping time
                 if let Some(rep) = reputation {
-                    let _ = rep.record_response_time(peer, rtt).await;
+                    let _ = rep.record_response_time(&peer, rtt).await;
                 }
                 
                 debug!("Ping to {} took {:?}", peer, rtt);
@@ -844,7 +853,7 @@ impl P2pNetwork {
                     
                     // Check if peer is banned
                     let should_dial = if let Some(rep) = reputation {
-                        !rep.is_banned(peer_id).await
+                        !rep.is_banned(&peer_id)
                     } else {
                         true
                     };
@@ -1146,8 +1155,9 @@ impl P2pNetwork {
     
     /// Check if a peer is allowed to connect
     pub async fn is_peer_allowed(&self, peer_id: &PeerId) -> bool {
+        // Check if the peer has a good reputation
         if let Some(rep) = &self.reputation {
-            return !rep.is_banned(*peer_id).await;
+            return !rep.is_banned(peer_id);
         }
         
         true
@@ -1224,7 +1234,7 @@ impl P2pNetwork {
         if !connected && self.config.enable_circuit_relay {
             // Try connecting via relay if direct connection failed
             if let Some(relay_manager) = &self.circuit_relay {
-                match relay_manager.connect_via_relay(peer_id).await {
+                match relay_manager.connect_via_relay(*peer_id).await {
                     Ok(relay_addr) => {
                         // Connect via the relay address
                         self.connect(&relay_addr).await?;
@@ -1243,7 +1253,7 @@ impl P2pNetwork {
     /// Check if a peer is connected via relay
     pub async fn is_relay_connection(&self, peer_id: &PeerId) -> bool {
         if let Some(relay_manager) = &self.circuit_relay {
-            relay_manager.is_relayed_connection(peer_id).await
+            relay_manager.is_relayed_connection(*peer_id).await
         } else {
             false
         }
@@ -1252,7 +1262,7 @@ impl P2pNetwork {
     /// Get the relay used for a connection
     pub async fn get_relay_for_connection(&self, peer_id: &PeerId) -> Option<PeerId> {
         if let Some(relay_manager) = &self.circuit_relay {
-            relay_manager.get_relay_for_connection(peer_id).await
+            relay_manager.get_relay_for_connection(*peer_id).await
         } else {
             None
         }
@@ -1261,8 +1271,7 @@ impl P2pNetwork {
     /// Get a list of known relay servers
     pub async fn get_relay_servers(&self) -> Vec<String> {
         if let Some(relay_manager) = &self.circuit_relay {
-            let servers = relay_manager.get_relay_servers().await;
-            servers.into_iter().map(|server| server.peer_id.to_string()).collect()
+            relay_manager.get_relay_servers().await
         } else {
             Vec::new()
         }
@@ -1299,6 +1308,151 @@ fn extract_peer_id(addr: &Multiaddr) -> Option<PeerId> {
         },
         _ => None,
     })
+}
+
+// Implement NetworkBehaviour for P2pBehaviour
+impl NetworkBehaviour for P2pBehaviour {
+    type ConnectionHandler = libp2p::swarm::dummy::ConnectionHandler;
+    type ToSwarm = P2pBehaviourEvent;
+
+    fn handle_established_inbound_connection(
+        &mut self,
+        connection_id: libp2p::swarm::ConnectionId,
+        peer: PeerId,
+        local_addr: &Multiaddr,
+        remote_addr: &Multiaddr,
+    ) -> Result<Self::ConnectionHandler, libp2p::swarm::ConnectionDenied> {
+        self.identify.handle_established_inbound_connection(
+            connection_id, peer, local_addr, remote_addr,
+        )?;
+        self.ping.handle_established_inbound_connection(
+            connection_id, peer, local_addr, remote_addr,
+        )?;
+        self.gossipsub.handle_established_inbound_connection(
+            connection_id, peer, local_addr, remote_addr,
+        )?;
+        self.kademlia.handle_established_inbound_connection(
+            connection_id, peer, local_addr, remote_addr,
+        )?;
+        self.mdns.handle_established_inbound_connection(
+            connection_id, peer, local_addr, remote_addr,
+        )?;
+
+        Ok(libp2p::swarm::dummy::ConnectionHandler)
+    }
+
+    fn handle_established_outbound_connection(
+        &mut self,
+        connection_id: ConnectionId,
+        peer: PeerId,
+        addr: &Multiaddr,
+        role_override: Endpoint,
+        port_use: PortUse,
+    ) -> Result<ConnectionHandler, ConnectionDenied> {
+        // Forward to all sub-components
+        self.identify.handle_established_outbound_connection(
+            connection_id,
+            peer,
+            addr,
+            role_override,
+            port_use,
+        )?;
+        self.ping.handle_established_outbound_connection(
+            connection_id,
+            peer,
+            addr,
+            role_override,
+            port_use,
+        )?;
+        self.gossipsub.handle_established_outbound_connection(
+            connection_id,
+            peer,
+            addr,
+            role_override,
+            port_use,
+        )?;
+        self.kademlia.handle_established_outbound_connection(
+            connection_id,
+            peer,
+            addr,
+            role_override,
+            port_use,
+        )?;
+        
+        // Get the handler from the last component's implementation and return it
+        self.mdns.handle_established_outbound_connection(
+            connection_id,
+            peer,
+            addr,
+            role_override,
+            port_use,
+        )
+    }
+
+    fn on_swarm_event(&mut self, event: libp2p::swarm::FromSwarm) {
+        self.identify.on_swarm_event(event.clone());
+        self.ping.on_swarm_event(event.clone());
+        self.gossipsub.on_swarm_event(event.clone());
+        self.kademlia.on_swarm_event(event.clone());
+        self.mdns.on_swarm_event(event);
+    }
+
+    fn on_connection_handler_event(
+        &mut self,
+        peer_id: PeerId,
+        connection_id: libp2p::swarm::ConnectionId,
+        event: std::convert::Infallible,
+    ) {
+        // This method should never be called since we're using Infallible as event type
+        // Infallible cannot be constructed, so this is unreachable
+        let _: std::convert::Infallible = event; // Using the event to silence unused variable warning
+        
+        // Type annotation to help compiler with type inference
+        let _: &mut P2pBehaviour = self;
+    }
+
+    fn poll(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<libp2p::swarm::ToSwarm<Self::ToSwarm, libp2p::swarm::THandlerInEvent<Self>>> {
+        // Poll each protocol and convert the events to our custom event type
+        if let Poll::Ready(event) = self.gossipsub.poll(cx) {
+            if let libp2p::swarm::ToSwarm::GenerateEvent(ev) = event {
+                return Poll::Ready(libp2p::swarm::ToSwarm::GenerateEvent(P2pBehaviourEvent::Gossipsub(ev)));
+            }
+            return Poll::Pending;
+        }
+        
+        if let Poll::Ready(event) = self.identify.poll(cx) {
+            if let libp2p::swarm::ToSwarm::GenerateEvent(ev) = event {
+                return Poll::Ready(libp2p::swarm::ToSwarm::GenerateEvent(P2pBehaviourEvent::Identify(ev)));
+            }
+            return Poll::Pending;
+        }
+        
+        if let Poll::Ready(event) = self.ping.poll(cx) {
+            if let libp2p::swarm::ToSwarm::GenerateEvent(ev) = event {
+                return Poll::Ready(libp2p::swarm::ToSwarm::GenerateEvent(P2pBehaviourEvent::Ping(ev)));
+            }
+            return Poll::Pending;
+        }
+        
+        if let Poll::Ready(event) = self.kademlia.poll(cx) {
+            if let libp2p::swarm::ToSwarm::GenerateEvent(ev) = event {
+                return Poll::Ready(libp2p::swarm::ToSwarm::GenerateEvent(P2pBehaviourEvent::Kad(ev)));
+            }
+            return Poll::Pending;
+        }
+        
+        if let Poll::Ready(event) = self.mdns.poll(cx) {
+            if let libp2p::swarm::ToSwarm::GenerateEvent(ev) = event {
+                return Poll::Ready(libp2p::swarm::ToSwarm::GenerateEvent(P2pBehaviourEvent::Mdns(ev)));
+            }
+            return Poll::Pending;
+        }
+
+        Poll::Pending
+    }
 }
 
 #[async_trait]

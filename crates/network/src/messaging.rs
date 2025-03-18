@@ -32,7 +32,7 @@ pub type MessageType = String;
 pub type MessageHandlerFn = Arc<dyn MessageHandler>;
 
 /// Quality of Service levels for message prioritization
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum QosLevel {
     /// Critical system messages (e.g., consensus)
     Critical,
@@ -92,6 +92,21 @@ struct QueueEntry {
     attempts: u32,
     /// QoS level for this message
     qos_level: QosLevel,
+}
+
+/// A message queued for processing
+#[derive(Debug, Clone)]
+pub struct QueuedMessage {
+    /// The message to be sent
+    pub message: NetworkMessage,
+    /// The sender peer id
+    pub sender: String,
+    /// QoS level for this message
+    pub qos_level: QosLevel,
+    /// When the message was queued
+    pub queued_at: Instant,
+    /// Number of delivery attempts
+    pub attempts: u32,
 }
 
 /// Configuration for message prioritization
@@ -271,19 +286,16 @@ impl MessageProcessor {
             while let Some(command) = command_rx.recv().await {
                 match command {
                     ProcessorCommand::ProcessMessage(envelope) => {
-                        // Convert MessageEnvelope to QueuedMessage
-                        let queued_message = QueuedMessage {
-                            message_type: envelope.message.message_type().clone(),
-                            data: Vec::new(), // We don't have the actual data here
-                            sender: Some(envelope.peer.peer_id.clone()),
-                            received_at: Instant::now(),
-                            priority: envelope.priority,
-                        };
-                        processor_clone.queue_message(&envelope.peer.peer_id, envelope.message, envelope.peer.qos_level).await;
+                        // Call queue_message directly with the envelope data
+                        processor_clone.queue_message(
+                            &envelope.peer.peer_id, 
+                            envelope.message.clone(), 
+                            QosLevel::Normal // Use a default QoS level for now
+                        ).await;
                         
                         // Record queue size in metrics
                         if let Some(m) = &metrics {
-                            let size = processor_clone.queues.read().await.get(&envelope.peer.peer_id).unwrap().len();
+                            let size = processor_clone.queue_size().await;
                             m.record_queue_size(size);
                         }
                     },
@@ -354,17 +366,20 @@ impl MessageProcessor {
                 if queues_write.is_empty() {
                     break;
                 }
-                queues_write.iter().flat_map(|(peer_id, peer_queues)| {
-                    peer_queues.iter().flat_map(|(qos_level, queue)| {
-                        queue.iter().map(move |entry| {
-                            (peer_id.clone(), qos_level.clone(), entry.message.clone())
+                let envelope = queues.read().await.iter()
+                    .flat_map(move |(peer_id, peer_queues)| {
+                        peer_queues.iter().flat_map(move |(qos_level, queue)| {
+                            queue.iter().map(move |entry| {
+                                (peer_id.clone(), qos_level.clone(), entry.message.clone())
+                            })
                         })
-                    })
-                }).max_by(|(peer_id1, qos_level1, _), (peer_id2, qos_level2, _)| {
-                    qos_level1.priority_value().cmp(&qos_level2.priority_value())
-                }).map(|(peer_id, qos_level, message)| {
-                    (peer_id, qos_level, message)
-                })
+                    }).max_by(|(_, qos_level1, _), (_, qos_level2, _)| {
+                        qos_level1.cmp(&qos_level2)
+                    }).map(|(peer_id, qos_level, message)| {
+                        (peer_id, qos_level, message)
+                    });
+                
+                envelope
             };
             
             if let Some((peer_id, qos_level, message)) = envelope {
@@ -434,67 +449,45 @@ impl MessageProcessor {
         message: &NetworkMessage,
         peer: &PeerInfo,
     ) -> i32 {
-        match self.config.mode {
-            PriorityMode::Fifo => {
-                // FIFO mode - all messages have the same priority
-                0
-            },
-            PriorityMode::ReputationBased => {
-                // Base priority on peer reputation
-                let reputation_score = if let Some(rep) = &self.reputation {
-                    if let Ok(peer_id) = libp2p::PeerId::from_bytes(peer.peer_id.as_bytes()) {
-                        rep.get_reputation(peer_id).await
-                            .map(|r| r.score())
-                            .unwrap_or(0)
-                    } else {
-                        0
+        // Base priority is 0
+        let mut priority = 0;
+        
+        // If reputation manager is available, boost priority based on peer reputation
+        if let Some(rep) = &self.reputation {
+            let context = crate::reputation::ReputationContext::Networking;
+            
+            // Convert string to PeerId
+            match PeerId::from_bytes(peer.peer_id.as_bytes()) {
+                Ok(peer_id) => {
+                    // Adjust priority based on reputation score
+                    let reputation_score = rep.get_reputation(&peer_id, &context);
+                    
+                    if reputation_score > 50 {
+                        priority += 2; // High reputation peers get higher priority
+                    } else if reputation_score < 0 {
+                        priority -= 1; // Low reputation peers get lower priority
                     }
-                } else {
-                    0
-                };
-                
-                // Scale reputation to a priority value
-                // Higher reputation = higher priority
-                reputation_score
-            },
-            PriorityMode::TypeAndReputation => {
-                // Base priority on message type
-                let type_priority = self.config.type_priorities
-                    .get(&message.message_type())
-                    .copied()
-                    .unwrap_or(0);
-                
-                // Get reputation score
-                let reputation_score = if let Some(rep) = &self.reputation {
-                    if let Ok(peer_id) = libp2p::PeerId::from_bytes(peer.peer_id.as_bytes()) {
-                        rep.get_reputation(peer_id).await
-                            .map(|r| r.score())
-                            .unwrap_or(0)
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                };
-                
-                // Combine type priority and reputation
-                // If reputation is high enough, boost priority
-                let reputation_boost = if reputation_score >= self.config.high_priority_reputation {
-                    20
-                } else if reputation_score <= 0 {
-                    -10
-                } else {
-                    0
-                };
-                
-                type_priority + reputation_boost
-            },
-            PriorityMode::Custom => {
-                // Custom prioritization (placeholder)
-                // In a real implementation, this would be customizable
-                0
+                },
+                Err(_) => {
+                    // If we can't parse peer_id, default to no reputation adjustment
+                    debug!("Failed to parse peer_id: {}", peer.peer_id);
+                }
             }
         }
+        
+        // Add priority based on message type
+        match message.message_type().as_str() {
+            // System messages get highest priority
+            "consensus" | "governance" | "voting" => priority += 3,
+            // Regular messages get normal priority
+            "transaction" | "content" | "data" => priority += 1,
+            // Discovery and background tasks get lower priority
+            "discovery" | "ping" | "status" => priority += 0,
+            // Default priority for unknown types
+            _ => {},
+        }
+        
+        priority
     }
     
     /// Process a message with appropriate priority
@@ -514,7 +507,7 @@ impl MessageProcessor {
         // Create the message envelope
         let envelope = MessageEnvelope {
             message,
-            peer,
+            peer: peer.clone(),
             received_at: Instant::now(),
             priority,
         };
@@ -522,16 +515,11 @@ impl MessageProcessor {
         // Check queue size before adding
         let queue_size = self.queues.read().await.get(&peer.peer_id).unwrap().len();
         if queue_size >= self.config.max_queue_size {
-            if self.config.drop_low_priority_when_full && priority < 0 {
-                // Drop low priority messages when queue is full
-                debug!("Dropping low priority message (priority: {}) due to full queue", priority);
-                
-                // Record dropped message in metrics
-                if let Some(m) = &self.metrics {
-                    m.record_dropped_message();
-                }
-                
-                return Ok(());
+            // Apply backpressure by dropping lowest priority messages if needed
+            if priority < 0 {
+                // For negative priority messages, allow dropping
+                let _ = self.apply_backpressure(&mut self.queues.write().await.get_mut(&peer.peer_id).unwrap()).await;
+                return Err(NetworkError::InvalidPriority);
             }
             
             // We're at capacity but this message isn't low priority, so apply backpressure
@@ -577,44 +565,67 @@ impl MessageProcessor {
     
     /// Get queue statistics
     pub async fn queue_stats(&self) -> (usize, Option<i32>, Option<i32>) {
-        let queues = self.queues.read().await;
-        let size = queues.iter().flat_map(|(peer_id, peer_queues)| {
-            peer_queues.iter().map(|(qos_level, queue)| {
-                queue.len()
-            })
-        }).sum();
+        let size = self.queue_size().await;
         
-        // Get highest and lowest priorities if queue is not empty
-        let (highest_priority, lowest_priority) = if !queues.is_empty() {
-            // Convert the HashMap to a Vec to access all elements
-            let vec: Vec<_> = queues.iter().map(|(peer_id, peer_queues)| {
-                peer_queues.iter().map(|(qos_level, queue)| {
-                    (qos_level.priority_value(), queue.len())
-                })
-            }).flatten().collect();
-            
-            // Find highest and lowest priorities
-            let highest = vec.iter().map(|&(priority, _)| priority).max();
-            let lowest = vec.iter().map(|&(priority, _)| priority).min();
-            
-            (size, highest, lowest)
-        } else {
-            (size, None, None)
-        };
+        if size == 0 {
+            return (0, None, None);
+        }
+        
+        let queues = self.queues.read().await;
+        
+        // Find the highest and lowest priority messages
+        let mut highest_priority: Option<i32> = None;
+        let mut lowest_priority: Option<i32> = None;
+        
+        for (_, peer_queues) in queues.iter() {
+            for (qos_level, queue) in peer_queues.iter() {
+                if !queue.is_empty() {
+                    let priority = qos_level.priority_value() as i32;
+                    
+                    // Update highest priority
+                    if let Some(current_highest) = highest_priority {
+                        if priority > current_highest {
+                            highest_priority = Some(priority);
+                        }
+                    } else {
+                        highest_priority = Some(priority);
+                    }
+                    
+                    // Update lowest priority
+                    if let Some(current_lowest) = lowest_priority {
+                        if priority < current_lowest {
+                            lowest_priority = Some(priority);
+                        }
+                    } else {
+                        lowest_priority = Some(priority);
+                    }
+                }
+            }
+        }
         
         (size, highest_priority, lowest_priority)
     }
     
     /// Add a message directly to the queue
     pub async fn push_back(&self, message: QueuedMessage) {
-        // Add the message to the queue
-        self.queues.write().await.get_mut(&message.sender).unwrap().push_back(message);
+        let mut queues = self.queues.write().await;
+        let peer_queues = queues
+            .entry(message.sender.clone())
+            .or_insert_with(HashMap::new);
         
-        // Record queue size in metrics if available
-        if let Some(m) = &self.metrics {
-            let size = self.queues.read().await.get(&message.sender).unwrap().len();
-            m.record_queue_size(size);
-        }
+        let queue = peer_queues
+            .entry(message.qos_level)
+            .or_insert_with(VecDeque::new);
+            
+        // Convert QueuedMessage to QueueEntry
+        let entry = QueueEntry {
+            message: message.message,
+            queued_at: message.queued_at,
+            attempts: message.attempts,
+            qos_level: message.qos_level,
+        };
+        
+        queue.push_back(entry);
     }
 
     /// Queue a message for delivery
@@ -625,22 +636,38 @@ impl MessageProcessor {
         qos_level: QosLevel,
     ) -> NetworkResult<()> {
         let mut queues = self.queues.write().await;
-        
-        // Get or create peer queue
-        let peer_queues = queues.entry(peer_id.to_string())
+        let peer_queues = queues
+            .entry(peer_id.to_string())
             .or_insert_with(HashMap::new);
             
-        // Get or create QoS queue
-        let queue = peer_queues.entry(qos_level)
-            .or_insert_with(VecDeque::new);
+        // Check queue size limits before adding
+        let queue_size = peer_queues.values().map(|q| q.len()).sum::<usize>();
+        if queue_size >= self.config.max_queue_size {
+            // Try to free up space by dropping lowest priority messages
+            let mut did_free_space = false;
             
-        // Check queue size limits
-        if queue.len() >= qos_level.max_queue_size() {
-            // Apply backpressure by dropping lowest priority messages if needed
-            if !self.apply_backpressure(peer_queues).await {
+            // Try dropping from lowest priority queues first
+            for level in [QosLevel::Background, QosLevel::Low, QosLevel::Normal] {
+                if let Some(queue) = peer_queues.get_mut(&level) {
+                    if !queue.is_empty() {
+                        queue.pop_front();
+                        did_free_space = true;
+                        break;
+                    }
+                }
+            }
+            
+            // If we couldn't free up space and this is not a high priority message,
+            // return an error
+            if !did_free_space && qos_level < QosLevel::High {
                 return Err(NetworkError::QueueFull);
             }
         }
+        
+        // Now add to the queue
+        let queue = peer_queues
+            .entry(qos_level)
+            .or_insert_with(VecDeque::new);
         
         // Create queue entry
         let entry = QueueEntry {
@@ -688,11 +715,13 @@ impl MessageProcessor {
                         
                         // Valid message found
                         if let Some(entry) = queue.pop_front() {
+                            // Record stats
                             if let Some(metrics) = &self.metrics {
                                 metrics.record_message_processed(
                                     peer_id,
+                                    entry.message.message_type().as_str(),
                                     qos_level.priority_value(),
-                                    entry.queued_at.elapsed(),
+                                    entry.queued_at.elapsed()
                                 );
                             }
                             return Some(entry.message);
@@ -710,23 +739,37 @@ impl MessageProcessor {
         &self,
         peer_queues: &mut HashMap<QosLevel, VecDeque<QueueEntry>>,
     ) -> bool {
-        // Try to drop messages starting from lowest priority
-        for qos_level in [
-            QosLevel::Background,
-            QosLevel::Low,
-            QosLevel::Normal,
-            QosLevel::High,
-        ] {
-            if let Some(queue) = peer_queues.get_mut(&qos_level) {
-                if !queue.is_empty() {
-                    // Drop oldest message from this queue
-                    queue.pop_front();
-                    return true;
+        // First check if we have any Background messages we can drop
+        if let Some(background_queue) = peer_queues.get_mut(&QosLevel::Background) {
+            if !background_queue.is_empty() {
+                background_queue.pop_front();
+                return true;
+            }
+        }
+        
+        // Then try Low priority messages
+        if let Some(low_queue) = peer_queues.get_mut(&QosLevel::Low) {
+            if !low_queue.is_empty() {
+                low_queue.pop_front();
+                return true;
+            }
+        }
+        
+        // If dynamic QoS is enabled, we can also drop Normal priority messages
+        // but only if we're running out of space
+        if self.config.enable_dynamic_qos {
+            let total_messages: usize = peer_queues.values().map(|q| q.len()).sum();
+            if total_messages > self.config.max_queue_size / 2 {
+                if let Some(normal_queue) = peer_queues.get_mut(&QosLevel::Normal) {
+                    if !normal_queue.is_empty() {
+                        normal_queue.pop_front();
+                        return true;
+                    }
                 }
             }
         }
         
-        // Couldn't free up space
+        // We couldn't drop any messages, queue is full
         false
     }
 
@@ -773,6 +816,48 @@ impl MessageProcessor {
                 }
             }
         }
+    }
+
+    pub async fn queue_for_send(
+        &self,
+        peer: PeerInfo,
+        message: NetworkMessage,
+        priority: Option<i32>,
+    ) -> NetworkResult<()> {
+        let peer_id = peer.peer_id.clone();
+        
+        // Calculate message priority
+        let actual_priority = if let Some(p) = priority {
+            p
+        } else {
+            self.calculate_priority(&message, &peer).await
+        };
+        
+        // Create message envelope
+        let envelope = MessageEnvelope {
+            peer: peer.clone(),
+            message,
+            priority: actual_priority,
+            received_at: Instant::now(),
+        };
+        
+        // Check queue limits
+        let queue_size = self.queues.read().await.get(&peer_id).map_or(0, |q| q.len());
+        if queue_size >= self.config.max_queue_size {
+            // Apply backpressure by dropping lowest priority messages if needed
+            if priority.unwrap_or(0) < 0 {
+                // For negative priority messages, allow dropping
+                let _ = self.apply_backpressure(&mut self.queues.write().await.get_mut(&peer_id).unwrap()).await;
+                return Err(NetworkError::InvalidPriority);
+            }
+        }
+        
+        // Send to command channel
+        if let Err(_) = self.command_tx.send(ProcessorCommand::ProcessMessage(envelope)).await {
+            return Err(NetworkError::ChannelClosed("Message processor channel closed".to_string()));
+        }
+        
+        Ok(())
     }
 }
 

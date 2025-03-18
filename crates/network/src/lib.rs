@@ -107,6 +107,22 @@ pub enum NetworkError {
     /// Invalid address
     #[error("Invalid address: {0}")]
     InvalidAddress(String),
+    
+    /// Queue is full
+    #[error("Queue is full")]
+    QueueFull,
+    
+    /// Invalid priority
+    #[error("Invalid message priority")]
+    InvalidPriority,
+    
+    /// No connections available
+    #[error("No connections available")]
+    NoConnectionsAvailable,
+    
+    /// Transport error
+    #[error("Transport error: {0}")]
+    TransportError(String),
 }
 
 /// Result type for network operations
@@ -314,7 +330,7 @@ pub trait NetworkService: Send + Sync {
     async fn register_message_handler(&self, message_type: &str, handler: Arc<dyn MessageHandler>) -> NetworkResult<()>;
 }
 
-// Modules
+/// Public modules
 pub mod p2p;
 pub mod discovery;
 pub mod messaging;
@@ -323,19 +339,21 @@ pub mod metrics;
 pub mod reputation;
 pub mod circuit_relay;
 
+/// Private modules
+mod libp2p_compat;
+
 #[cfg(test)]
 mod test_reputation;
-
 mod tests;
 
-// Public re-exports
+/// Re-exports
 pub use crate::p2p::{P2pConfig, P2pNetwork};
 pub use crate::discovery::DiscoveryConfig;
 pub use crate::messaging::{MessageProcessor, PriorityConfig};
 pub use crate::reputation::{ReputationConfig, ReputationManager, ReputationChange};
 pub use crate::circuit_relay::{CircuitRelayConfig, CircuitRelayManager};
 
-// Re-export the messaging types for convenience
+/// Re-export the messaging types for convenience
 pub mod messages {
     pub use crate::{
         IdentityAnnouncement,
@@ -347,6 +365,7 @@ pub mod messages {
     };
 }
 
+/// Serialization helpers for PeerId
 mod peer_id_serde {
     use libp2p::PeerId;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};

@@ -26,7 +26,10 @@ pub use enhanced_reputation::{
     InteractionValue,
     ReputationEventHandler,
     ContributionMetricsProvider,
+    ReputationChange,
 };
 
 // For backward compatibility, re-export the enhanced manager as the standard manager
-pub type ReputationManager = EnhancedReputationManager; 
+pub type ReputationManager = EnhancedReputationManager;
+// For backward compatibility, re-export the enhanced config as the standard config
+pub type ReputationConfig = EnhancedReputationConfig; 

@@ -463,6 +463,26 @@ impl NetworkMetrics {
         self.operation_durations.with_label_values(&[operation])
             .set(duration.as_millis() as i64);
     }
+    
+    /// Record a message being queued
+    pub fn record_queued_message(&self, peer_id: &str, priority: u8) {
+        self.queue_priorities.with_label_values(&[peer_id, &priority.to_string()]).inc();
+        self.record_queue_size(self.queue_size.get() as usize + 1);
+    }
+    
+    /// Record a message timing out before delivery
+    pub fn record_message_timeout(&self, peer_id: &str, priority: u8) {
+        self.dropped_messages.inc();
+        self.record_negative_action(peer_id, "message_timeout");
+        self.queue_priorities.with_label_values(&[peer_id, &priority.to_string()]).dec();
+    }
+    
+    /// Record a message being processed
+    pub fn record_message_processed(&self, peer_id: &str, message_type: &str, priority: u8, duration: Duration) {
+        self.message_processing_time.observe(duration.as_secs_f64());
+        self.queue_priorities.with_label_values(&[peer_id, &priority.to_string()]).dec();
+        self.operation_durations.with_label_values(&["message_processing"]).set(duration.as_millis() as i64);
+    }
 }
 
 impl Default for NetworkMetrics {
@@ -636,24 +656,29 @@ fn get_process_cpu_usage() -> Option<f64> {
     None
 }
 
-// Implement the CircuitRelayMetricsExt trait for NetworkMetrics
-impl CircuitRelayMetricsExt for NetworkMetrics {
+// Implement CircuitRelayMetricsExt for NetworkMetrics
+impl crate::circuit_relay::CircuitRelayMetricsExt for NetworkMetrics {
+    /// Record the number of relay servers
     fn record_relay_servers(&self, count: usize) {
         self.relay_servers.set(count as i64);
     }
     
+    /// Record the number of active relay connections
     fn record_active_relay_connections(&self, count: usize) {
         self.active_relay_connections.set(count as i64);
     }
     
+    /// Record a relay connection attempt
     fn record_relay_connection_attempt(&self) {
         self.relay_connection_attempts.inc();
     }
     
+    /// Record a successful relay connection
     fn record_relay_connection_success(&self) {
         self.relay_connection_successes.inc();
     }
     
+    /// Record a failed relay connection
     fn record_relay_connection_failure(&self) {
         self.relay_connection_failures.inc();
     }
