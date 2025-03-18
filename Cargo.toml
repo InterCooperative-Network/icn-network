@@ -1,3 +1,31 @@
+[package]
+name = "icn-network"
+version = "0.1.0"
+edition = "2021"
+authors = ["ICN Contributors"]
+description = "Intercooperative Network - A decentralized infrastructure for cooperative economies"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/intercooperative-network/icn"
+
+[dependencies]
+# Internal crates
+icn-core = { path = "crates/core" }
+icn-identity = { path = "crates/identity" }
+icn-governance = { path = "crates/governance" }
+icn-network = { path = "crates/network" }
+icn-economic = { path = "crates/economic" }
+icn-mutual-credit = { path = "crates/economic/icn-mutual-credit" }
+
+# External dependencies
+tokio = { version = "1.36", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+log = "0.4"
+env_logger = "0.10"
+async-trait = "0.1"
+chrono = "0.4"
+
 [workspace]
 members = [
     "crates/core",
@@ -8,6 +36,8 @@ members = [
     "bin/node",
     "bin/cli",
     "crates/network",
+    "crates/economic",
+    "crates/economic/icn-mutual-credit",
 ]
 resolver = "2"
 
@@ -26,6 +56,8 @@ ring = "0.17"
 hex = "0.4"
 bs58 = "0.4"
 rand = "0.7"
+icn-economic = { path = "crates/economic" }
+icn-mutual-credit = { path = "crates/economic/icn-mutual-credit" }
 
 # Serialization
 serde_yaml = "0.9"

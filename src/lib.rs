@@ -20,6 +20,7 @@ pub mod federation;
 pub mod reputation;
 pub mod distributed_storage;
 pub mod federation_storage_router;
+pub mod economic;
 
 // Temporarily disabled modules due to missing files
 // We'll address these in a future update
@@ -88,3 +89,4 @@ pub use resource_sharing::ResourceSharingSystem;
 pub use reputation::ReputationSystem;
 pub use distributed_storage::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType};
 pub use federation_storage_router::{FederationStorageRouter, StorageRoute};
+pub use economic::{MutualCreditSystem, Account, Transaction, TransactionType, TransactionStatus, Amount, CreditLimit};

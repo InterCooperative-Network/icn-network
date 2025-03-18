@@ -1,0 +1,29 @@
+[package]
+name = "icn-economic"
+version = "0.1.0"
+edition = "2021"
+authors = ["ICN Contributors"]
+description = "Economic system for the Intercooperative Network"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/intercoin/icn"
+
+[dependencies]
+# Internal dependencies
+icn-core = { path = "../core" }
+icn-mutual-credit = { path = "./icn-mutual-credit" }
+
+# External dependencies
+tokio = { version = "1.36", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
+thiserror = "1.0"
+async-trait = "0.1"
+log = "0.4"
+uuid = { version = "1.4", features = ["v4", "serde"] }
+rust_decimal = { version = "1.30", features = ["serde"] }
+rand = "0.8.5"
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockall = "0.11" 

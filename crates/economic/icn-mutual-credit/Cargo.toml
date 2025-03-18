@@ -8,11 +8,6 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/intercoin/icn"
 
 [dependencies]
-# Internal dependencies
-icn-common = { path = "../../core/icn-common" }
-icn-crypto = { path = "../../core/icn-crypto" }
-icn-did = { path = "../../identity/icn-did" }
-
 # External dependencies
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.97"
@@ -24,9 +19,6 @@ log = "0.4"
 uuid = { version = "1.4", features = ["v4", "serde"] }
 rust_decimal = { version = "1.30", features = ["serde"] }
 rand = "0.8.5"
-curve25519-dalek = "4.1.1"
-merlin = "3.0.0"
-bulletproofs = "4.0.0"
 sha2 = "0.10.8"
 hex = "0.4.3"
 

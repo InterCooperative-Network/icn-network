@@ -1,16 +1,16 @@
 //! Intercooperative Economic System
 //!
-//! This module provides the economic functionality for the ICN network,
-//! including mutual credit, incentives, and tokenized economic transactions.
+//! This module provides economic functionality for the ICN network,
+//! including mutual credit systems, incentives, and tokenized economic transactions.
 
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
-use log::{debug, error, info};
+use thiserror::Error;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 
-// Re-export the core types from icn-mutual-credit
+// Re-export mutual credit system
 pub use icn_mutual_credit::{
     Account,
     AccountId,
@@ -23,8 +23,11 @@ pub use icn_mutual_credit::{
     TransactionType
 };
 
+// Modules
+pub mod incentives;
+
 /// Economic error types
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error)]
 pub enum EconomicError {
     #[error("Insufficient funds: {0}")]
     InsufficientFunds(String),
@@ -112,7 +115,7 @@ pub struct EconomicSystem {
 impl EconomicSystem {
     /// Create a new economic system with the specified configuration
     pub fn new(config: FederationEconomicConfig) -> Self {
-        info!("Initializing economic system for federation: {}", config.federation_id);
+        log::info!("Initializing economic system for federation: {}", config.federation_id);
         Self {
             mutual_credit: MutualCreditSystem::new(),
             config,
@@ -123,12 +126,12 @@ impl EconomicSystem {
     pub async fn create_account(&self, id: &str, name: &str) -> Result<Account> {
         let credit_limit = CreditLimit::new(self.config.default_credit_limit);
         
-        info!("Creating account {} ({}) with credit limit {}", id, name, self.config.default_credit_limit);
+        log::info!("Creating account {} ({}) with credit limit {}", id, name, self.config.default_credit_limit);
         
         match self.mutual_credit.create_account(id.to_string(), name.to_string(), credit_limit) {
             Ok(account) => Ok(account),
             Err(e) => {
-                error!("Failed to create account: {}", e);
+                log::error!("Failed to create account: {}", e);
                 Err(EconomicError::Internal(e.to_string()))
             }
         }
@@ -139,7 +142,7 @@ impl EconomicSystem {
         match self.mutual_credit.get_account(&id.to_string()) {
             Ok(account) => Ok(account),
             Err(e) => {
-                error!("Failed to get account {}: {}", id, e);
+                log::error!("Failed to get account {}: {}", id, e);
                 Err(EconomicError::AccountNotFound(id.to_string()))
             }
         }
@@ -156,7 +159,7 @@ impl EconomicSystem {
     ) -> Result<Transaction> {
         let amount = Amount::new(amount);
         
-        debug!(
+        log::debug!(
             "Creating transaction from {} to {} for amount {}: {}",
             source_account, destination_account, amount.value(), description
         );
@@ -170,7 +173,7 @@ impl EconomicSystem {
         ) {
             Ok(tx) => Ok(tx),
             Err(e) => {
-                error!("Failed to create transaction: {}", e);
+                log::error!("Failed to create transaction: {}", e);
                 match e.to_string() {
                     s if s.contains("credit limit") => Err(EconomicError::CreditLimitExceeded(s)),
                     s if s.contains("account not found") => Err(EconomicError::AccountNotFound(s)),
@@ -182,12 +185,12 @@ impl EconomicSystem {
     
     /// Execute a pending transaction
     pub async fn execute_transaction(&self, transaction_id: &str) -> Result<Transaction> {
-        info!("Executing transaction: {}", transaction_id);
+        log::info!("Executing transaction: {}", transaction_id);
         
         match self.mutual_credit.execute_transaction(&transaction_id.to_string()) {
             Ok(tx) => Ok(tx),
             Err(e) => {
-                error!("Failed to execute transaction {}: {}", transaction_id, e);
+                log::error!("Failed to execute transaction {}: {}", transaction_id, e);
                 match e.to_string() {
                     s if s.contains("transaction not found") => Err(EconomicError::TransactionNotFound(s)),
                     s if s.contains("insufficient funds") => Err(EconomicError::InsufficientFunds(s)),
@@ -203,7 +206,7 @@ impl EconomicSystem {
         match self.mutual_credit.get_transaction(&id.to_string()) {
             Ok(tx) => Ok(tx),
             Err(e) => {
-                error!("Failed to get transaction {}: {}", id, e);
+                log::error!("Failed to get transaction {}: {}", id, e);
                 Err(EconomicError::TransactionNotFound(id.to_string()))
             }
         }
@@ -214,7 +217,7 @@ impl EconomicSystem {
         match self.mutual_credit.get_account_balance(&account_id.to_string()) {
             Ok(balance) => Ok(balance),
             Err(e) => {
-                error!("Failed to get balance for account {}: {}", account_id, e);
+                log::error!("Failed to get balance for account {}: {}", account_id, e);
                 Err(EconomicError::AccountNotFound(account_id.to_string()))
             }
         }
@@ -226,18 +229,18 @@ impl EconomicSystem {
         
         // Check if democratic approval is required
         if self.config.democratic_credit_approval && credit_limit > self.config.max_automatic_credit_limit {
-            error!("Credit limit increase exceeds automatic limit and requires governance approval");
+            log::error!("Credit limit increase exceeds automatic limit and requires governance approval");
             return Err(EconomicError::InvalidTransaction(
                 "Credit limit increase requires governance approval".to_string()
             ));
         }
         
-        info!("Updating credit limit for account {} to {}", account_id, credit_limit);
+        log::info!("Updating credit limit for account {} to {}", account_id, credit_limit);
         
         match self.mutual_credit.update_credit_limit(&account_id.to_string(), limit) {
             Ok(account) => Ok(account),
             Err(e) => {
-                error!("Failed to update credit limit: {}", e);
+                log::error!("Failed to update credit limit: {}", e);
                 Err(EconomicError::Internal(e.to_string()))
             }
         }

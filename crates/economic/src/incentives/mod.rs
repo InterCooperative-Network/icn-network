@@ -1,11 +1,186 @@
-use crate::error::Error;
-use crate::assets::TokenManager;
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+//! Incentive mechanisms for the ICN economic system
+//!
+//! This module provides incentive structures for participation,
+//! contribution, and resource sharing within the ICN network.
+
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+
+use crate::{EconomicError, Result};
+
+/// Types of incentivized actions in the network
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum IncentiveActionType {
+    /// Providing storage resources
+    StorageProvision,
+    
+    /// Sharing data with other nodes
+    DataSharing,
+    
+    /// Participating in governance voting
+    GovernanceParticipation,
+    
+    /// Validating transactions/blocks
+    Validation,
+    
+    /// Contributing to code/documentation
+    Development,
+    
+    /// Running network infrastructure
+    Infrastructure,
+    
+    /// Custom incentive type
+    Custom(String),
+}
+
+/// An incentive model configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncentiveModelConfig {
+    /// Name of this incentive model
+    pub name: String,
+    
+    /// Description
+    pub description: String,
+    
+    /// Base reward rates for different action types
+    pub base_rewards: HashMap<IncentiveActionType, f64>,
+    
+    /// Time-based bonus multipliers
+    pub time_multipliers: Vec<(u64, f64)>, // (days active, multiplier)
+    
+    /// Reputation-based multipliers
+    pub reputation_multipliers: Vec<(u64, f64)>, // (rep score, multiplier)
+    
+    /// Is this incentive model active
+    pub active: bool,
+}
+
+impl Default for IncentiveModelConfig {
+    fn default() -> Self {
+        let mut base_rewards = HashMap::new();
+        base_rewards.insert(IncentiveActionType::StorageProvision, 1.0);
+        base_rewards.insert(IncentiveActionType::DataSharing, 0.5);
+        base_rewards.insert(IncentiveActionType::GovernanceParticipation, 2.0);
+        
+        Self {
+            name: "Default Incentive Model".to_string(),
+            description: "Basic incentive structure for network participation".to_string(),
+            base_rewards,
+            time_multipliers: vec![(30, 1.1), (90, 1.25), (180, 1.5)],
+            reputation_multipliers: vec![(50, 1.1), (75, 1.25), (90, 1.5)],
+            active: true,
+        }
+    }
+}
+
+/// Incentive system for encouraging positive behaviors in the network
+pub struct IncentiveSystem {
+    /// Active incentive model configurations
+    pub models: HashMap<String, IncentiveModelConfig>,
+}
+
+impl IncentiveSystem {
+    /// Create a new incentive system
+    pub fn new() -> Self {
+        let mut models = HashMap::new();
+        models.insert("default".to_string(), IncentiveModelConfig::default());
+        
+        Self { models }
+    }
+    
+    /// Register an action for incentives
+    pub async fn register_action(
+        &self,
+        model_id: &str,
+        action_type: IncentiveActionType,
+        account_id: &str,
+        amount: f64,
+        metadata: Option<HashMap<String, String>>,
+    ) -> Result<f64> {
+        // This would calculate rewards based on the model, user reputation, etc.
+        // For now, just return a basic calculation
+        
+        let model = self.models.get(model_id).ok_or_else(|| {
+            EconomicError::Internal(format!("Incentive model not found: {}", model_id))
+        })?;
+        
+        if !model.active {
+            return Err(EconomicError::Internal(
+                format!("Incentive model is not active: {}", model_id)
+            ));
+        }
+        
+        let base_reward = model.base_rewards.get(&action_type).copied().unwrap_or(0.0);
+        let reward = base_reward * amount;
+        
+        // In a real implementation, this would persist the action
+        // and trigger the actual reward transaction
+        
+        Ok(reward)
+    }
+    
+    /// Add a new incentive model
+    pub fn add_model(&mut self, id: &str, config: IncentiveModelConfig) {
+        self.models.insert(id.to_string(), config);
+    }
+    
+    /// Get an incentive model by ID
+    pub fn get_model(&self, id: &str) -> Option<&IncentiveModelConfig> {
+        self.models.get(id)
+    }
+    
+    /// Activate an incentive model
+    pub fn activate_model(&mut self, id: &str) -> Result<()> {
+        if let Some(model) = self.models.get_mut(id) {
+            model.active = true;
+            Ok(())
+        } else {
+            Err(EconomicError::Internal(format!("Incentive model not found: {}", id)))
+        }
+    }
+    
+    /// Deactivate an incentive model
+    pub fn deactivate_model(&mut self, id: &str) -> Result<()> {
+        if let Some(model) = self.models.get_mut(id) {
+            model.active = false;
+            Ok(())
+        } else {
+            Err(EconomicError::Internal(format!("Incentive model not found: {}", id)))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_incentive_system_basic() {
+        let system = IncentiveSystem::new();
+        assert!(system.models.contains_key("default"));
+        
+        let default_model = system.get_model("default").unwrap();
+        assert_eq!(default_model.name, "Default Incentive Model");
+        assert!(default_model.active);
+    }
+    
+    #[tokio::test]
+    async fn test_register_action() {
+        let system = IncentiveSystem::new();
+        
+        let reward = system.register_action(
+            "default",
+            IncentiveActionType::StorageProvision,
+            "user1",
+            10.0,
+            None
+        ).await.unwrap();
+        
+        assert_eq!(reward, 10.0); // 1.0 base reward * 10.0 amount
+    }
+}
 
 /// Types of contributions that can be incentivized
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
