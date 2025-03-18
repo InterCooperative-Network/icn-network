@@ -413,9 +413,11 @@ pub trait Governance: Send + Sync {
     async fn cancel_proposal(&self, proposal_id: &str) -> GovernanceResult<()>;
 }
 
-pub mod manager;
-pub mod voting;
 pub mod execution;
+pub mod voting;
+pub mod manager;
+pub mod dao;
+pub mod dsl;
 
 // Re-exports
 pub use manager::GovernanceManager;
