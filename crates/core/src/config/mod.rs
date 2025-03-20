@@ -1,271 +1,216 @@
-//! Configuration for ICN
-//!
-//! This module provides configuration utilities and types for ICN components.
-
-use std::collections::HashMap;
-use std::fmt;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::env;
+use std::error::Error;
+use std::fs;
+use std::path::Path;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::fs;
-use tokio::sync::RwLock;
-use serde::{Serialize, Deserialize};
-use tracing::{debug, error, info, warn};
 
-/// Error types for configuration operations
-#[derive(Error, Debug)]
+/// Errors that can occur in configuration operations
+#[derive(Debug, Error)]
 pub enum ConfigError {
-    /// Invalid configuration
-    #[error("Invalid configuration: {0}")]
-    InvalidConfig(String),
+    #[error("Environment variable not found: {0}")]
+    EnvVarNotFound(String),
     
-    /// IO error
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
+    #[error("Invalid value for environment variable {0}: {1}")]
+    InvalidEnvVar(String, String),
     
-    /// Parsing error
-    #[error("Parsing error: {0}")]
-    ParseError(String),
+    #[error("File not found: {0}")]
+    FileNotFound(String),
     
-    /// Key not found
-    #[error("Configuration key not found: {0}")]
-    KeyNotFound(String),
+    #[error("Failed to read file: {0}")]
+    FileReadError(String),
     
-    /// Value error
-    #[error("Invalid value for key {0}: {1}")]
-    InvalidValue(String, String),
+    #[error("Failed to parse YAML: {0}")]
+    YamlParseError(#[from] serde_yaml::Error),
+    
+    #[error("Other error: {0}")]
+    Other(String),
 }
 
 /// Result type for configuration operations
-pub type ConfigResult<T> = Result<T, ConfigError>;
+pub type Result<T> = std::result::Result<T, ConfigError>;
 
-/// Network configuration
+/// TLS Configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NetworkConfig {
-    /// Host to bind to
-    pub host: String,
-    /// Port to bind to
-    pub port: u16,
-    /// Bootstrap nodes
-    pub bootstrap_nodes: Vec<String>,
-    /// Maximum number of connections
-    pub max_connections: usize,
-    /// Connection timeout in seconds
-    pub connection_timeout: u64,
-    /// Heartbeat interval in seconds
-    pub heartbeat_interval: u64,
+pub struct TlsConfig {
+    pub enabled: bool,
+    pub cert_file: String,
+    pub key_file: String,
+    pub ca_file: String,
+    #[serde(default = "default_verify_client")]
+    pub verify_client: bool,
+    #[serde(default = "default_verify_hostname")]
+    pub verify_hostname: bool,
 }
 
-impl Default for NetworkConfig {
-    fn default() -> Self {
-        Self {
-            host: "127.0.0.1".to_string(),
-            port: 9000,
-            bootstrap_nodes: Vec::new(),
-            max_connections: 50,
-            connection_timeout: 5,
-            heartbeat_interval: 30,
-        }
-    }
+fn default_verify_client() -> bool {
+    true
 }
 
-/// Storage configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StorageConfig {
-    /// Path to storage directory
-    pub path: PathBuf,
-    /// Whether to sync writes immediately
-    pub sync_writes: bool,
-    /// Whether to create directories if they don't exist
-    pub create_dirs: bool,
-    /// Whether to use caching
-    pub use_cache: bool,
-    /// Maximum cache size in bytes
-    pub max_cache_size: usize,
+fn default_verify_hostname() -> bool {
+    true
 }
 
-impl Default for StorageConfig {
-    fn default() -> Self {
-        Self {
-            path: PathBuf::from("data"),
-            sync_writes: true,
-            create_dirs: true,
-            use_cache: true,
-            max_cache_size: 104_857_600, // 100 MB
-        }
-    }
-}
-
-/// Identity configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IdentityConfig {
-    /// Path to identity key file
-    pub key_file: PathBuf,
-    /// Generate a new identity if one doesn't exist
-    pub generate_if_missing: bool,
-    /// Friendly name for this node
-    pub friendly_name: String,
-}
-
-impl Default for IdentityConfig {
-    fn default() -> Self {
-        Self {
-            key_file: PathBuf::from("identity.key"),
-            generate_if_missing: true,
-            friendly_name: "ICN Node".to_string(),
-        }
-    }
-}
-
-/// Main configuration for an ICN node
+/// Main Node Configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
-    /// Network configuration
-    pub network: NetworkConfig,
-    /// Storage configuration
-    pub storage: StorageConfig,
-    /// Identity configuration
-    pub identity: IdentityConfig,
-    /// Environment (e.g., "development", "production")
-    pub environment: String,
-    /// Log level
+    pub node_id: String,
+    pub coop_id: String,
+    pub node_type: String,
+    pub listen_addr: String,
+    #[serde(default)]
+    pub peers: Vec<String>,
+    #[serde(default = "default_discovery_interval")]
+    pub discovery_interval: u64,
+    #[serde(default = "default_health_check_interval")]
+    pub health_check_interval: u64,
+    pub data_dir: String,
+    #[serde(default = "default_cert_dir")]
+    pub cert_dir: String,
+    #[serde(default = "default_log_dir")]
+    pub log_dir: String,
+    #[serde(default = "default_log_level")]
     pub log_level: String,
-    /// Additional custom configuration
-    pub custom: HashMap<String, serde_json::Value>,
+    pub tls: TlsConfig,
 }
 
-impl Default for NodeConfig {
-    fn default() -> Self {
-        Self {
-            network: NetworkConfig::default(),
-            storage: StorageConfig::default(),
-            identity: IdentityConfig::default(),
-            environment: "development".to_string(),
-            log_level: "info".to_string(),
-            custom: HashMap::new(),
-        }
-    }
+fn default_discovery_interval() -> u64 {
+    30
+}
+
+fn default_health_check_interval() -> u64 {
+    10
+}
+
+fn default_cert_dir() -> String {
+    "/etc/icn/certs".to_string()
+}
+
+fn default_log_dir() -> String {
+    "/var/log/icn".to_string()
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
 }
 
 impl NodeConfig {
-    /// Load configuration from a TOML file
-    pub async fn from_file<P: AsRef<Path>>(path: P) -> ConfigResult<Self> {
-        let content = fs::read_to_string(path).await
-            .map_err(|e| ConfigError::IoError(e))?;
+    /// Load configuration from environment variables
+    pub fn from_env() -> Result<Self> {
+        // Check if there's a configuration file path in the environment
+        let config_path = env::var("ICN_CONFIG_FILE").unwrap_or_else(|_| "/etc/icn/node.yaml".to_string());
         
-        let config: Self = toml::from_str(&content)
-            .map_err(|e| ConfigError::ParseError(format!("Failed to parse config: {}", e)))?;
-        
-        Ok(config)
-    }
-    
-    /// Save configuration to a TOML file
-    pub async fn save_to_file<P: AsRef<Path>>(&self, path: P) -> ConfigResult<()> {
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| ConfigError::ParseError(format!("Failed to serialize config: {}", e)))?;
-        
-        fs::write(path, content).await
-            .map_err(|e| ConfigError::IoError(e))?;
-        
-        Ok(())
-    }
-    
-    /// Get a custom value by key
-    pub fn get_custom<T: for<'de> Deserialize<'de>>(&self, key: &str) -> ConfigResult<T> {
-        let value = self.custom.get(key)
-            .ok_or_else(|| ConfigError::KeyNotFound(key.to_string()))?;
-        
-        serde_json::from_value(value.clone())
-            .map_err(|e| ConfigError::InvalidValue(
-                key.to_string(),
-                format!("Failed to deserialize value: {}", e)
-            ))
-    }
-    
-    /// Set a custom value by key
-    pub fn set_custom<T: Serialize>(&mut self, key: &str, value: T) -> ConfigResult<()> {
-        let json_value = serde_json::to_value(value)
-            .map_err(|e| ConfigError::InvalidValue(
-                key.to_string(),
-                format!("Failed to serialize value: {}", e)
-            ))?;
-        
-        self.custom.insert(key.to_string(), json_value);
-        Ok(())
-    }
-}
-
-/// A configuration provider interface
-#[async_trait::async_trait]
-pub trait ConfigProvider: Send + Sync {
-    /// Get configuration
-    async fn get_config(&self) -> ConfigResult<NodeConfig>;
-    
-    /// Set configuration
-    async fn set_config(&self, config: NodeConfig) -> ConfigResult<()>;
-}
-
-/// A file-based configuration provider
-pub struct FileConfigProvider {
-    /// Path to the configuration file
-    config_path: PathBuf,
-    /// Cached configuration
-    config: Arc<RwLock<Option<NodeConfig>>>,
-}
-
-impl FileConfigProvider {
-    /// Create a new file-based configuration provider
-    pub fn new<P: AsRef<Path>>(config_path: P) -> Self {
-        Self {
-            config_path: config_path.as_ref().to_path_buf(),
-            config: Arc::new(RwLock::new(None)),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl ConfigProvider for FileConfigProvider {
-    async fn get_config(&self) -> ConfigResult<NodeConfig> {
-        // Try to get from cache first
-        {
-            let config = self.config.read().await;
-            if let Some(config) = config.as_ref() {
-                return Ok(config.clone());
-            }
+        if Path::new(&config_path).exists() {
+            return Self::from_file(&config_path);
         }
         
-        // Load from file
-        let config = if self.config_path.exists() {
-            NodeConfig::from_file(&self.config_path).await?
+        // Otherwise, build config from environment variables
+        let node_id = env::var("ICN_NODE_ID")
+            .map_err(|e| ConfigError::EnvVarNotFound(format!("ICN_NODE_ID: {}", e)))?;
+            
+        let coop_id = env::var("ICN_COOP_ID")
+            .map_err(|e| ConfigError::EnvVarNotFound(format!("ICN_COOP_ID: {}", e)))?;
+            
+        let node_type = env::var("ICN_NODE_TYPE").unwrap_or_else(|_| "primary".to_string());
+        let listen_addr = env::var("ICN_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:9000".to_string());
+        
+        // Parse peers if provided
+        let peers_str = env::var("ICN_PEERS").unwrap_or_else(|_| "[]".to_string());
+        let peers: Vec<String> = if peers_str.starts_with('[') && peers_str.ends_with(']') {
+            // Try to parse as JSON array
+            serde_json::from_str(&peers_str)
+                .map_err(|e| ConfigError::InvalidEnvVar("ICN_PEERS".to_string(), e.to_string()))?
         } else {
-            // Create default configuration if file doesn't exist
-            let config = NodeConfig::default();
-            config.save_to_file(&self.config_path).await?;
-            config
+            // Try to parse as comma-separated list
+            peers_str.split(',').map(|s| s.trim().to_string()).collect()
         };
         
-        // Update cache
-        {
-            let mut cache = self.config.write().await;
-            *cache = Some(config.clone());
-        }
+        let discovery_interval = env::var("ICN_DISCOVERY_INTERVAL")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or_else(default_discovery_interval);
+            
+        let health_check_interval = env::var("ICN_HEALTH_CHECK_INTERVAL")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or_else(default_health_check_interval);
+            
+        let data_dir = env::var("ICN_DATA_DIR").unwrap_or_else(|_| "/var/lib/icn".to_string());
+        let cert_dir = env::var("ICN_CERT_DIR").unwrap_or_else(|_| default_cert_dir());
+        let log_dir = env::var("ICN_LOG_DIR").unwrap_or_else(|_| default_log_dir());
+        let log_level = env::var("ICN_LOG_LEVEL").unwrap_or_else(|_| default_log_level());
         
-        Ok(config)
+        // TLS configuration
+        let tls_enabled = env::var("ICN_TLS_ENABLED")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(true);
+            
+        let tls_config = TlsConfig {
+            enabled: tls_enabled,
+            cert_file: format!("{}/node.crt", cert_dir),
+            key_file: format!("{}/node.key", cert_dir),
+            ca_file: format!("{}/ca.crt", cert_dir),
+            verify_client: env::var("ICN_VERIFY_CLIENT")
+                .ok()
+                .and_then(|v| v.parse::<bool>().ok())
+                .unwrap_or_else(default_verify_client),
+            verify_hostname: env::var("ICN_VERIFY_HOSTNAME")
+                .ok()
+                .and_then(|v| v.parse::<bool>().ok())
+                .unwrap_or_else(default_verify_hostname),
+        };
+        
+        Ok(NodeConfig {
+            node_id,
+            coop_id,
+            node_type,
+            listen_addr,
+            peers,
+            discovery_interval,
+            health_check_interval,
+            data_dir,
+            cert_dir,
+            log_dir,
+            log_level,
+            tls: tls_config,
+        })
     }
     
-    async fn set_config(&self, config: NodeConfig) -> ConfigResult<()> {
-        // Save to file
-        config.save_to_file(&self.config_path).await?;
-        
-        // Update cache
-        {
-            let mut cache = self.config.write().await;
-            *cache = Some(config);
-        }
-        
-        Ok(())
+    /// Load configuration from file
+    pub fn from_file(path: &str) -> Result<Self> {
+        let contents = fs::read_to_string(path)
+            .map_err(|e| ConfigError::FileReadError(format!("Failed to read {}: {}", path, e)))?;
+            
+        let config: NodeConfig = serde_yaml::from_str(&contents)?;
+        Ok(config)
     }
 }
 
-pub mod env;
-pub mod command_line; 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_default_config() {
+        let config = NodeConfig::from_env().unwrap();
+        assert_eq!(config.node_type, "primary");
+        assert_eq!(config.listen_addr, "0.0.0.0:9000");
+        assert_eq!(config.discovery_interval, 30);
+        assert_eq!(config.health_check_interval, 10);
+        assert_eq!(config.cert_dir, "/etc/icn/certs");
+        assert_eq!(config.log_dir, "/var/log/icn");
+        assert_eq!(config.log_level, "info");
+    }
+    
+    #[test]
+    fn test_tls_config() {
+        let config = NodeConfig::from_env().unwrap();
+        assert!(config.tls.enabled);
+        assert!(config.tls.verify_client);
+        assert!(config.tls.verify_hostname);
+        assert!(config.tls.cert_file.ends_with("node.crt"));
+        assert!(config.tls.key_file.ends_with("node.key"));
+        assert!(config.tls.ca_file.ends_with("ca.crt"));
+    }
+}

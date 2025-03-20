@@ -23,6 +23,28 @@ pub use icn_mutual_credit::{
     TransactionType
 };
 
+pub mod incentives;
+pub mod resource;
+pub mod ledger;
+
+// Re-export common types
+pub use resource::{
+    ResourceType,
+    ResourceConfig,
+    Resource,
+    ResourceQuota,
+};
+
+pub use ledger::{
+    MutualCreditLedger,
+    MutualCreditSystem,
+    AccountBalance,
+    Transaction,
+    AccountManager,
+    Account,
+    TransactionProcessor,
+};
+
 /// Economic error types
 #[derive(Debug, thiserror::Error)]
 pub enum EconomicError {

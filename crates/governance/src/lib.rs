@@ -550,4 +550,26 @@ impl From<icn_identity::IdentityError> for GovernanceError {
     fn from(err: icn_identity::IdentityError) -> Self {
         Self::IdentityError(err.to_string())
     }
-} 
+}
+
+pub mod federation;
+pub use federation::{
+    coordination::{
+        FederationInfo,
+        FederationPolicy,
+        PolicyType,
+        PolicyStatus,
+        FederationAgreement,
+        SharedResource,
+        ResourceUsageLimits,
+        AgreementStatus,
+    },
+    storage_manager::{
+        FederationStorageConfig,
+        FederationStorageStats,
+        StorageRoute,
+    },
+    FederationConfig,
+    FederationCoordinator,
+    Federation,
+}; 

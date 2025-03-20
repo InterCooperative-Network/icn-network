@@ -13,8 +13,6 @@ icn-core = { path = "crates/core" }
 icn-governance = { path = "crates/governance" }
 icn-network = { path = "crates/network" }
 icn-economic = { path = "crates/economic" }
-icn-federation = { path = "crates/federation" }
-icn-resource = { path = "crates/resource" }
 icn-storage = { path = "crates/storage" }
 icn-dsl = { path = "crates/dsl" }
 icn-vm = { path = "crates/vm" }
@@ -55,7 +53,6 @@ anyhow = "1.0"
 
 [workspace]
 members = [
-    "crates/common",
     "crates/vm",
     "crates/dsl",
     "crates/identity",
@@ -63,7 +60,11 @@ members = [
     "crates/network",
     "crates/governance",
     "crates/economic",
-    "crates/node"
+    "crates/node",
+    "crates/core",
+    "crates/cli",
+    "crates/integration",
+    "crates/apps"
 ]
 
 [workspace.dependencies]

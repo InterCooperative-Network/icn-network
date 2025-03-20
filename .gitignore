@@ -27,5 +27,9 @@ Thumbs.db
 target/
 */target/
 
+# Code dump files
+codedump_output.txt
+codedump
+
 # Kubernetes generated backups
 kubernetes_backup_*/

@@ -10,6 +10,52 @@ license = "MIT OR Apache-2.0"
 tokio = { version = "1.32", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "1.0"
+anyhow = "1.0"
+async-trait = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+rand = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.4", features = ["derive"] }
+toml = "0.7"
+hex = { workspace = true }
+bs58 = { workspace = true }
+bincode = "1.3.3"
+uuid = { version = "1.4", features = ["v4", "serde"] }
+
+# Networking
+quinn = "0.10"  # QUIC protocol implementation
+socket2 = "0.5"
+rustls = { version = "0.21", features = ["dangerous_configuration"] }
+
+# Storage
+sled = "0.34"  # Embedded database
+
+# Cryptography
+ring = { workspace = true }
+ed25519-dalek = "1.0"
+sha2 = "0.10"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.8"
+
+[features]
+[package]
+name = "icn-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core functionality for the ICN Network"
+authors = ["ICN Developers"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tokio = { version = "1.32", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
 thiserror = "1.0"
 anyhow = "1.0"
 async-trait = { workspace = true }

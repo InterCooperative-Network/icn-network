@@ -1,0 +1,10 @@
+# Large generated files
+codedump_output.txt
+codedump
+
+# Build directories
+target/
+*/target/
+
+# Dependencies
+node_modules/ 

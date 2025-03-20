@@ -4,6 +4,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
+// Add the contracts module
+pub mod contracts;
+pub use contracts::{
+    ContractError,
+    ContractRegistry,
+    TemplateEngine,
+    Template,
+    Script,
+    Expression,
+    Value,
+};
+
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
 pub struct ICNParser;

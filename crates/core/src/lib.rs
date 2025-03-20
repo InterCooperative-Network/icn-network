@@ -42,17 +42,30 @@ pub enum Error {
 /// Common Result type for ICN crates
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub mod storage;
-pub mod networking;
 pub mod crypto;
-pub mod config;
+pub mod storage;
 pub mod utils;
+pub mod networking;
 pub mod identity;
+pub mod common;
+pub mod config;
+
+// Re-export common types
+pub use common::{
+    CommonError,
+    Result,
+    DID,
+    Value,
+    EntityId,
+    Timestamp,
+    OperationContext,
+};
 
 // Re-export key components
 pub use storage::Storage;
 pub use crypto::{CryptoUtils, Hash, Signature};
 pub use identity::{Identity, DidDocument, Credential};
+pub use config::{NodeConfig, TlsConfig, ConfigError};
 
 /// Version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -20,7 +20,7 @@ tracing = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 dashmap = { workspace = true }
-chrono = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
 
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
