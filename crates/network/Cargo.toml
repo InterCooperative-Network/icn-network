@@ -40,12 +40,26 @@ void = "1.0.2"
 prometheus = { version = "0.13", default-features = false }
 hyper = { version = "0.14", features = ["server", "tcp", "http1"] }
 
+# Additional dependencies from networking crate
+log = "0.4"
+chrono = "0.4"
+
+# Optional dependencies for different network transports
+tls-api = { version = "0.9", optional = true }
+wireguard = { version = "0.1", optional = true }
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.8"
 test-log = { version = "0.2", features = ["trace"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 criterion = { version = "0.5", features = ["async_tokio"] }
+
+[features]
+default = []
+tls = ["tls-api"]
+wireguard-tunnel = ["wireguard"]
+onion-routing = []
 
 [[bench]]
 name = "network_benchmarks"

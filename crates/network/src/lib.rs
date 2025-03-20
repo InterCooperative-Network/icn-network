@@ -6,6 +6,7 @@
 //! - Network service interfaces
 //! - Peer synchronization protocols
 //! - Reputation management for peer reliability
+//! - Overlay network functionality for advanced routing
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -128,6 +129,10 @@ pub enum NetworkError {
     /// Invalid peer ID
     #[error("Invalid peer ID: {0}")]
     InvalidPeerId(String),
+    
+    /// Reputation system error
+    #[error("Reputation error: {0}")]
+    ReputationError(String),
     
     /// Configuration error
     #[error("Configuration error: {0}")]
@@ -350,13 +355,14 @@ pub mod messaging;
 pub mod sync;
 pub mod metrics;
 pub mod reputation;
+pub mod reputation_system;
 pub mod circuit_relay;
 pub mod adapter;
+pub mod overlay;
 
 /// Private modules
 mod libp2p_compat;
-
-#[cfg(test)]
+mod config;
 mod test_reputation;
 mod tests;
 
@@ -403,4 +409,28 @@ mod peer_id_serde {
 }
 
 /// Re-export adapter functions
-pub use adapter::{core_to_network_message, network_to_core_message}; 
+pub use adapter::{core_to_network_message, network_to_core_message};
+
+/// Re-export overlay functionality
+pub use overlay::{
+    // Core overlay components
+    OverlayNetworkManager, OverlayNetworkService, OverlayAddress, 
+    OverlayOptions, MessagePriority, Ipv6Packet,
+    
+    // Tunnel-related functionality
+    TunnelType, TunnelInfo, ForwardingPolicy,
+    
+    // Address components from overlay::address
+    AddressSpace, AddressAllocationStrategy, AddressError,
+    
+    // DHT components
+    DistributedHashTable, Key, Value,
+};
+
+/// Re-export node types
+pub use overlay::node::{Node, NodeId, NodeInfo, NodeStatus};
+
+/// Re-export tunneling functionality
+pub use overlay::tunneling::{
+    TunnelManager, TunnelStats, TunnelStatus, TunnelError, WireGuardConfig
+}; 

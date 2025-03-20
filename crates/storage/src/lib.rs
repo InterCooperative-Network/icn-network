@@ -1,11 +1,11 @@
 //! Storage system for the Intercooperative Network
 //!
-//! This crate provides the storage functionality for the ICN, including:
-//! - Distributed storage
-//! - Versioning
-//! - Quota management
-//! - Metrics collection
-//! - Memory storage implementation
+//! This crate provides storage services for the ICN, including:
+//! - Local storage of data using various backends
+//! - Data versioning
+//! - Storage metrics tracking
+//! - Distributed storage capabilities
+//! - Federation-based storage routing
 
 use std::error::Error;
 use std::fmt;
@@ -22,6 +22,8 @@ pub mod versioning;
 pub mod metrics;
 pub mod quota;
 pub mod memory_storage;
+pub mod distributed;
+pub mod federation;
 
 // Re-export commonly used types and functions
 pub use versioning::{
@@ -44,6 +46,29 @@ pub use quota::{
     QuotaError,
     UsageStats,
 };
+
+// Public exports for distributed storage
+pub use distributed::{
+    dht::DistributedHashTable,
+    encryption::StorageEncryption,
+    location::StorageLocation,
+    peer::StoragePeer,
+    policy::StoragePolicy,
+    versioning::DistributedVersioning,
+};
+
+// Public exports for federation storage
+pub use federation::{
+    FederationStorageRouter,
+    RouterConfig,
+    StorageRoute,
+    RoutingStrategy,
+};
+
+// Re-exports from this crate
+pub use crate::memory_storage::MemoryStorage;
+pub use crate::quota::QuotaManager;
+pub use crate::versioning::VersionedStorage;
 
 /// Storage-related errors
 #[derive(Debug, Clone, Error)]

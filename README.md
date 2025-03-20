@@ -20,9 +20,10 @@ icn/
 ├── crates/                    # Workspace crates
 │   ├── core/                 # Core functionality and utilities
 │   ├── network/              # Networking and peer-to-peer communication
-│   ├── networking/           # Network layer implementation
-│   ├── storage/              # Distributed storage 
-│   ├── distributed-storage/  # Enhanced storage capabilities
+│   │   └── overlay/          # Overlay network functionality
+│   ├── storage/              # Storage system with distributed capabilities
+│   │   ├── distributed/      # Distributed storage
+│   │   └── federation/       # Federation storage routing  
 │   ├── governance/           # Governance mechanisms
 │   ├── economic/             # Economic and mutual credit models
 │   ├── identity/             # Identity management (DIDs)
@@ -43,6 +44,8 @@ icn/
 ├── kubernetes/               # Kubernetes deployment configurations
 └── config/                   # Configuration files and templates
 ```
+
+> **Note**: We've consolidated related crates to improve maintainability. Previously separate crates like `networking`, `distributed-storage`, and `federation-storage-router` have been integrated into the `network` and `storage` crates. See [docs/crate-consolidation.md](docs/crate-consolidation.md) for details.
 
 ## Features
 

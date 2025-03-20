@@ -178,7 +178,11 @@ pub fn sha256(data: &[u8]) -> Hash {
 
 pub mod merkle;
 pub mod identity;
+pub mod utils;
+pub mod storage_encryption;
 
 // Re-exports
 pub use merkle::MerkleTree;
-pub use identity::IdentityKeyPair; 
+pub use identity::IdentityKeyPair;
+pub use utils::CryptoUtils;
+pub use storage_encryption::{StorageEncryptionService, EncryptionMetadata, EncryptionError}; 

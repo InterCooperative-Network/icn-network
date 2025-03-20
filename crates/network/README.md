@@ -1,98 +1,73 @@
 # ICN Network
 
-The network communication layer for the InterCooperative Network (ICN). This crate provides a peer-to-peer networking solution using libp2p, enabling nodes in the network to discover each other, exchange messages, and synchronize state.
+This crate provides the network layer for the InterCooperative Network (ICN).
+
+## Overview
+
+The network crate is responsible for all networking functionality in the ICN system, including:
+
+- Peer-to-peer communication using libp2p
+- Message serialization and exchange
+- Network service interfaces
+- Peer discovery and connection management
+- Reputation management for peer reliability
+- Circuit relay for NAT traversal
+- Overlay network functionality for advanced routing
+
+## Structure
+
+The crate is organized into the following modules:
+
+- `p2p`: Core peer-to-peer networking using libp2p
+- `discovery`: Peer discovery mechanisms
+- `messaging`: Message handling and routing
+- `sync`: Synchronization primitives and protocols
+- `circuit_relay`: NAT traversal functionality
+- `reputation`: Peer reputation management
+- `overlay`: Overlay network functionality for advanced routing features
+  - `tunneling`: Secure tunnel implementation
+  - `node`: Node management and status tracking
 
 ## Features
 
-- **Peer-to-peer networking** - Establish connections with other nodes in the network
-- **Peer discovery** - Find other nodes using various discovery mechanisms
-- **Messaging** - Send and receive different types of messages
-- **State synchronization** - Keep the network state in sync across nodes
-- **Metrics and monitoring** - Collect and expose performance metrics
-- **Peer Reputation System** - Track and manage peer reliability and behavior
-- **Priority Message Processing** - Process messages based on reputation and message type priority
-- **Circuit Relay** - Enable NAT traversal for nodes behind firewalls
+This crate supports the following feature flags:
 
-## Components
+- `tls`: Enables TLS transport encryption using `tls-api`
+- `wireguard-tunnel`: Enables WireGuard tunneling functionality
+- `onion-routing`: Enables onion routing for privacy enhancement
 
-### P2P Network
+## Consolidated Modules
 
-The core P2P networking functionality is implemented in the `P2pNetwork` struct, which provides:
+This crate has consolidated functionality from the following previously separate crates:
 
-- Starting and stopping the network service
-- Broadcasting messages to the entire network
-- Sending messages to specific peers
-- Connecting to and disconnecting from peers
-- Retrieving peer information
-
-### Discovery
-
-The discovery module provides mechanisms for finding other nodes in the network:
-
-- Local network discovery using mDNS
-- Distributed Hash Table (DHT) based discovery using Kademlia
-- Bootstrap peer list for initial connections
-
-### Messaging
-
-The messaging module handles the exchange of various message types:
-
-- Identity announcements
-- Transaction announcements
-- Ledger state updates
-- Governance proposal announcements
-- Vote announcements
-- Custom messages
-
-### Synchronization
-
-The synchronization module ensures that all nodes have a consistent view of the network state:
-
-- Ledger state synchronization
-- Identity state synchronization
-- Governance state synchronization
-
-### Metrics
-
-The metrics module provides comprehensive monitoring of network performance:
-
-- Connection metrics (peers connected, connections established, disconnects)
-- Message metrics (messages received/sent by type, message size, processing time)
-- Discovery metrics (peers discovered, discovery methods)
-- Resource usage (memory, CPU)
-- Error tracking
+- `networking`: Overlay network capabilities
+  - Now incorporated as `network::overlay`
 
 ## Usage
 
-### Basic Example
+To use this crate, add it to your `Cargo.toml`:
+
+```toml
+[dependencies]
+icn-network = { path = "../network" }
+```
+
+Basic usage example:
 
 ```rust
-use std::sync::Arc;
-use icn_core::storage::mock_storage::MockStorage;
-use icn_network::{P2pNetwork, P2pConfig, NetworkService};
+use icn_network::{P2pConfig, P2pNetwork, NetworkService};
 
-async fn main() -> anyhow::Result<()> {
-    // Create a storage backend
-    let storage = Arc::new(MockStorage::new());
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create a network configuration
+    let config = P2pConfig::default();
     
-    // Configure the network
-    let mut config = P2pConfig::default();
-    config.listen_addresses = vec!["/ip4/0.0.0.0/tcp/8000".parse()?];
-    
-    // Create and start the network
-    let network = P2pNetwork::new(storage, config).await?;
+    // Create and start a network instance
+    let network = P2pNetwork::new(config)?;
     network.start().await?;
     
-    // Connect to a peer
-    let peer_addr = "/ip4/127.0.0.1/tcp/8001/p2p/QmPeerID".parse()?;
-    network.connect(&peer_addr).await?;
-    
-    // Broadcast a message
-    let message = /* create a message */;
-    network.broadcast(message).await?;
-    
-    // Stop the network when done
-    network.stop().await?;
+    // Use network services
+    let peers = network.get_connected_peers().await?;
+    println!("Connected peers: {:?}", peers);
     
     Ok(())
 }

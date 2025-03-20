@@ -47,9 +47,12 @@ pub mod networking;
 pub mod crypto;
 pub mod config;
 pub mod utils;
+pub mod identity;
 
 // Re-export key components
 pub use storage::Storage;
+pub use crypto::{CryptoUtils, Hash, Signature};
+pub use identity::{Identity, DidDocument, Credential};
 
 /// Version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

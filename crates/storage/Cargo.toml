@@ -20,4 +20,13 @@ chrono = { version = "0.4", features = ["serde"] }
 sha2 = { workspace = true }
 hex = { workspace = true }
 bs58 = { workspace = true }
-icn-core = { path = "../core" } 
+icn-core = { path = "../core" }
+icn-federation = { path = "../federation" }
+bincode = "1.3.3"
+log = "0.4"
+
+# Features
+[features]
+default = ["distributed", "federation"]
+distributed = []
+federation = [] 
