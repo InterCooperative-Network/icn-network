@@ -1,0 +1,23 @@
+[package]
+name = "icn-storage"
+version = "0.1.0"
+edition = "2021"
+authors = ["ICN Contributors"]
+description = "Storage system for the Intercooperative Network"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { version = "1.4", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = { workspace = true }
+hex = { workspace = true }
+bs58 = { workspace = true }
+icn-core = { path = "../core" } 

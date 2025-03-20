@@ -39,7 +39,7 @@ impl JsonStorage for Arc<dyn icn_core::storage::Storage> {
 }
 
 // Public modules
-pub mod identity;
+// pub mod identity;
 pub mod storage;
 pub mod crypto;
 pub mod resource_sharing;
@@ -108,7 +108,7 @@ pub async fn run_node() -> Result<(), Box<dyn Error>> {
 }
 
 // Export the core types we need
-pub use identity::Identity;
+// pub use identity::Identity;
 pub use icn_core::storage::Storage;
 pub use federation_governance::*;
 pub use cross_federation_governance::*;

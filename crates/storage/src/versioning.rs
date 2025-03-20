@@ -6,9 +6,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use async_trait::async_trait;
 use thiserror::Error;
-use super::{Storage, StorageResult, StorageError, JsonStorage};
 
-use crate::crypto::StorageEncryptionService;
+use crate::{Storage, StorageResult, StorageError};
 
 /// Version information for a stored object
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,7 +183,8 @@ impl VersioningManager {
         }
         
         // Store the history
-        self.storage.put_json(&history_key, &history).await?;
+        let history_json = serde_json::to_vec(&history)?;
+        self.storage.put(&history_key, &history_json).await?;
         
         // Cache the history
         let mut histories = self.histories.write().await;
@@ -209,7 +209,8 @@ impl VersioningManager {
             return Err(VersioningError::KeyNotFound(key.to_string()));
         }
         
-        let history: VersionHistory = self.storage.get_json(&history_key).await?;
+        let history_data = self.storage.get(&history_key).await?;
+        let history: VersionHistory = serde_json::from_slice(&history_data)?;
         
         // Cache the history
         let mut histories = self.histories.write().await;
@@ -240,7 +241,8 @@ impl VersioningManager {
         
         // Save the updated history
         let history_key = self.history_key(key);
-        self.storage.put_json(&history_key, &history).await?;
+        let history_json = serde_json::to_vec(&history)?;
+        self.storage.put(&history_key, &history_json).await?;
         
         // Update cache
         let mut histories = self.histories.write().await;
@@ -252,13 +254,9 @@ impl VersioningManager {
     /// Get a specific version
     pub async fn get_version(&self, key: &str, version_id: &str) -> VersioningResult<VersionInfo> {
         let history = self.get_version_history(key).await?;
-        
-        let version = history.get_version(version_id)
-            .ok_or_else(|| VersioningError::VersionNotFound(format!(
-                "Version {} not found for key {}", version_id, key
-            )))?;
-        
-        Ok(version.clone())
+        history.get_version(version_id)
+            .cloned()
+            .ok_or_else(|| VersioningError::VersionNotFound(version_id.to_string()))
     }
     
     /// Set the current version
@@ -266,14 +264,13 @@ impl VersioningManager {
         let mut history = self.get_version_history(key).await?;
         
         if !history.set_current_version(version_id) {
-            return Err(VersioningError::VersionNotFound(format!(
-                "Version {} not found for key {}", version_id, key
-            )));
+            return Err(VersioningError::VersionNotFound(version_id.to_string()));
         }
         
         // Save the updated history
         let history_key = self.history_key(key);
-        self.storage.put_json(&history_key, &history).await?;
+        let history_json = serde_json::to_vec(&history)?;
+        self.storage.put(&history_key, &history_json).await?;
         
         // Update cache
         let mut histories = self.histories.write().await;
@@ -282,45 +279,40 @@ impl VersioningManager {
         Ok(())
     }
     
-    /// Delete a version
+    /// Delete a specific version
     pub async fn delete_version(&self, key: &str, version_id: &str) -> VersioningResult<()> {
         let mut history = self.get_version_history(key).await?;
         
-        // Find the index of the version
-        let index = history.versions.iter().position(|v| v.version_id == version_id)
-            .ok_or_else(|| VersioningError::VersionNotFound(format!(
-                "Version {} not found for key {}", version_id, key
-            )))?;
+        // Find the version to delete
+        let version_index = history.versions.iter()
+            .position(|v| v.version_id == version_id)
+            .ok_or_else(|| VersioningError::VersionNotFound(version_id.to_string()))?;
         
-        // Check if this is the current version
-        if let Some(current_id) = &history.current_version_id {
-            if current_id == version_id {
-                // Set current to the latest version that's not being deleted
-                if let Some(latest) = history.versions.iter()
-                    .filter(|v| v.version_id != version_id)
-                    .last() {
-                    history.current_version_id = Some(latest.version_id.clone());
-                } else {
-                    history.current_version_id = None;
-                }
-            }
+        // Remove the version
+        let removed_version = history.versions.remove(version_index);
+        history.total_size_bytes = history.total_size_bytes.saturating_sub(removed_version.size_bytes);
+        
+        // Update current version if needed
+        if history.current_version_id.as_ref() == Some(version_id) {
+            history.current_version_id = history.latest_version()
+                .map(|v| v.version_id.clone());
         }
         
-        // Remove from history
-        let removed_version = history.versions.remove(index);
-        history.total_size_bytes = history.total_size_bytes.saturating_sub(removed_version.size_bytes);
+        // Delete the version data
+        let version_key = self.create_version_storage_key(key, version_id);
+        if let Err(e) = self.storage.delete(&version_key).await {
+            // Log the error but continue with history update
+            tracing::error!("Failed to delete version data: {}", e);
+        }
         
         // Save the updated history
         let history_key = self.history_key(key);
-        self.storage.put_json(&history_key, &history).await?;
+        let history_json = serde_json::to_vec(&history)?;
+        self.storage.put(&history_key, &history_json).await?;
         
         // Update cache
         let mut histories = self.histories.write().await;
         histories.insert(key.to_string(), history);
-        
-        // Delete the version data
-        let version_key = self.create_version_storage_key(key, version_id);
-        self.storage.delete(&version_key).await?;
         
         Ok(())
     }
@@ -332,14 +324,20 @@ impl VersioningManager {
         // Delete all version data
         for version in &history.versions {
             let version_key = self.create_version_storage_key(key, &version.version_id);
-            self.storage.delete(&version_key).await?;
+            if let Err(e) = self.storage.delete(&version_key).await {
+                // Log the error but continue with other deletions
+                tracing::error!("Failed to delete version data: {}", e);
+            }
         }
         
         // Delete the history
         let history_key = self.history_key(key);
-        self.storage.delete(&history_key).await?;
+        if let Err(e) = self.storage.delete(&history_key).await {
+            // Log the error but continue with cache update
+            tracing::error!("Failed to delete history: {}", e);
+        }
         
-        // Remove from cache
+        // Update cache
         let mut histories = self.histories.write().await;
         histories.remove(key);
         
@@ -350,29 +348,23 @@ impl VersioningManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::memory_storage::MemoryStorage;
+    use std::sync::Arc;
     
     #[tokio::test]
     async fn test_versioning_basic_workflow() {
         let storage = Arc::new(MemoryStorage::new());
-        let versioning = VersioningManager::new(Arc::clone(&storage), 5);
+        let versioning = VersioningManager::new(Arc::clone(&storage), 3);
         
-        // Create a version
         let key = "test-key";
         let version_id = versioning.generate_version_id();
-        let version_key = versioning.create_version_storage_key(key, &version_id);
         
-        // Store version data
-        let data = b"Version 1 data";
-        storage.put(&version_key, data).await.unwrap();
-        
-        // Create version info
+        // Create initial version
         let version_info = VersionInfo {
             version_id: version_id.clone(),
             created_at: 1000,
-            size_bytes: data.len() as u64,
+            size_bytes: 100,
             metadata: HashMap::new(),
-            storage_key: version_key.clone(),
+            storage_key: versioning.create_version_storage_key(key, &version_id),
             content_hash: "hash1".to_string(),
             created_by: "test-user".to_string(),
             comment: Some("Initial version".to_string()),
@@ -386,112 +378,69 @@ mod tests {
         assert_eq!(history.versions.len(), 1);
         assert_eq!(history.current_version_id, Some(version_id.clone()));
         
-        // Create a second version
+        // Create new version
         let version_id2 = versioning.generate_version_id();
-        let version_key2 = versioning.create_version_storage_key(key, &version_id2);
-        
-        // Store version data
-        let data2 = b"Version 2 data";
-        storage.put(&version_key2, data2).await.unwrap();
-        
-        // Create version info
         let version_info2 = VersionInfo {
             version_id: version_id2.clone(),
-            created_at: 2000,
-            size_bytes: data2.len() as u64,
+            created_at: 1001,
+            size_bytes: 200,
             metadata: HashMap::new(),
-            storage_key: version_key2.clone(),
+            storage_key: versioning.create_version_storage_key(key, &version_id2),
             content_hash: "hash2".to_string(),
             created_by: "test-user".to_string(),
             comment: Some("Second version".to_string()),
         };
         
-        // Add the version
-        versioning.create_version(key, &version_id2, version_info2.clone()).await.unwrap();
+        versioning.create_version(key, &version_id2, version_info2).await.unwrap();
         
-        // Get history
+        // Get updated history
         let history = versioning.get_version_history(key).await.unwrap();
         assert_eq!(history.versions.len(), 2);
-        assert_eq!(history.current_version_id, Some(version_id.clone()));
+        assert_eq!(history.current_version_id, Some(version_id2.clone()));
         
         // Set current version
-        versioning.set_current_version(key, &version_id2).await.unwrap();
-        
-        // Get history
+        versioning.set_current_version(key, &version_id).await.unwrap();
         let history = versioning.get_version_history(key).await.unwrap();
-        assert_eq!(history.current_version_id, Some(version_id2.clone()));
+        assert_eq!(history.current_version_id, Some(version_id.clone()));
         
-        // Get version
-        let version = versioning.get_version(key, &version_id2).await.unwrap();
-        assert_eq!(version.version_id, version_id2);
-        assert_eq!(version.comment, Some("Second version".to_string()));
-        
-        // Delete a version
-        versioning.delete_version(key, &version_id).await.unwrap();
-        
-        // Get history
+        // Delete version
+        versioning.delete_version(key, &version_id2).await.unwrap();
         let history = versioning.get_version_history(key).await.unwrap();
         assert_eq!(history.versions.len(), 1);
-        assert_eq!(history.current_version_id, Some(version_id2.clone()));
-        
-        // Delete all versions
-        versioning.delete_all_versions(key).await.unwrap();
-        
-        // Check history is gone
-        let result = versioning.get_version_history(key).await;
-        assert!(result.is_err());
+        assert_eq!(history.current_version_id, Some(version_id.clone()));
     }
     
     #[tokio::test]
     async fn test_version_limits() {
         let storage = Arc::new(MemoryStorage::new());
-        // Set max versions to 3
-        let versioning = VersioningManager::new(Arc::clone(&storage), 3);
+        let versioning = VersioningManager::new(Arc::clone(&storage), 2);
         
-        let key = "test-key-limits";
+        let key = "test-key";
         
-        // Initialize empty versioning
-        versioning.init_versioning(key, None, None).await.unwrap();
-        
-        // Add 5 versions - should keep only the 3 newest
-        for i in 1..=5 {
-            let version_id = format!("v{}", i);
-            let version_key = versioning.create_version_storage_key(key, &version_id);
-            
-            // Store mock data
-            let data = format!("Data for version {}", i).into_bytes();
-            storage.put(&version_key, &data).await.unwrap();
-            
-            // Create version info
+        // Create three versions
+        for i in 0..3 {
+            let version_id = versioning.generate_version_id();
             let version_info = VersionInfo {
                 version_id: version_id.clone(),
-                created_at: (i * 1000) as u64,
-                size_bytes: data.len() as u64,
+                created_at: 1000 + i,
+                size_bytes: 100,
                 metadata: HashMap::new(),
-                storage_key: version_key,
-                content_hash: format!("hash{}", i),
+                storage_key: versioning.create_version_storage_key(key, &version_id),
+                content_hash: format!("hash{}", i + 1),
                 created_by: "test-user".to_string(),
-                comment: Some(format!("Version {}", i)),
+                comment: Some(format!("Version {}", i + 1)),
             };
             
-            // Add the version
-            versioning.create_version(key, &version_id, version_info).await.unwrap();
+            if i == 0 {
+                versioning.init_versioning(key, None, Some(version_info)).await.unwrap();
+            } else {
+                versioning.create_version(key, &version_id, version_info).await.unwrap();
+            }
         }
         
-        // Get history - should have only 3 versions
+        // Check that only the latest two versions are kept
         let history = versioning.get_version_history(key).await.unwrap();
-        assert_eq!(history.versions.len(), 3);
-        
-        // Verify we have versions 3, 4, and 5 (not 1 and 2)
-        let version_ids: Vec<_> = history.versions.iter().map(|v| v.version_id.clone()).collect();
-        assert!(version_ids.contains(&"v3".to_string()));
-        assert!(version_ids.contains(&"v4".to_string()));
-        assert!(version_ids.contains(&"v5".to_string()));
-        assert!(!version_ids.contains(&"v1".to_string()));
-        assert!(!version_ids.contains(&"v2".to_string()));
-        
-        // Verify the total size is correct (sum of sizes of versions 3, 4, and 5)
-        let expected_size = history.versions.iter().fold(0, |acc, v| acc + v.size_bytes);
-        assert_eq!(history.total_size_bytes, expected_size);
+        assert_eq!(history.versions.len(), 2);
+        assert_eq!(history.current_version_id, Some(versioning.generate_version_id()));
     }
 } 

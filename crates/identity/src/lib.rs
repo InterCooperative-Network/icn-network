@@ -6,6 +6,12 @@
 
 use std::collections::HashMap;
 use async_trait::async_trait;
+use std::sync::Arc;
+use icn_core::storage::Storage;
+
+// Re-export DID and credential types
+pub use did::{DidDocument, DidIdentity, DidError};
+pub use credentials::{Credential, CredentialError};
 
 /// Identity result type
 pub type IdentityResult<T> = Result<T, IdentityError>;
@@ -24,6 +30,12 @@ pub enum IdentityError {
     
     #[error("Invalid signature")]
     InvalidSignature,
+    
+    #[error("DID error: {0}")]
+    DidError(#[from] DidError),
+    
+    #[error("Credential error: {0}")]
+    CredentialError(#[from] CredentialError),
     
     #[error("Other error: {0}")]
     Other(String),
@@ -44,6 +56,8 @@ pub struct Identity {
     pub created_at: u64,
     /// Last update timestamp
     pub updated_at: u64,
+    /// Associated DID identity if any
+    pub did_identity: Option<DidIdentity>,
 }
 
 /// Identity provider trait
@@ -75,24 +89,25 @@ pub trait IdentityProvider: Send + Sync + 'static {
 }
 
 /// Identity service for managing identities
-pub struct IdentityService {}
+pub struct IdentityService {
+    storage: Arc<dyn Storage>,
+}
 
 impl IdentityService {
     /// Create a new identity service
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(storage: Arc<dyn Storage>) -> Self {
+        Self { storage }
     }
 }
 
 #[async_trait]
 impl IdentityProvider for IdentityService {
     async fn get_identity(&self) -> IdentityResult<Identity> {
-        // Placeholder implementation
+        // Implementation will be added
         Err(IdentityError::NoIdentity)
     }
     
     async fn create_identity(&self, name: &str, metadata: HashMap<String, String>) -> IdentityResult<Identity> {
-        // Placeholder implementation
         let id = format!("identity-{}", icn_core::utils::timestamp_secs());
         Ok(Identity {
             id: id.clone(),
@@ -101,38 +116,39 @@ impl IdentityProvider for IdentityService {
             metadata,
             created_at: icn_core::utils::timestamp_secs(),
             updated_at: icn_core::utils::timestamp_secs(),
+            did_identity: None,
         })
     }
     
     async fn load_identity(&self, id: &str) -> IdentityResult<Identity> {
-        // Placeholder implementation
+        // Implementation will be added
         Err(IdentityError::IdentityNotFound(id.to_string()))
     }
     
     async fn get_all_identities(&self) -> IdentityResult<Vec<Identity>> {
-        // Placeholder implementation
+        // Implementation will be added
         Ok(vec![])
     }
     
     async fn update_identity(&self, identity: &Identity) -> IdentityResult<Identity> {
-        // Placeholder implementation
+        // Implementation will be added
         let mut updated = identity.clone();
         updated.updated_at = icn_core::utils::timestamp_secs();
         Ok(updated)
     }
     
     async fn delete_identity(&self, id: &str) -> IdentityResult<()> {
-        // Placeholder implementation
+        // Implementation will be added
         Err(IdentityError::IdentityNotFound(id.to_string()))
     }
     
     async fn sign(&self, _data: &[u8]) -> IdentityResult<Vec<u8>> {
-        // Placeholder implementation
+        // Implementation will be added
         Ok(vec![0, 1, 2, 3])
     }
     
     async fn verify(&self, _identity_id: &str, _data: &[u8], _signature: &[u8]) -> IdentityResult<bool> {
-        // Placeholder implementation
+        // Implementation will be added
         Ok(true)
     }
 }
@@ -140,6 +156,8 @@ impl IdentityProvider for IdentityService {
 // Export the mock implementation for tests
 pub mod mock;
 pub mod storage;
+pub mod did;
+pub mod credentials;
 
 #[cfg(test)]
 mod tests {
@@ -147,7 +165,8 @@ mod tests {
     
     #[test]
     fn test_create_identity_service() {
-        let service = IdentityService::new();
+        let storage = Arc::new(mock::MockStorage::new());
+        let service = IdentityService::new(storage);
         // Just testing that we can create the service
     }
 } 

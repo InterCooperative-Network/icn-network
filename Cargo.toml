@@ -14,7 +14,11 @@ icn-identity = { path = "crates/identity" }
 icn-governance = { path = "crates/governance" }
 icn-network = { path = "crates/network" }
 icn-economic = { path = "crates/economic" }
-icn-mutual-credit = { path = "crates/economic/icn-mutual-credit" }
+icn-federation = { path = "crates/federation" }
+icn-resource = { path = "crates/resource" }
+icn-dsl = { path = "crates/dsl" }
+icn-vm = { path = "crates/vm" }
+icn-cli = { path = "crates/cli" }
 
 # External dependencies
 tokio = { version = "1.36", features = ["full"] }
@@ -58,9 +62,11 @@ members = [
     "crates/economic",
     "crates/identity",
     "crates/network",
-    "crates/storage",
-    "crates/node",
-]
+    "crates/federation",
+    "crates/resource",
+    "crates/cli",
+    "crates/node"
+, "crates/distributed-storage"]
 resolver = "2"
 
 [workspace.dependencies]

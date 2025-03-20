@@ -277,38 +277,48 @@ impl StorageMetrics {
     pub async fn record_version_creation(&self, size_bytes: u64) {
         let mut version_metrics = self.version_metrics.write().await;
         version_metrics.total_versions += 1;
-        version_metrics.version_storage_overhead_bytes += size_bytes;
+        version_metrics.version_size_bytes.update(size_bytes as f64);
     }
     
-    /// Update metrics related to key count and storage usage
-    pub async fn update_storage_metrics(&self, total_keys: u64, total_size: u64, versioned_keys: u64, encrypted_keys: u64, encrypted_size: u64) {
+    /// Update storage metrics
+    pub async fn update_storage_metrics(
+        &self,
+        total_keys: u64,
+        total_size: u64,
+        versioned_keys: u64,
+        encrypted_keys: u64,
+        encrypted_size: u64,
+    ) {
         let mut data = self.data_metrics.write().await;
         data.total_keys = total_keys;
         data.total_size_bytes = total_size;
         data.versioned_keys = versioned_keys;
         data.encrypted_keys = encrypted_keys;
         data.encrypted_size_bytes = encrypted_size;
+        
+        let mut last_update = self.last_update.write().await;
+        *last_update = Instant::now();
     }
     
-    /// Get a snapshot of all current metrics
+    /// Get a snapshot of current metrics
     pub async fn get_snapshot(&self) -> MetricsSnapshot {
-        let now = Instant::now();
-        let uptime = {
-            let last = self.last_update.read().await;
-            now.duration_since(*last).as_secs()
-        };
+        let operation_counts = self.operation_counts.read().await.clone();
+        let operation_latencies = self.operation_latencies.read().await.clone();
+        let data_metrics = self.data_metrics.read().await.clone();
+        let version_metrics = self.version_metrics.read().await.clone();
+        let last_update = self.last_update.read().await;
         
-        // Capture current timestamp
+        let uptime = last_update.elapsed().as_secs();
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-            
+        
         MetricsSnapshot {
-            operation_counts: self.operation_counts.read().await.clone(),
-            operation_latencies: self.operation_latencies.read().await.clone(),
-            data_metrics: self.data_metrics.read().await.clone(),
-            version_metrics: self.version_metrics.read().await.clone(),
+            operation_counts,
+            operation_latencies,
+            data_metrics,
+            version_metrics,
             uptime_seconds: uptime,
             timestamp,
         }
@@ -316,15 +326,24 @@ impl StorageMetrics {
     
     /// Reset all metrics
     pub async fn reset(&self) {
-        *self.operation_counts.write().await = OperationCounts::default();
-        *self.operation_latencies.write().await = OperationLatencies::default();
-        *self.data_metrics.write().await = DataMetrics::default();
-        *self.version_metrics.write().await = VersionMetrics::default();
-        *self.last_update.write().await = Instant::now();
+        let mut operation_counts = self.operation_counts.write().await;
+        *operation_counts = OperationCounts::default();
+        
+        let mut operation_latencies = self.operation_latencies.write().await;
+        *operation_latencies = OperationLatencies::default();
+        
+        let mut data_metrics = self.data_metrics.write().await;
+        *data_metrics = DataMetrics::default();
+        
+        let mut version_metrics = self.version_metrics.write().await;
+        *version_metrics = VersionMetrics::default();
+        
+        let mut last_update = self.last_update.write().await;
+        *last_update = Instant::now();
     }
 }
 
-/// Helper to create a metrics timer that will automatically record the operation duration
+/// Timer for measuring operation latencies
 pub struct MetricsTimer {
     start: Instant,
     operation_type: OperationType,
@@ -335,7 +354,7 @@ pub struct MetricsTimer {
     metrics: Arc<StorageMetrics>,
 }
 
-/// Type of operation being timed
+/// Types of operations that can be timed
 pub enum OperationType {
     Put,
     Get,
@@ -346,7 +365,7 @@ pub enum OperationType {
 }
 
 impl MetricsTimer {
-    /// Create a new timer for a put operation
+    /// Create a new timer for put operations
     pub fn new_put(metrics: Arc<StorageMetrics>, size_bytes: u64, is_encrypted: bool, is_versioned: bool) -> Self {
         Self {
             start: Instant::now(),
@@ -359,7 +378,7 @@ impl MetricsTimer {
         }
     }
     
-    /// Create a new timer for a get operation
+    /// Create a new timer for get operations
     pub fn new_get(metrics: Arc<StorageMetrics>, size_bytes: u64) -> Self {
         Self {
             start: Instant::now(),
@@ -372,7 +391,7 @@ impl MetricsTimer {
         }
     }
     
-    /// Create a new timer for a delete operation
+    /// Create a new timer for delete operations
     pub fn new_delete(metrics: Arc<StorageMetrics>) -> Self {
         Self {
             start: Instant::now(),
@@ -385,7 +404,7 @@ impl MetricsTimer {
         }
     }
     
-    /// Create a new timer for a version list operation
+    /// Create a new timer for version list operations
     pub fn new_version_list(metrics: Arc<StorageMetrics>, versions_count: u64) -> Self {
         Self {
             start: Instant::now(),
@@ -398,7 +417,7 @@ impl MetricsTimer {
         }
     }
     
-    /// Create a new timer for a version get operation
+    /// Create a new timer for version get operations
     pub fn new_version_get(metrics: Arc<StorageMetrics>, size_bytes: u64) -> Self {
         Self {
             start: Instant::now(),
@@ -411,7 +430,7 @@ impl MetricsTimer {
         }
     }
     
-    /// Create a new timer for a version revert operation
+    /// Create a new timer for version revert operations
     pub fn new_version_revert(metrics: Arc<StorageMetrics>) -> Self {
         Self {
             start: Instant::now(),
@@ -424,169 +443,276 @@ impl MetricsTimer {
         }
     }
     
-    /// Record a successful operation, updating metrics
+    /// Record successful completion of the operation
     pub async fn record_success(self) {
-        let elapsed_ms = self.start.elapsed().as_millis() as u64;
+        let latency_ms = self.start.elapsed().as_millis() as u64;
         
         match self.operation_type {
             OperationType::Put => {
-                self.metrics.record_put(
-                    self.size_bytes.unwrap_or(0),
-                    self.is_encrypted.unwrap_or(false),
-                    self.is_versioned.unwrap_or(false),
-                    elapsed_ms
-                ).await;
-            },
+                self.metrics
+                    .record_put(
+                        self.size_bytes.unwrap_or(0),
+                        self.is_encrypted.unwrap_or(false),
+                        self.is_versioned.unwrap_or(false),
+                        latency_ms,
+                    )
+                    .await;
+            }
             OperationType::Get => {
-                self.metrics.record_get(
-                    self.size_bytes.unwrap_or(0),
-                    elapsed_ms
-                ).await;
-            },
+                self.metrics
+                    .record_get(self.size_bytes.unwrap_or(0), latency_ms)
+                    .await;
+            }
             OperationType::Delete => {
-                self.metrics.record_delete(elapsed_ms).await;
-            },
+                self.metrics.record_delete(latency_ms).await;
+            }
             OperationType::VersionList => {
-                self.metrics.record_version_list(
-                    self.versions_count.unwrap_or(0),
-                    elapsed_ms
-                ).await;
-            },
+                self.metrics
+                    .record_version_list(self.versions_count.unwrap_or(0), latency_ms)
+                    .await;
+            }
             OperationType::VersionGet => {
-                self.metrics.record_version_get(
-                    self.size_bytes.unwrap_or(0),
-                    elapsed_ms
-                ).await;
-            },
+                self.metrics
+                    .record_version_get(self.size_bytes.unwrap_or(0), latency_ms)
+                    .await;
+            }
             OperationType::VersionRevert => {
-                self.metrics.record_version_revert(elapsed_ms).await;
-            },
+                self.metrics.record_version_revert(latency_ms).await;
+            }
         }
     }
     
-    /// Record a failed operation
+    /// Record failed completion of the operation
     pub async fn record_failure(self) {
         self.metrics.record_failed_operation().await;
     }
 }
 
-/// Utility functions for formatting metrics in human-readable form
+/// Formatting utilities for metrics
 pub mod format {
     use super::*;
     
-    /// Format a size in bytes to a human-readable string (KB, MB, GB, etc.)
+    /// Format a size in bytes to a human-readable string
     pub fn format_size(size_bytes: u64) -> String {
         const KB: u64 = 1024;
         const MB: u64 = KB * 1024;
         const GB: u64 = MB * 1024;
         const TB: u64 = GB * 1024;
         
-        if size_bytes < KB {
-            format!("{} B", size_bytes)
-        } else if size_bytes < MB {
-            format!("{:.2} KB", size_bytes as f64 / KB as f64)
-        } else if size_bytes < GB {
-            format!("{:.2} MB", size_bytes as f64 / MB as f64)
-        } else if size_bytes < TB {
-            format!("{:.2} GB", size_bytes as f64 / GB as f64)
-        } else {
+        if size_bytes >= TB {
             format!("{:.2} TB", size_bytes as f64 / TB as f64)
+        } else if size_bytes >= GB {
+            format!("{:.2} GB", size_bytes as f64 / GB as f64)
+        } else if size_bytes >= MB {
+            format!("{:.2} MB", size_bytes as f64 / MB as f64)
+        } else if size_bytes >= KB {
+            format!("{:.2} KB", size_bytes as f64 / KB as f64)
+        } else {
+            format!("{} B", size_bytes)
         }
     }
     
     /// Format a duration in seconds to a human-readable string
     pub fn format_duration(seconds: u64) -> String {
-        let days = seconds / (24 * 60 * 60);
-        let hours = (seconds % (24 * 60 * 60)) / (60 * 60);
-        let minutes = (seconds % (60 * 60)) / 60;
-        let secs = seconds % 60;
+        const MINUTE: u64 = 60;
+        const HOUR: u64 = MINUTE * 60;
+        const DAY: u64 = HOUR * 24;
+        const WEEK: u64 = DAY * 7;
         
-        if days > 0 {
-            format!("{}d {}h {}m {}s", days, hours, minutes, secs)
-        } else if hours > 0 {
-            format!("{}h {}m {}s", hours, minutes, secs)
-        } else if minutes > 0 {
-            format!("{}m {}s", minutes, secs)
+        if seconds >= WEEK {
+            format!("{:.1} weeks", seconds as f64 / WEEK as f64)
+        } else if seconds >= DAY {
+            format!("{:.1} days", seconds as f64 / DAY as f64)
+        } else if seconds >= HOUR {
+            format!("{:.1} hours", seconds as f64 / HOUR as f64)
+        } else if seconds >= MINUTE {
+            format!("{:.1} minutes", seconds as f64 / MINUTE as f64)
         } else {
-            format!("{}s", secs)
+            format!("{} seconds", seconds)
         }
     }
     
-    /// Generate a formatted metrics report as a string
+    /// Generate a human-readable report from metrics snapshot
     pub fn metrics_report(snapshot: &MetricsSnapshot) -> String {
         let mut report = String::new();
         
-        report.push_str("=== STORAGE METRICS REPORT ===\n\n");
-        
-        // Uptime
-        report.push_str(&format!("Uptime: {}\n\n", format_duration(snapshot.uptime_seconds)));
-        
-        // Operation statistics
-        report.push_str("OPERATION COUNTS:\n");
+        // Operation counts
+        report.push_str("Operation Counts:\n");
         report.push_str(&format!("  Puts: {}\n", snapshot.operation_counts.puts));
         report.push_str(&format!("  Gets: {}\n", snapshot.operation_counts.gets));
         report.push_str(&format!("  Deletes: {}\n", snapshot.operation_counts.deletes));
-        report.push_str(&format!("  Version operations: {}\n", 
-            snapshot.operation_counts.version_list + 
-            snapshot.operation_counts.version_get + 
-            snapshot.operation_counts.version_revert));
-        report.push_str(&format!("  Failed operations: {}\n\n", snapshot.operation_counts.failed_operations));
+        report.push_str(&format!("  Version Lists: {}\n", snapshot.operation_counts.version_list));
+        report.push_str(&format!("  Version Gets: {}\n", snapshot.operation_counts.version_get));
+        report.push_str(&format!("  Version Reverts: {}\n", snapshot.operation_counts.version_revert));
+        report.push_str(&format!("  Failed Operations: {}\n", snapshot.operation_counts.failed_operations));
+        report.push('\n');
         
-        // Latencies
-        report.push_str("OPERATION LATENCIES:\n");
-        report.push_str(&format!("  Put: {:.2} ms (samples: {})\n", 
-            snapshot.operation_latencies.put_latency_ms.get(),
-            snapshot.operation_latencies.put_latency_ms.count()));
-        report.push_str(&format!("  Get: {:.2} ms (samples: {})\n", 
-            snapshot.operation_latencies.get_latency_ms.get(),
-            snapshot.operation_latencies.get_latency_ms.count()));
-        report.push_str(&format!("  Delete: {:.2} ms (samples: {})\n", 
-            snapshot.operation_latencies.delete_latency_ms.get(),
-            snapshot.operation_latencies.delete_latency_ms.count()));
-        report.push_str(&format!("  Version operations: {:.2} ms (samples: {})\n\n", 
-            snapshot.operation_latencies.version_operations_latency_ms.get(),
-            snapshot.operation_latencies.version_operations_latency_ms.count()));
+        // Operation latencies
+        report.push_str("Operation Latencies:\n");
+        report.push_str(&format!("  Put: {:.2} ms\n", snapshot.operation_latencies.put_latency_ms.get()));
+        report.push_str(&format!("  Get: {:.2} ms\n", snapshot.operation_latencies.get_latency_ms.get()));
+        report.push_str(&format!("  Delete: {:.2} ms\n", snapshot.operation_latencies.delete_latency_ms.get()));
+        report.push_str(&format!("  Version Operations: {:.2} ms\n", snapshot.operation_latencies.version_operations_latency_ms.get()));
+        report.push('\n');
         
-        // Data statistics
-        report.push_str("DATA METRICS:\n");
-        report.push_str(&format!("  Total keys: {}\n", snapshot.data_metrics.total_keys));
-        report.push_str(&format!("  Total storage used: {}\n", format_size(snapshot.data_metrics.total_size_bytes)));
-        report.push_str(&format!("  Encrypted keys: {} ({:.1}%)\n", 
-            snapshot.data_metrics.encrypted_keys,
-            if snapshot.data_metrics.total_keys > 0 {
-                (snapshot.data_metrics.encrypted_keys as f64 / snapshot.data_metrics.total_keys as f64) * 100.0
-            } else {
-                0.0
-            }));
-        report.push_str(&format!("  Encrypted storage: {} ({:.1}%)\n", 
-            format_size(snapshot.data_metrics.encrypted_size_bytes),
-            if snapshot.data_metrics.total_size_bytes > 0 {
-                (snapshot.data_metrics.encrypted_size_bytes as f64 / snapshot.data_metrics.total_size_bytes as f64) * 100.0
-            } else {
-                0.0
-            }));
-        report.push_str(&format!("  Versioned keys: {} ({:.1}%)\n", 
-            snapshot.data_metrics.versioned_keys,
-            if snapshot.data_metrics.total_keys > 0 {
-                (snapshot.data_metrics.versioned_keys as f64 / snapshot.data_metrics.total_keys as f64) * 100.0
-            } else {
-                0.0
-            }));
-        report.push_str(&format!("  Total bytes written: {}\n", format_size(snapshot.data_metrics.bytes_written)));
-        report.push_str(&format!("  Total bytes read: {}\n\n", format_size(snapshot.data_metrics.bytes_read)));
+        // Data metrics
+        report.push_str("Data Metrics:\n");
+        report.push_str(&format!("  Total Keys: {}\n", snapshot.data_metrics.total_keys));
+        report.push_str(&format!("  Total Size: {}\n", format_size(snapshot.data_metrics.total_size_bytes)));
+        report.push_str(&format!("  Encrypted Keys: {}\n", snapshot.data_metrics.encrypted_keys));
+        report.push_str(&format!("  Encrypted Size: {}\n", format_size(snapshot.data_metrics.encrypted_size_bytes)));
+        report.push_str(&format!("  Versioned Keys: {}\n", snapshot.data_metrics.versioned_keys));
+        report.push_str(&format!("  Bytes Written: {}\n", format_size(snapshot.data_metrics.bytes_written)));
+        report.push_str(&format!("  Bytes Read: {}\n", format_size(snapshot.data_metrics.bytes_read)));
+        report.push('\n');
         
-        // Version statistics
-        report.push_str("VERSION METRICS:\n");
-        report.push_str(&format!("  Total versions: {}\n", snapshot.version_metrics.total_versions));
-        report.push_str(&format!("  Average versions per key: {:.2}\n", 
-            snapshot.version_metrics.versions_per_key.get()));
-        report.push_str(&format!("  Average version size: {}\n", 
-            format_size(snapshot.version_metrics.version_size_bytes.get() as u64)));
-        report.push_str(&format!("  Revert operations: {}\n", 
-            snapshot.version_metrics.revert_operations));
-        report.push_str(&format!("  Version storage overhead: {}\n", 
-            format_size(snapshot.version_metrics.version_storage_overhead_bytes)));
+        // Version metrics
+        report.push_str("Version Metrics:\n");
+        report.push_str(&format!("  Total Versions: {}\n", snapshot.version_metrics.total_versions));
+        report.push_str(&format!("  Average Versions per Key: {:.2}\n", snapshot.version_metrics.versions_per_key.get()));
+        report.push_str(&format!("  Average Version Size: {}\n", format_size(snapshot.version_metrics.version_size_bytes.get() as u64)));
+        report.push_str(&format!("  Revert Operations: {}\n", snapshot.version_metrics.revert_operations));
+        report.push_str(&format!("  Version Storage Overhead: {}\n", format_size(snapshot.version_metrics.version_storage_overhead_bytes)));
+        report.push('\n');
+        
+        // System metrics
+        report.push_str("System Metrics:\n");
+        report.push_str(&format!("  Uptime: {}\n", format_duration(snapshot.uptime_seconds)));
+        report.push_str(&format!("  Timestamp: {}\n", snapshot.timestamp));
         
         report
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    
+    #[tokio::test]
+    async fn test_metrics_basic_operations() {
+        let metrics = Arc::new(StorageMetrics::new());
+        
+        // Test put operation
+        let timer = MetricsTimer::new_put(Arc::clone(&metrics), 1000, true, true);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        timer.record_success().await;
+        
+        // Test get operation
+        let timer = MetricsTimer::new_get(Arc::clone(&metrics), 1000);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        timer.record_success().await;
+        
+        // Test delete operation
+        let timer = MetricsTimer::new_delete(Arc::clone(&metrics));
+        tokio::time::sleep(Duration::from_millis(3)).await;
+        timer.record_success().await;
+        
+        // Get snapshot and verify
+        let snapshot = metrics.get_snapshot().await;
+        
+        assert_eq!(snapshot.operation_counts.puts, 1);
+        assert_eq!(snapshot.operation_counts.gets, 1);
+        assert_eq!(snapshot.operation_counts.deletes, 1);
+        
+        assert!(snapshot.operation_latencies.put_latency_ms.get() > 0.0);
+        assert!(snapshot.operation_latencies.get_latency_ms.get() > 0.0);
+        assert!(snapshot.operation_latencies.delete_latency_ms.get() > 0.0);
+        
+        assert_eq!(snapshot.data_metrics.total_size_bytes, 1000);
+        assert_eq!(snapshot.data_metrics.encrypted_size_bytes, 1000);
+        assert_eq!(snapshot.data_metrics.versioned_keys, 1);
+    }
+    
+    #[tokio::test]
+    async fn test_metrics_versioning() {
+        let metrics = Arc::new(StorageMetrics::new());
+        
+        // Test version list operation
+        let timer = MetricsTimer::new_version_list(Arc::clone(&metrics), 5);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        timer.record_success().await;
+        
+        // Test version get operation
+        let timer = MetricsTimer::new_version_get(Arc::clone(&metrics), 1000);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        timer.record_success().await;
+        
+        // Test version revert operation
+        let timer = MetricsTimer::new_version_revert(Arc::clone(&metrics));
+        tokio::time::sleep(Duration::from_millis(3)).await;
+        timer.record_success().await;
+        
+        // Record version creation
+        metrics.record_version_creation(1000).await;
+        
+        // Get snapshot and verify
+        let snapshot = metrics.get_snapshot().await;
+        
+        assert_eq!(snapshot.operation_counts.version_list, 1);
+        assert_eq!(snapshot.operation_counts.version_get, 1);
+        assert_eq!(snapshot.operation_counts.version_revert, 1);
+        
+        assert!(snapshot.operation_latencies.version_operations_latency_ms.get() > 0.0);
+        
+        assert_eq!(snapshot.version_metrics.total_versions, 1);
+        assert_eq!(snapshot.version_metrics.revert_operations, 1);
+        assert!(snapshot.version_metrics.versions_per_key.get() > 0.0);
+        assert!(snapshot.version_metrics.version_size_bytes.get() > 0.0);
+    }
+    
+    #[tokio::test]
+    async fn test_metrics_failures() {
+        let metrics = Arc::new(StorageMetrics::new());
+        
+        // Test failed operation
+        let timer = MetricsTimer::new_put(Arc::clone(&metrics), 1000, false, false);
+        timer.record_failure().await;
+        
+        // Get snapshot and verify
+        let snapshot = metrics.get_snapshot().await;
+        assert_eq!(snapshot.operation_counts.failed_operations, 1);
+    }
+    
+    #[tokio::test]
+    async fn test_metrics_reset() {
+        let metrics = Arc::new(StorageMetrics::new());
+        
+        // Record some operations
+        let timer = MetricsTimer::new_put(Arc::clone(&metrics), 1000, true, true);
+        timer.record_success().await;
+        
+        // Reset metrics
+        metrics.reset().await;
+        
+        // Get snapshot and verify
+        let snapshot = metrics.get_snapshot().await;
+        
+        assert_eq!(snapshot.operation_counts.puts, 0);
+        assert_eq!(snapshot.operation_counts.gets, 0);
+        assert_eq!(snapshot.operation_counts.deletes, 0);
+        assert_eq!(snapshot.operation_counts.failed_operations, 0);
+        
+        assert_eq!(snapshot.data_metrics.total_size_bytes, 0);
+        assert_eq!(snapshot.data_metrics.encrypted_size_bytes, 0);
+        assert_eq!(snapshot.data_metrics.versioned_keys, 0);
+        
+        assert_eq!(snapshot.version_metrics.total_versions, 0);
+        assert_eq!(snapshot.version_metrics.revert_operations, 0);
+    }
+    
+    #[test]
+    fn test_format_utilities() {
+        // Test size formatting
+        assert_eq!(format::format_size(1024), "1.00 KB");
+        assert_eq!(format::format_size(1024 * 1024), "1.00 MB");
+        assert_eq!(format::format_size(1024 * 1024 * 1024), "1.00 GB");
+        assert_eq!(format::format_size(1024 * 1024 * 1024 * 1024), "1.00 TB");
+        
+        // Test duration formatting
+        assert_eq!(format::format_duration(60), "1.0 minutes");
+        assert_eq!(format::format_duration(3600), "1.0 hours");
+        assert_eq!(format::format_duration(86400), "1.0 days");
+        assert_eq!(format::format_duration(604800), "1.0 weeks");
     }
 } 
