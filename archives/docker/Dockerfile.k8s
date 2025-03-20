@@ -1,0 +1,134 @@
+# Build stage
+FROM rust:latest as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/src/icn
+COPY . .
+
+# Debug - show the package name from Cargo.toml
+RUN grep "^name" Cargo.toml || echo "No name found in Cargo.toml"
+
+# Build release version with optimizations
+RUN cargo build --release
+
+# Debug - list the binaries that were built
+RUN find /usr/src/icn/target/release -type f -executable -not -path "*/deps/*" | sort
+
+# Runtime stage - use a newer base image with compatible GLIBC
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    procps \
+    net-tools \
+    openssl \
+    gettext-base \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create ICN user and directories
+RUN useradd -r -s /bin/false icn && \
+    mkdir -p /var/lib/icn /etc/icn/certs /var/log/icn /usr/local/bin/icn && \
+    chown -R icn:icn /var/lib/icn /etc/icn /var/log/icn
+
+# Copy the main binary (now it will be icn-network - matching the package name)
+COPY --from=builder /usr/src/icn/target/release/icn-network /usr/local/bin/icn-node
+
+# Copy the scripts
+COPY scripts/generate_certs.sh /usr/local/bin/icn/
+COPY scripts/healthcheck.sh /usr/local/bin/icn/
+
+# Make scripts executable
+RUN chmod +x /usr/local/bin/icn-node \
+    && chmod +x /usr/local/bin/icn/generate_certs.sh \
+    && chmod +x /usr/local/bin/icn/healthcheck.sh
+
+# Set environment variables
+ENV ICN_LOG_LEVEL=info \
+    ICN_DATA_DIR=/var/lib/icn \
+    ICN_CERT_DIR=/etc/icn/certs \
+    ICN_LOG_DIR=/var/log/icn
+
+# Add health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/icn/healthcheck.sh"]
+
+# Expose ports
+EXPOSE 9000 9001 9002 9003
+
+# Create entrypoint script with improved environment variable handling
+RUN echo '#!/bin/bash\n\
+# Generate certificates if they do not exist\n\
+/usr/local/bin/icn/generate_certs.sh\n\
+\n\
+# Process template with environment variables\n\
+if [ -f /etc/icn/node.yaml.template ]; then\n\
+  # Use envsubst to replace variables in the template\n\
+  # We need to export all variables for envsubst to work properly\n\
+  export ICN_NODE_ID=${ICN_NODE_ID:-node-0}\n\
+  export ICN_COOP_ID=${ICN_COOP_ID:-coop-0}\n\
+  export ICN_NODE_TYPE=${ICN_NODE_TYPE:-primary}\n\
+  export ICN_LISTEN_ADDR=${ICN_LISTEN_ADDR:-0.0.0.0:9000}\n\
+  export ICN_PEERS=${ICN_PEERS:-[]}\n\
+  export ICN_DISCOVERY_INTERVAL=${ICN_DISCOVERY_INTERVAL:-30}\n\
+  export ICN_HEALTH_CHECK_INTERVAL=${ICN_HEALTH_CHECK_INTERVAL:-10}\n\
+  export ICN_DATA_DIR=${ICN_DATA_DIR:-/var/lib/icn}\n\
+  export ICN_CERT_DIR=${ICN_CERT_DIR:-/etc/icn/certs}\n\
+  export ICN_LOG_DIR=${ICN_LOG_DIR:-/var/log/icn}\n\
+  export ICN_LOG_LEVEL=${ICN_LOG_LEVEL:-info}\n\
+  export ICN_CERT_FILE=${ICN_CERT_FILE:-/etc/icn/certs/node.crt}\n\
+  export ICN_KEY_FILE=${ICN_KEY_FILE:-/etc/icn/certs/node.key}\n\
+  export ICN_CA_FILE=${ICN_CA_FILE:-/etc/icn/certs/ca.crt}\n\
+  export ICN_VERIFY_CLIENT=${ICN_VERIFY_CLIENT:-true}\n\
+  export ICN_VERIFY_HOSTNAME=${ICN_VERIFY_HOSTNAME:-true}\n\
+  export ICN_MAX_CONNECTIONS=${ICN_MAX_CONNECTIONS:-1000}\n\
+  export ICN_MAX_MESSAGE_SIZE=${ICN_MAX_MESSAGE_SIZE:-1048576}\n\
+  export ICN_MAX_PEERS=${ICN_MAX_PEERS:-100}\n\
+  \n\
+  # Create a simple template without the default values\n\
+  cat /etc/icn/node.yaml.template | sed "s/\${ICN_NODE_ID:-[^}]*}/\${ICN_NODE_ID}/g" | \
+  sed "s/\${ICN_COOP_ID:-[^}]*}/\${ICN_COOP_ID}/g" | \
+  sed "s/\${ICN_NODE_TYPE:-[^}]*}/\${ICN_NODE_TYPE}/g" | \
+  sed "s/\${ICN_LISTEN_ADDR:-[^}]*}/\${ICN_LISTEN_ADDR}/g" | \
+  sed "s/\${ICN_PEERS:-[^}]*}/\${ICN_PEERS}/g" | \
+  sed "s/\${ICN_DISCOVERY_INTERVAL:-[^}]*}/\${ICN_DISCOVERY_INTERVAL}/g" | \
+  sed "s/\${ICN_HEALTH_CHECK_INTERVAL:-[^}]*}/\${ICN_HEALTH_CHECK_INTERVAL}/g" | \
+  sed "s/\${ICN_DATA_DIR:-[^}]*}/\${ICN_DATA_DIR}/g" | \
+  sed "s/\${ICN_CERT_DIR:-[^}]*}/\${ICN_CERT_DIR}/g" | \
+  sed "s/\${ICN_LOG_DIR:-[^}]*}/\${ICN_LOG_DIR}/g" | \
+  sed "s/\${ICN_LOG_LEVEL:-[^}]*}/\${ICN_LOG_LEVEL}/g" | \
+  sed "s/\${ICN_CERT_FILE:-[^}]*}/\${ICN_CERT_FILE}/g" | \
+  sed "s/\${ICN_KEY_FILE:-[^}]*}/\${ICN_KEY_FILE}/g" | \
+  sed "s/\${ICN_CA_FILE:-[^}]*}/\${ICN_CA_FILE}/g" | \
+  sed "s/\${ICN_VERIFY_CLIENT:-[^}]*}/\${ICN_VERIFY_CLIENT}/g" | \
+  sed "s/\${ICN_VERIFY_HOSTNAME:-[^}]*}/\${ICN_VERIFY_HOSTNAME}/g" | \
+  sed "s/\${ICN_MAX_CONNECTIONS:-[^}]*}/\${ICN_MAX_CONNECTIONS}/g" | \
+  sed "s/\${ICN_MAX_MESSAGE_SIZE:-[^}]*}/\${ICN_MAX_MESSAGE_SIZE}/g" | \
+  sed "s/\${ICN_MAX_PEERS:-[^}]*}/\${ICN_MAX_PEERS}/g" > /tmp/node.yaml.simple\n\
+  \n\
+  # Use envsubst to replace variables in the simplified template\n\
+  envsubst < /tmp/node.yaml.simple > /etc/icn/node.yaml\n\
+  \n\
+  echo "Configuration file created at /etc/icn/node.yaml"\n\
+  cat /etc/icn/node.yaml\n\
+else\n\
+  echo "Warning: Configuration template not found at /etc/icn/node.yaml.template"\n\
+fi\n\
+\n\
+# Start the node\n\
+echo "Starting ICN node..."\n\
+exec /usr/local/bin/icn-node "$@"\n\
+' > /usr/local/bin/icn/entrypoint.sh && \
+chmod +x /usr/local/bin/icn/entrypoint.sh
+
+# Switch to ICN user
+USER icn
+
+# Set entrypoint
+ENTRYPOINT ["/usr/local/bin/icn/entrypoint.sh"] 

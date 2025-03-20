@@ -76,7 +76,10 @@ members = [
     "crates/federation-storage-router",
     "crates/config",
     "crates/crypto",
-    "crates/integration"
+    "crates/integration",
+    "crates/contracts",
+    "crates/ledger",
+    "crates/apps"
 ]
 resolver = "2"
 

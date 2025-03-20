@@ -1,1 +1,31 @@
 /target
+*.tar
+*.tar.gz
+
+# Build artifacts
+/dist
+/build
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Logs
+*.log
+logs/
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Generated files
+target/
+*/target/
+
+# Kubernetes generated backups
+kubernetes_backup_*/
