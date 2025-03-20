@@ -7,9 +7,10 @@ identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 string = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 number = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 boolean = { "true" | "false" }
+percentage = @{ number ~ "%" }
 
 // Basic types
-value = { string | number | boolean | identifier }
+value = { string | number | boolean | identifier | percentage }
 
 // Expressions
 expression = { value | function_call | object | array }
@@ -22,18 +23,24 @@ array = { "[" ~ (expression ~ ("," ~ expression)*)? ~ "]" }
 proposal = {
     "proposal" ~ identifier ~ "{"
     ~ (proposal_field ~ ";")*
+    ~ execution_block?
+    ~ rejection_block?
     ~ "}"
 }
 
 proposal_field = {
     ("title" | "description") ~ "=" ~ string
-    | "quorum" ~ "=" ~ number ~ "%"
+    | "quorum" ~ "=" ~ percentage
+    | "threshold" ~ "=" ~ percentage
     | "voting" ~ "=" ~ voting_method
-    | "execution" ~ "=" ~ execution_block
+    | "required_role" ~ "=" ~ identifier
+    | "voting_period" ~ "=" ~ number
+    | "category" ~ "=" ~ string
+    | "tags" ~ "=" ~ array
 }
 
 voting_method = {
-    "majority" | "consensus" | "ranked_choice"
+    "majority" | "consensus" | "ranked_choice" | "quadratic" | "single_choice"
     | "{" ~ voting_method_field* ~ "}"
 }
 
@@ -42,7 +49,11 @@ voting_method_field = {
 }
 
 execution_block = {
-    "{" ~ (execution_statement ~ ";")* ~ "}"
+    "execution" ~ "=" ~ "{" ~ (execution_statement ~ ";")* ~ "}"
+}
+
+rejection_block = {
+    "rejection" ~ "=" ~ "{" ~ (execution_statement ~ ";")* ~ "}"
 }
 
 execution_statement = {
@@ -59,6 +70,9 @@ asset = {
 asset_field = {
     "type" ~ "=" ~ string
     | "initial_supply" ~ "=" ~ number
+    | "description" ~ "=" ~ string
+    | "unit" ~ "=" ~ string
+    | "divisible" ~ "=" ~ boolean
     | "permissions" ~ "=" ~ permissions_block
 }
 
@@ -79,12 +93,74 @@ role = {
 
 role_field = {
     "permissions" ~ "=" ~ array
+    | "description" ~ "=" ~ string
+    | "parent_role" ~ "=" ~ identifier
+    | "max_members" ~ "=" ~ number
+    | "assignable_by" ~ "=" ~ array
+    | identifier ~ "=" ~ value
+}
+
+// Membership definitions
+membership = {
+    "membership" ~ identifier ~ "{"
+    ~ (membership_field ~ ";")*
+    ~ "}"
+}
+
+membership_field = {
+    "onboarding" ~ "=" ~ onboarding_method
+    | "default_role" ~ "=" ~ identifier
+    | "max_members" ~ "=" ~ number
+    | "voting_rights" ~ "=" ~ boolean
+    | "credentials" ~ "=" ~ array
+    | identifier ~ "=" ~ value
+}
+
+onboarding_method = {
+    "invite_only" | "approval_vote" | "open" | "credential_based"
+    | "{" ~ onboarding_field* ~ "}"
+}
+
+onboarding_field = {
+    identifier ~ "=" ~ value ~ ";"
+}
+
+// Federation definitions
+federation = {
+    "federation" ~ identifier ~ "{"
+    ~ (federation_field ~ ";")*
+    ~ "}"
+}
+
+federation_field = {
+    "name" ~ "=" ~ string
+    | "description" ~ "=" ~ string
+    | "governance_model" ~ "=" ~ string
+    | "members" ~ "=" ~ array
+    | "joined_date" ~ "=" ~ string
+    | "resources" ~ "=" ~ array
+    | identifier ~ "=" ~ value
+}
+
+// Credit and Economic definitions
+credit_system = {
+    "credit_system" ~ identifier ~ "{"
+    ~ (credit_field ~ ";")*
+    ~ "}"
+}
+
+credit_field = {
+    "type" ~ "=" ~ string
+    | "default_limit" ~ "=" ~ number
+    | "global_limit" ~ "=" ~ number
+    | "limit_calculation" ~ "=" ~ string
+    | "trust_metric" ~ "=" ~ string
     | identifier ~ "=" ~ value
 }
 
 // Complete file
 file = {
     SOI
-    ~ (proposal | asset | role)*
+    ~ (proposal | asset | role | membership | federation | credit_system)*
     ~ EOI
 } 

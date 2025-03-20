@@ -1,0 +1,159 @@
+// Cooperative governance example
+// This file demonstrates using the ICN DSL to define a complete cooperative governance system
+
+// Define roles within the cooperative
+role Admin {
+    description = "Administrator role with full system access";
+    permissions = ["create_proposal", "manage_members", "configure_system", "approve_members"];
+    max_members = 5;
+    assignable_by = ["Admin"];
+}
+
+role Member {
+    description = "Regular cooperative member";
+    permissions = ["create_proposal", "vote", "transfer_assets"];
+    parent_role = "Member";
+}
+
+role Contributor {
+    description = "Active contributor role";
+    permissions = ["create_proposal", "vote", "transfer_assets", "create_assets"];
+    parent_role = "Member";
+}
+
+// Define membership rules
+membership StandardMembership {
+    onboarding = approval_vote;
+    default_role = "Member";
+    max_members = 200;
+    voting_rights = true;
+    credentials = ["identity", "membership_voucher"];
+    membership_fee = 100;
+}
+
+membership ContributorMembership {
+    onboarding = invite_only;
+    default_role = "Contributor";
+    max_members = 50;
+    voting_rights = true;
+}
+
+// Define federation
+federation LocalCooperative {
+    name = "Local Cooperative Alliance";
+    description = "A federation of local worker cooperatives";
+    governance_model = "democratic";
+    members = ["coop1", "coop2", "coop3"];
+    joined_date = "2025-03-01";
+    resources = ["compute_cluster", "storage_pool"];
+    federation_category = "regional";
+}
+
+// Define assets and economic components
+asset CoopCredits {
+    type = "mutual_credit";
+    description = "Cooperative mutual credit";
+    initial_supply = 10000;
+    unit = "credit";
+    divisible = true;
+    permissions = {
+        transfer = "Member";
+        issue = "Admin";
+        receive = "Member";
+    };
+}
+
+asset ComputeResource {
+    type = "resource";
+    description = "Shared computing resources";
+    initial_supply = 1000;
+    unit = "compute_unit";
+    divisible = true;
+    permissions = {
+        allocate = "Member";
+        create = "Admin";
+        transfer = "Contributor";
+    };
+}
+
+// Define credit system
+credit_system StandardCredit {
+    type = "mutual_credit";
+    default_limit = 1000;
+    global_limit = 100000;
+    limit_calculation = "reputation_based";
+    trust_metric = "contribution_history";
+}
+
+// Define proposals
+proposal AddNewMember {
+    title = "Add New Member to Cooperative";
+    description = "Vote to approve adding a new member to our cooperative";
+    quorum = 30%;
+    threshold = 60%;
+    voting = majority;
+    required_role = "Member";
+    voting_period = 604800; // 1 week in seconds
+    category = "membership";
+    tags = ["onboarding", "membership"];
+    
+    execution = {
+        addMember("new_member_id", "Member");
+        notifyMembers("New member has been added to the cooperative");
+        allocateFunds("NewMemberBudget", 500);
+    }
+    
+    rejection = {
+        notifyMembers("New member application was rejected");
+    }
+}
+
+proposal ResourceAllocation {
+    title = "Allocate Computing Resources";
+    description = "Proposal to allocate computing resources to the education project";
+    quorum = 25%;
+    threshold = 50%;
+    voting = ranked_choice;
+    required_role = "Contributor";
+    voting_period = 259200; // 3 days in seconds
+    category = "resource";
+    
+    execution = {
+        transferAsset("ComputePoolMain", "EducationProject", 200);
+        notifyMembers("Computing resources allocated to education project");
+    }
+}
+
+proposal UpdateGovernanceRules {
+    title = "Update Voting Threshold";
+    description = "Proposal to lower the voting threshold for standard proposals";
+    quorum = 50%;
+    threshold = 75%;
+    voting = consensus;
+    required_role = "Member";
+    voting_period = 1209600; // 2 weeks in seconds
+    category = "governance";
+    tags = ["voting", "rules", "governance"];
+    
+    execution = {
+        updateConfig("standard_proposal_threshold", 40);
+        notifyMembers("Governance rules have been updated");
+    }
+}
+
+proposal JoinFederation {
+    title = "Join Regional Cooperative Federation";
+    description = "Proposal to join the regional federation of cooperatives";
+    quorum = 60%;
+    threshold = 66%;
+    voting = quadratic;
+    required_role = "Member";
+    voting_period = 1209600; // 2 weeks in seconds
+    category = "federation";
+    
+    execution = {
+        joinFederation("RegionalFederation", "our_coop_id");
+        transferAsset("CoopFunds", "FederationDues", 1000);
+        notifyMembers("We have joined the regional federation");
+    }
+} 
