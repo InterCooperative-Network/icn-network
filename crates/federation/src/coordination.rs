@@ -248,57 +248,77 @@ impl FederationCoordinator {
                 }
             }
         }
-
+        
         Ok(false)
     }
-
-    pub async fn get_federation_policies(
+    
+    pub async fn get_federation_info(&self, federation_id: &str) -> Result<FederationInfo, Box<dyn Error>> {
+        let federations = self.federations.read().await;
+        federations.get(federation_id)
+            .cloned()
+            .ok_or_else(|| "Federation not found".into())
+    }
+    
+    pub async fn list_federations(&self) -> Result<Vec<FederationInfo>, Box<dyn Error>> {
+        let federations = self.federations.read().await;
+        Ok(federations.values().cloned().collect())
+    }
+    
+    pub async fn update_federation(
         &self,
         federation_id: &str,
-    ) -> Result<Vec<FederationPolicy>, Box<dyn Error>> {
-        let federations = self.federations.read().await;
-        let federation = federations.get(federation_id)
+        description: Option<String>,
+        members: Option<Vec<String>>,
+        policies: Option<Vec<FederationPolicy>>,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut federations = self.federations.write().await;
+        
+        let federation = federations.get_mut(federation_id)
             .ok_or("Federation not found")?;
-
-        Ok(federation.policies.clone())
+            
+        if let Some(desc) = description {
+            federation.description = desc;
+        }
+        
+        if let Some(m) = members {
+            federation.members = m;
+        }
+        
+        if let Some(p) = policies {
+            federation.policies = p;
+        }
+        
+        if let Some(md) = metadata {
+            federation.metadata = md;
+        }
+        
+        federation.last_active = SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_secs();
+            
+        Ok(())
     }
-
-    pub async fn suspend_agreement(
+    
+    pub async fn terminate_agreement(
         &self,
         agreement_id: &str,
         federation_id: &str,
-        reason: &str,
     ) -> Result<(), Box<dyn Error>> {
         let mut agreements = self.agreements.write().await;
         let agreement = agreements.get_mut(agreement_id)
             .ok_or("Agreement not found")?;
-
+            
         // Verify the federation is part of the agreement
         if agreement.federation_a != federation_id && agreement.federation_b != federation_id {
             return Err("Federation not part of agreement".into());
         }
-
-        agreement.status = AgreementStatus::Suspended;
+        
+        agreement.status = AgreementStatus::Terminated;
         agreement.updated_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)?
             .as_secs();
-
-        // Update metadata with suspension reason
-        agreement.shared_policies.push(FederationPolicy {
-            id: format!("suspension-{}", agreement.updated_at),
-            policy_type: PolicyType::DisputeResolution {
-                resolution_methods: vec!["mediation".to_string()],
-                arbitrators: Vec::new(),
-            },
-            parameters: serde_json::json!({
-                "reason": reason,
-                "suspended_by": federation_id,
-            }),
-            status: PolicyStatus::Active,
-            created_at: agreement.updated_at,
-            updated_at: agreement.updated_at,
-        });
-
+            
         Ok(())
     }
 } 

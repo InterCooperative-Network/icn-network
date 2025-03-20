@@ -3,11 +3,77 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
-use crate::distributed_storage::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType};
-use crate::federation_storage_router::{FederationStorageRouter, StorageRoute};
-use crate::federation::coordination::FederationCoordinator;
-use crate::networking::overlay::dht::DistributedHashTable;
-use crate::storage::{Storage, StorageError};
+// Update imports to use our new crate structure
+use crate::coordination::FederationCoordinator;
+
+// These will be from external crates now
+use storage::{Storage, StorageError};
+use distributed_storage::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType};
+
+// This will be its own crate - we'll mock the interface for now
+pub struct FederationStorageRouter {
+    federation_id: String,
+    distributed_storage: Arc<DistributedStorage>,
+    federation_coordinator: Arc<FederationCoordinator>,
+}
+
+impl FederationStorageRouter {
+    pub fn new(
+        federation_id: String, 
+        distributed_storage: Arc<DistributedStorage>,
+        federation_coordinator: Arc<FederationCoordinator>,
+    ) -> Self {
+        Self {
+            federation_id,
+            distributed_storage,
+            federation_coordinator,
+        }
+    }
+    
+    pub async fn add_route(&self, route: StorageRoute) -> Result<(), Box<dyn std::error::Error>> {
+        // Mocked implementation
+        Ok(())
+    }
+    
+    pub async fn put(
+        &self, 
+        key: &str, 
+        data: &[u8], 
+        policy: Option<DataAccessPolicy>
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Forward to distributed storage
+        self.distributed_storage.put(key, data, policy).await
+    }
+    
+    pub async fn get(&self, key: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        self.distributed_storage.get(key).await
+    }
+    
+    pub async fn delete(&self, key: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.distributed_storage.delete(key).await
+    }
+    
+    pub async fn create_multi_federation_policy(
+        &self,
+        read_federations: Vec<String>,
+        write_federations: Vec<String>,
+        admin_federations: Vec<String>,
+        redundancy_factor: u8,
+    ) -> Result<DataAccessPolicy, Box<dyn std::error::Error>> {
+        // For now, create a basic policy
+        let policy = DataAccessPolicy {
+            read_access: AccessType::Federation(read_federations),
+            write_access: AccessType::Federation(write_federations),
+            admin_access: AccessType::Federation(admin_federations),
+            redundancy_factor,
+        };
+        
+        Ok(policy)
+    }
+}
+
+// Networking dependency
+use networking::overlay::dht::DistributedHashTable;
 
 // Federation storage configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +97,16 @@ impl Default for FederationStorageConfig {
             storage_namespace: "federation-data".to_string(),
         }
     }
+}
+
+// Route for storage federation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageRoute {
+    pub key_prefix: String,
+    pub target_federations: Vec<String>,
+    pub priority_order: bool, 
+    pub replication_across_federations: bool,
+    pub access_policy: DataAccessPolicy,
 }
 
 // Federation storage manager
@@ -63,7 +139,7 @@ impl FederationStorageManager {
         let distributed_storage = Arc::new(DistributedStorage::new(
             node_id.clone(),
             config.federation_id.clone(),
-            local_storage,
+            local_storage.clone(),
             dht,
             federation_coordinator.clone(),
         ));

@@ -2,6 +2,7 @@
 
 mod node;
 pub mod overlay;
+mod error;
 
 pub use node::{Node, NodeId, NodeInfo, NodeStatus};
 pub use overlay::{
@@ -25,4 +26,4 @@ pub use overlay::tunneling::{
 };
 
 // Re-export error types
-pub use crate::error::{Result, NetworkError};
+pub use error::{Result, NetworkError}; 

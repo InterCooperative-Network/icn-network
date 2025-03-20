@@ -2,6 +2,28 @@ pub mod api;
 pub mod models;
 pub mod services;
 pub mod utils;
+pub mod coordination;
+pub mod storage_manager;
+
+// Re-export common types
+pub use coordination::{
+    FederationInfo,
+    FederationPolicy,
+    PolicyType,
+    PolicyStatus,
+    FederationAgreement,
+    SharedResource,
+    ResourceUsageLimits,
+    AgreementStatus,
+    FederationCoordinator,
+};
+
+pub use storage_manager::{
+    FederationStorageConfig,
+    FederationStorageManager,
+    FederationStorageStats,
+    StorageRoute,
+};
 
 use anyhow::Result;
 use async_trait::async_trait;

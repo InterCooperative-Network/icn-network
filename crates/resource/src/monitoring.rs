@@ -6,6 +6,8 @@ use tokio::time::{self, Duration};
 use serde::{Serialize, Deserialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::types::Resource;
+
 // Monitoring error types
 #[derive(Debug)]
 pub enum MonitoringError {
@@ -188,17 +190,17 @@ impl ResourceMonitor {
             metrics.insert("storage.utilization".to_string(), storage_util);
             metrics.insert("network.utilization".to_string(), network_util);
             
-            // Add any resource-specific metrics
-            match &resource.resource_type {
-                crate::resource_sharing::ResourceType::Computing { .. } => {
+            // Add any resource-specific metrics based on resource type
+            match &resource.config.resource_type {
+                crate::types::ResourceType::Compute => {
                     metrics.insert("cpu.temperature".to_string(), 55.0 + (now as f64 % 10.0));
                     metrics.insert("cpu.processes".to_string(), 120.0 + (now as f64 % 30.0));
                 },
-                crate::resource_sharing::ResourceType::Storage { .. } => {
+                crate::types::ResourceType::Storage => {
                     metrics.insert("storage.iops".to_string(), 250.0 + (now as f64 % 100.0));
                     metrics.insert("storage.latency".to_string(), 5.0 + (now as f64 % 3.0));
                 },
-                crate::resource_sharing::ResourceType::Network { .. } => {
+                crate::types::ResourceType::Network => {
                     metrics.insert("network.packets".to_string(), 1500.0 + (now as f64 % 500.0));
                     metrics.insert("network.errors".to_string(), (now as f64 % 5.0));
                 },
@@ -207,7 +209,7 @@ impl ResourceMonitor {
             
             // Create resource metrics
             let resource_metrics = ResourceMetrics {
-                resource_id: resource.id.clone(),
+                resource_id: resource.config.name.clone(),
                 timestamp: now,
                 metrics,
                 metadata: HashMap::new(),
@@ -215,7 +217,7 @@ impl ResourceMonitor {
             
             // Create resource utilization record
             let utilization = ResourceUtilization {
-                resource_id: resource.id.clone(),
+                resource_id: resource.config.name.clone(),
                 cpu_utilization: cpu_util,
                 memory_utilization: mem_util,
                 storage_utilization: storage_util,
@@ -226,14 +228,14 @@ impl ResourceMonitor {
             // Store metrics
             let mut metrics_store = metrics_store.write().await;
             metrics_store
-                .entry(resource.id.clone())
+                .entry(resource.config.name.clone())
                 .or_insert_with(Vec::new)
                 .push(resource_metrics);
                 
             // Store utilization
             let mut utilization_store = utilization_history.write().await;
             utilization_store
-                .entry(resource.id.clone())
+                .entry(resource.config.name.clone())
                 .or_insert_with(Vec::new)
                 .push(utilization);
         }
@@ -250,23 +252,18 @@ impl ResourceMonitor {
         let metrics_store = metrics_store.read().await;
         
         for threshold in thresholds_list.iter() {
+            // Get the latest metrics for this resource
             if let Some(metrics_list) = metrics_store.get(&threshold.resource_id) {
                 if let Some(latest_metrics) = metrics_list.last() {
+                    // Check if the metric exists
                     if let Some(value) = latest_metrics.metrics.get(&threshold.metric) {
-                        if *value >= threshold.critical_threshold {
-                            // Handle critical threshold breach
-                            Self::handle_threshold_breach(
-                                &threshold, 
-                                *value, 
-                                "CRITICAL"
-                            ).await?;
-                        } else if *value >= threshold.warning_threshold {
-                            // Handle warning threshold breach
-                            Self::handle_threshold_breach(
-                                &threshold,
-                                *value,
-                                "WARNING"
-                            ).await?;
+                        // Check against warning threshold
+                        if *value >= threshold.warning_threshold && *value < threshold.critical_threshold {
+                            Self::handle_threshold_breach(threshold, *value, "warning").await?;
+                        }
+                        // Check against critical threshold
+                        else if *value >= threshold.critical_threshold {
+                            Self::handle_threshold_breach(threshold, *value, "critical").await?;
                         }
                     }
                 }
@@ -282,34 +279,36 @@ impl ResourceMonitor {
         value: f64,
         level: &str
     ) -> Result<(), Box<dyn Error>> {
-        println!("[{}] Resource {} - {} threshold breached: {} = {}", 
-            level,
+        // Log the breach
+        eprintln!(
+            "THRESHOLD BREACH: Resource {} has {} value {} for metric {}, which exceeds the {} threshold of {}",
             threshold.resource_id,
+            level,
+            value,
             threshold.metric,
-            threshold.metric,
-            value);
-            
+            level,
+            if level == "warning" { threshold.warning_threshold } else { threshold.critical_threshold }
+        );
+        
+        // Handle action if specified
         if let Some(action) = &threshold.action {
             match action {
                 ThresholdAction::Notify => {
                     // In a real implementation, this would send a notification
-                    println!("  Action: Notifying administrators");
-                },
+                    eprintln!("NOTIFY: Alerting about threshold breach");
+                }
                 ThresholdAction::ScaleUp => {
-                    println!("  Action: Scaling up resource");
-                    // Implement scaling logic
-                },
+                    // In a real implementation, this would trigger scaling
+                    eprintln!("ACTION: Scaling up resources for {}", threshold.resource_id);
+                }
                 ThresholdAction::ScaleDown => {
-                    println!("  Action: Scaling down resource");
-                    // Implement scaling logic
-                },
+                    eprintln!("ACTION: Scaling down resources for {}", threshold.resource_id);
+                }
                 ThresholdAction::Throttle => {
-                    println!("  Action: Throttling resource usage");
-                    // Implement throttling logic
-                },
+                    eprintln!("ACTION: Throttling resource {}", threshold.resource_id);
+                }
                 ThresholdAction::Migrate => {
-                    println!("  Action: Planning resource migration");
-                    // Implement migration planning
+                    eprintln!("ACTION: Migrating resource {}", threshold.resource_id);
                 }
             }
         }
@@ -317,7 +316,7 @@ impl ResourceMonitor {
         Ok(())
     }
     
-    // Clean up old metrics that are beyond the retention period
+    // Clean up old metrics to manage memory usage
     async fn cleanup_old_metrics(
         metrics_store: &Arc<RwLock<HashMap<String, Vec<ResourceMetrics>>>>,
         utilization_history: &Arc<RwLock<HashMap<String, Vec<ResourceUtilization>>>>,
@@ -330,13 +329,13 @@ impl ResourceMonitor {
         
         // Clean up metrics
         let mut metrics = metrics_store.write().await;
-        for metrics_list in metrics.values_mut() {
+        for (_, metrics_list) in metrics.iter_mut() {
             metrics_list.retain(|m| m.timestamp >= cutoff);
         }
         
         // Clean up utilization history
         let mut utilization = utilization_history.write().await;
-        for util_list in utilization.values_mut() {
+        for (_, util_list) in utilization.iter_mut() {
             util_list.retain(|u| u.timestamp >= cutoff);
         }
         
@@ -366,7 +365,7 @@ impl ResourceMonitor {
         Ok(())
     }
     
-    // Get latest metrics for a resource
+    // Get the latest metrics for a resource
     pub async fn get_latest_metrics(
         &self,
         resource_id: &str
@@ -382,27 +381,29 @@ impl ResourceMonitor {
         Ok(None)
     }
     
-    // Get utilization history for a resource
+    // Get utilization history for a time range
     pub async fn get_utilization_history(
         &self,
         resource_id: &str,
         start_time: u64,
         end_time: u64
     ) -> Result<Vec<ResourceUtilization>, Box<dyn Error>> {
-        let utilization = self.utilization_history.read().await;
+        let utilization_history = self.utilization_history.read().await;
         
-        if let Some(history) = utilization.get(resource_id) {
-            let filtered = history.iter()
+        if let Some(history) = utilization_history.get(resource_id) {
+            let filtered: Vec<ResourceUtilization> = history
+                .iter()
                 .filter(|u| u.timestamp >= start_time && u.timestamp <= end_time)
                 .cloned()
                 .collect();
+                
             return Ok(filtered);
         }
         
         Ok(Vec::new())
     }
     
-    // Get metric time series
+    // Get time series for a specific metric with optional aggregation
     pub async fn get_metric_time_series(
         &self,
         resource_id: &str,
@@ -413,125 +414,179 @@ impl ResourceMonitor {
     ) -> Result<MetricTimeSeries, Box<dyn Error>> {
         let metrics_store = self.metrics_store.read().await;
         
-        let mut data_points = Vec::new();
-        
-        if let Some(metrics_list) = metrics_store.get(resource_id) {
-            // Filter metrics within time range
-            let filtered = metrics_list.iter()
-                .filter(|m| m.timestamp >= start_time && m.timestamp <= end_time);
-                
-            // Group by interval and compute average
-            let mut interval_map: HashMap<u64, Vec<f64>> = HashMap::new();
-            
-            for metric_point in filtered {
-                if let Some(value) = metric_point.metrics.get(metric) {
-                    let interval_key = (metric_point.timestamp / interval) * interval;
-                    interval_map.entry(interval_key)
-                        .or_insert_with(Vec::new)
-                        .push(*value);
-                }
-            }
-            
-            // Compute averages for each interval
-            for (timestamp, values) in interval_map {
-                let avg = values.iter().sum::<f64>() / values.len() as f64;
-                data_points.push(MetricDataPoint {
-                    timestamp,
-                    value: avg,
-                });
-            }
-            
-            // Sort by timestamp
-            data_points.sort_by_key(|p| p.timestamp);
-        }
-        
-        Ok(MetricTimeSeries {
+        // Prepare result structure
+        let mut time_series = MetricTimeSeries {
             metric_name: metric.to_string(),
             resource_id: resource_id.to_string(),
-            data_points,
+            data_points: Vec::new(),
             aggregation_interval: interval,
-        })
-    }
-    
-    // Sample CPU utilization (synthetic for demo)
-    async fn sample_cpu_utilization(
-        resource: &crate::resource_sharing::Resource
-    ) -> Result<f64, Box<dyn Error>> {
-        // In a real implementation, this would collect actual CPU metrics
-        // For demonstration, we use a synthetic wave pattern with randomness
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_secs();
+        };
         
-        let base = 40.0; // baseline utilization
-        let amplitude = 30.0; // amplitude of the wave
-        let period = 300.0; // in seconds
-        let jitter = (now % 17) as f64 * 0.5; // small random variation
-        
-        let value = base + amplitude * ((now as f64 / period) * 2.0 * std::f64::consts::PI).sin() + jitter;
-        Ok(value.max(0.0).min(100.0)) // ensure within 0-100 range
-    }
-    
-    // Sample memory utilization (synthetic for demo)
-    async fn sample_memory_utilization(
-        resource: &crate::resource_sharing::Resource
-    ) -> Result<f64, Box<dyn Error>> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_secs();
-        
-        let base = 60.0; // baseline utilization
-        let amplitude = 15.0; // amplitude
-        let period = 600.0; // in seconds
-        let jitter = (now % 13) as f64 * 0.3; // small random variation
-        
-        let value = base + amplitude * ((now as f64 / period) * 2.0 * std::f64::consts::PI).sin() + jitter;
-        Ok(value.max(0.0).min(100.0))
-    }
-    
-    // Sample storage utilization (synthetic for demo)
-    async fn sample_storage_utilization(
-        resource: &crate::resource_sharing::Resource
-    ) -> Result<f64, Box<dyn Error>> {
-        // Storage typically grows more linearly
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_secs();
-        
-        let base = 50.0; // baseline utilization
-        let growth = (now % 3600) as f64 * 0.005; // slow linear growth
-        let jitter = (now % 7) as f64 * 0.1; // small random variation
-        
-        let value = base + growth + jitter;
-        if value > 90.0 {
-            // Simulate cleanup when reaching high utilization
-            Ok(base)
-        } else {
-            Ok(value.max(0.0).min(100.0))
+        // Get the metrics for this resource
+        if let Some(metrics_list) = metrics_store.get(resource_id) {
+            // Filter by time range
+            let filtered: Vec<&ResourceMetrics> = metrics_list
+                .iter()
+                .filter(|m| m.timestamp >= start_time && m.timestamp <= end_time)
+                .collect();
+                
+            if interval == 0 {
+                // No aggregation, just collect data points
+                for m in filtered {
+                    if let Some(value) = m.metrics.get(metric) {
+                        time_series.data_points.push(MetricDataPoint {
+                            timestamp: m.timestamp,
+                            value: *value,
+                        });
+                    }
+                }
+            } else {
+                // Aggregate data by interval
+                let mut aggregated: HashMap<u64, Vec<f64>> = HashMap::new();
+                
+                for m in filtered {
+                    if let Some(value) = m.metrics.get(metric) {
+                        let bucket = (m.timestamp / interval) * interval;
+                        aggregated.entry(bucket)
+                            .or_insert_with(Vec::new)
+                            .push(*value);
+                    }
+                }
+                
+                // Calculate averages for each bucket
+                for (timestamp, values) in aggregated {
+                    let avg = values.iter().sum::<f64>() / values.len() as f64;
+                    time_series.data_points.push(MetricDataPoint {
+                        timestamp,
+                        value: avg,
+                    });
+                }
+                
+                // Sort by timestamp
+                time_series.data_points.sort_by_key(|p| p.timestamp);
+            }
         }
+        
+        Ok(time_series)
     }
     
-    // Sample network utilization (synthetic for demo)
-    async fn sample_network_utilization(
-        resource: &crate::resource_sharing::Resource
-    ) -> Result<f64, Box<dyn Error>> {
+    // Simulate CPU utilization sampling
+    async fn sample_cpu_utilization(resource: &Resource) -> Result<f64, Box<dyn Error>> {
+        // In a real implementation, this would query actual CPU usage
+        // For demonstration, generate synthetic data
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)?
             .as_secs();
+            
+        // Create semi-realistic pattern with some randomness
+        let base = 50.0; // base utilization
+        let daily_cycle = (((now % 86400) as f64 / 3600.0 - 12.0) / 12.0).sin() * 20.0; // daily pattern
+        let noise = (now as f64 * 0.1).sin() * 10.0; // random fluctuation
         
-        let base = 30.0; // baseline utilization
-        let amplitude = 40.0; // amplitude (network tends to be bursty)
-        let period = 120.0; // in seconds
-        let jitter = (now % 29) as f64 * 1.2; // larger random variation for network
+        let utilization = (base + daily_cycle + noise).max(0.0).min(100.0);
         
-        let value = base + amplitude * ((now as f64 / period) * 2.0 * std::f64::consts::PI).sin() + jitter;
-        Ok(value.max(0.0).min(100.0))
+        Ok(utilization)
+    }
+    
+    // Simulate memory utilization sampling
+    async fn sample_memory_utilization(resource: &Resource) -> Result<f64, Box<dyn Error>> {
+        // Similar synthetic pattern as CPU but with different parameters
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_secs();
+            
+        let base = 60.0;
+        let cycle = (((now % 86400) as f64 / 3600.0 - 8.0) / 8.0).sin() * 15.0;
+        let noise = (now as f64 * 0.2).sin() * 5.0;
+        
+        let utilization = (base + cycle + noise).max(0.0).min(100.0);
+        
+        Ok(utilization)
+    }
+    
+    // Simulate storage utilization sampling
+    async fn sample_storage_utilization(resource: &Resource) -> Result<f64, Box<dyn Error>> {
+        // Storage typically increases steadily over time
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_secs();
+            
+        // Start at 40% and slowly increase, with small fluctuations
+        let days_running = (now as f64) / 86400.0;
+        let base = 40.0 + (days_running * 0.1).min(30.0); // grows 10% per 100 days, max +30%
+        let noise = (now as f64 * 0.5).sin() * 2.0; // small fluctuations
+        
+        let utilization = (base + noise).max(0.0).min(100.0);
+        
+        Ok(utilization)
+    }
+    
+    // Simulate network utilization sampling
+    async fn sample_network_utilization(resource: &Resource) -> Result<f64, Box<dyn Error>> {
+        // Network typically has more rapid and pronounced fluctuations
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_secs();
+            
+        let base = 30.0;
+        let hourly_cycle = (((now % 3600) as f64 / 900.0) * std::f64::consts::PI).sin() * 20.0;
+        let noise = (now as f64 * 0.3).sin() * 15.0;
+        
+        let utilization = (base + hourly_cycle + noise).max(0.0).min(100.0);
+        
+        Ok(utilization)
     }
     
     // Get list of resources to monitor
-    async fn get_monitored_resources() -> Result<Vec<crate::resource_sharing::Resource>, Box<dyn Error>> {
-        // In a real implementation, this would retrieve resources from the storage system
-        // For demonstration, we return a mock list
-        Ok(Vec::new()) // This would be populated in the real system
+    async fn get_monitored_resources() -> Result<Vec<Resource>, Box<dyn Error>> {
+        // In a real implementation, this would query a registry of resources
+        // For demonstration, return a placeholder list
+        
+        // Create a dummy resource instance for demonstration
+        let mut resources = Vec::new();
+        
+        // Add a compute resource
+        let compute_resource = Resource {
+            config: crate::ResourceConfig {
+                name: "compute-1".to_string(),
+                description: "Example compute resource".to_string(),
+                resource_type: crate::ResourceType::Compute,
+                capacity: 100.0,
+                metadata: HashMap::new(),
+            },
+            available: 50.0,
+            allocated: 50.0,
+        };
+        resources.push(compute_resource);
+        
+        // Add a storage resource
+        let storage_resource = Resource {
+            config: crate::ResourceConfig {
+                name: "storage-1".to_string(),
+                description: "Example storage resource".to_string(),
+                resource_type: crate::ResourceType::Storage,
+                capacity: 1000.0,
+                metadata: HashMap::new(),
+            },
+            available: 400.0,
+            allocated: 600.0,
+        };
+        resources.push(storage_resource);
+        
+        // Add a network resource
+        let network_resource = Resource {
+            config: crate::ResourceConfig {
+                name: "network-1".to_string(),
+                description: "Example network resource".to_string(),
+                resource_type: crate::ResourceType::Network,
+                capacity: 1000.0,
+                metadata: HashMap::new(),
+            },
+            available: 700.0,
+            allocated: 300.0,
+        };
+        resources.push(network_resource);
+        
+        Ok(resources)
     }
 } 

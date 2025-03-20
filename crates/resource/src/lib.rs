@@ -2,136 +2,103 @@ pub mod allocation;
 pub mod monitoring;
 pub mod scheduling;
 pub mod types;
+pub mod sharing;
+pub mod ml_optimizer;
 
-use anyhow::Result;
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+// Re-export common types
+pub use types::{ResourceType, ResourceConfig, Resource, ResourceQuota};
+pub use allocation::{ResourceStatus, ResourceSharingError, AllocationPriority, AllocationStatus, ResourceAllocation, ResourceConstraints, ResourceUsageLimits, ResourceCapacity};
+pub use monitoring::{MonitoringError, ResourceMetrics, ResourceUtilization, ResourceMonitor, ResourceThreshold, ResourceTimeSeriesData, ThresholdAction};
+pub use scheduling::{SchedulingError, SchedulingRequest, ScheduledAllocation, ResourceScheduler};
+pub use sharing::{SharingPolicy, SharingRule, CrossFederationRequest, CrossFederationResponse, ResourceSharingManager};
+pub use ml_optimizer::{MLOptimizer, UsagePatternData};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceConfig {
-    pub name: String,
-    pub description: String,
-    pub resource_type: ResourceType,
-    pub capacity: f64,
-    pub metadata: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ResourceType {
-    Compute,
-    Storage,
-    Network,
-    Memory,
-    Custom(String),
-}
-
-#[derive(Debug)]
+/// Resource manager that coordinates allocation, monitoring and scheduling
 pub struct ResourceManager {
-    resources: Arc<RwLock<HashMap<String, Resource>>>,
-    allocations: Arc<RwLock<HashMap<String, ResourceAllocation>>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Resource {
-    pub config: ResourceConfig,
-    pub available: f64,
-    pub allocated: f64,
-}
-
-#[derive(Debug, Clone)]
-pub struct ResourceAllocation {
-    pub resource_id: String,
-    pub consumer_id: String,
-    pub amount: f64,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Resource scheduler for handling resource allocations
+    scheduler: ResourceScheduler,
+    /// Resource monitor for tracking resource utilization
+    monitor: ResourceMonitor,
 }
 
 impl ResourceManager {
-    pub fn new() -> Self {
+    /// Create a new resource manager
+    pub fn new(scheduling_interval: u64, max_queue_size: usize) -> Self {
         Self {
-            resources: Arc::new(RwLock::new(HashMap::new())),
-            allocations: Arc::new(RwLock::new(HashMap::new())),
+            scheduler: ResourceScheduler::new(max_queue_size, scheduling_interval),
+            monitor: ResourceMonitor::new(),
         }
     }
-
-    pub async fn register_resource(&self, config: ResourceConfig) -> Result<()> {
-        let resource = Resource {
-            available: config.capacity,
-            allocated: 0.0,
-            config,
-        };
-
-        let mut resources = self.resources.write().await;
-        resources.insert(resource.config.name.clone(), resource);
+    
+    /// Register a resource with the manager
+    pub async fn register_resource(&self, resource: Resource) -> Result<(), Box<dyn std::error::Error>> {
+        // Register with scheduler
+        self.scheduler.register_resource(resource.clone()).await?;
+        // Set up monitoring for the resource
+        self.monitor.register_resource(resource.config.name.clone());
         Ok(())
     }
-
-    pub async fn allocate(&self, resource_id: &str, consumer_id: &str, amount: f64) -> Result<()> {
-        let mut resources = self.resources.write().await;
-        let resource = resources.get_mut(resource_id).ok_or_else(|| {
-            anyhow::anyhow!("Resource not found: {}", resource_id)
-        })?;
-
-        if resource.available < amount {
-            return Err(anyhow::anyhow!("Insufficient resource capacity"));
-        }
-
-        resource.available -= amount;
-        resource.allocated += amount;
-
-        let allocation = ResourceAllocation {
-            resource_id: resource_id.to_string(),
-            consumer_id: consumer_id.to_string(),
-            amount,
-            timestamp: chrono::Utc::now(),
-        };
-
-        let mut allocations = self.allocations.write().await;
-        allocations.insert(format!("{}:{}", resource_id, consumer_id), allocation);
+    
+    /// Submit a scheduling request
+    pub async fn submit_request(&self, request: SchedulingRequest) -> Result<String, Box<dyn std::error::Error>> {
+        self.scheduler.submit_request(request).await
+    }
+    
+    /// Try to immediately allocate resources for a request
+    pub async fn allocate_immediately(
+        &self,
+        request: SchedulingRequest
+    ) -> Result<ScheduledAllocation, Box<dyn std::error::Error>> {
+        self.scheduler.allocate_immediately(request).await
+    }
+    
+    /// Start the resource manager services
+    pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // Start the scheduler
+        self.scheduler.start().await?;
+        // Start the monitor
+        self.monitor.start_monitoring().await?;
         Ok(())
     }
-
-    pub async fn deallocate(&self, resource_id: &str, consumer_id: &str) -> Result<()> {
-        let allocation_key = format!("{}:{}", resource_id, consumer_id);
-        let mut allocations = self.allocations.write().await;
-        let allocation = allocations.remove(&allocation_key).ok_or_else(|| {
-            anyhow::anyhow!("Allocation not found")
-        })?;
-
-        let mut resources = self.resources.write().await;
-        let resource = resources.get_mut(resource_id).ok_or_else(|| {
-            anyhow::anyhow!("Resource not found: {}", resource_id)
-        })?;
-
-        resource.available += allocation.amount;
-        resource.allocated -= allocation.amount;
+    
+    /// Stop the resource manager services
+    pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // Stop the scheduler
+        self.scheduler.stop().await?;
+        // Stop the monitor
+        self.monitor.stop_monitoring().await?;
         Ok(())
+    }
+    
+    /// Get all active allocations
+    pub async fn get_active_allocations(&self) -> Result<Vec<ResourceAllocation>, Box<dyn std::error::Error>> {
+        self.scheduler.get_active_allocations().await
+    }
+    
+    /// Register a threshold for a resource metric
+    pub async fn register_threshold(
+        &self,
+        resource_id: String,
+        metric: String,
+        threshold: f64,
+        action: ThresholdAction
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.monitor.register_threshold(resource_id, metric, threshold, action).await?;
+        Ok(())
+    }
+    
+    /// Get metrics for a specific resource
+    pub async fn get_resource_metrics(
+        &self,
+        resource_id: &str
+    ) -> Result<Option<ResourceMetrics>, Box<dyn std::error::Error>> {
+        self.monitor.get_resource_metrics(resource_id).await
     }
 }
 
-#[async_trait]
-pub trait ResourceService {
-    async fn get_resource(&self, resource_id: &str) -> Result<Resource>;
-    async fn list_resources(&self) -> Result<Vec<Resource>>;
-    async fn get_allocations(&self, resource_id: &str) -> Result<Vec<ResourceAllocation>>;
-    async fn monitor_usage(&self, resource_id: &str) -> Result<ResourceUsage>;
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceUsage {
-    pub resource_id: String,
-    pub total_capacity: f64,
-    pub used_capacity: f64,
-    pub available_capacity: f64,
-    pub utilization_percent: f64,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-}
-
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+// Adding a simple test for CI integration
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
 }
 
 #[cfg(test)]
@@ -139,8 +106,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn test_add() {
+        assert_eq!(add(2, 3), 5);
     }
 }
