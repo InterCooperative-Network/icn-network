@@ -1,6 +1,8 @@
 # Large generated files
 codedump_output.txt
+docsdump_output.txt
 codedump
+docsdump.sh
 
 # Build directories
 target/

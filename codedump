@@ -32,7 +32,16 @@ EXCLUDE_PATTERNS=(
     
     # Generated files
     "*/generated/*"
+    
+    # Documentation directories
     "*/docs/*"
+    "*/documentation/*"
+    "*/wiki/*"
+    "*/man/*"
+    "*/javadoc/*"
+    "*/apidoc/*"
+    "*/swagger/*"
+    "*/manual/*"
     
     # Data directories
     "*/data/*"
@@ -64,6 +73,9 @@ EXCLUDE_EXTENSIONS=(
     
     # Log files
     "log"
+    
+    # Documentation files
+    "md" "markdown" "rst" "adoc" "asciidoc" "txt" "wiki"
 )
 
 # Build the exclude args for find command
@@ -117,6 +129,7 @@ echo "0" > /tmp/total_files.txt
 echo "0" > /tmp/skipped_large.txt
 echo "0" > /tmp/skipped_binary.txt
 echo "0" > /tmp/skipped_extension.txt
+echo "0" > /tmp/skipped_docs.txt
 
 # Find all files, exclude binary files and specific directories
 find . -type f | grep -v "node_modules\|\.git\|target\|$OUTPUT_FILE" | sort | while read -r filepath; do
@@ -129,8 +142,14 @@ find . -type f | grep -v "node_modules\|\.git\|target\|$OUTPUT_FILE" | sort | wh
     
     # Skip files with excluded extensions
     if should_exclude_extension "$ext"; then
-        curr_skipped=$(<"/tmp/skipped_extension.txt")
-        echo $((curr_skipped + 1)) > /tmp/skipped_extension.txt
+        # Check if it's a documentation file extension
+        if [[ "$ext" == "md" || "$ext" == "markdown" || "$ext" == "rst" || "$ext" == "adoc" || "$ext" == "asciidoc" || "$ext" == "txt" || "$ext" == "wiki" ]]; then
+            curr_skipped_docs=$(<"/tmp/skipped_docs.txt")
+            echo $((curr_skipped_docs + 1)) > /tmp/skipped_docs.txt
+        else
+            curr_skipped=$(<"/tmp/skipped_extension.txt")
+            echo $((curr_skipped + 1)) > /tmp/skipped_extension.txt
+        fi
         continue
     fi
     
@@ -166,9 +185,10 @@ TOTAL_FILES=$(<"/tmp/total_files.txt")
 SKIPPED_LARGE=$(<"/tmp/skipped_large.txt")
 SKIPPED_BINARY=$(<"/tmp/skipped_binary.txt")
 SKIPPED_EXTENSION=$(<"/tmp/skipped_extension.txt")
+SKIPPED_DOCS=$(<"/tmp/skipped_docs.txt")
 
 # Clean up temp files
-rm -f /tmp/included_files.txt /tmp/total_files.txt /tmp/skipped_large.txt /tmp/skipped_binary.txt /tmp/skipped_extension.txt
+rm -f /tmp/included_files.txt /tmp/total_files.txt /tmp/skipped_large.txt /tmp/skipped_binary.txt /tmp/skipped_extension.txt /tmp/skipped_docs.txt
 
 # Add summary information
 echo -e "\n## SUMMARY\n" >> "$OUTPUT_FILE"
@@ -177,6 +197,7 @@ echo "Files included: $INCLUDED_FILES" >> "$OUTPUT_FILE"
 echo "Files skipped due to size: $SKIPPED_LARGE" >> "$OUTPUT_FILE"
 echo "Files skipped due to binary format: $SKIPPED_BINARY" >> "$OUTPUT_FILE"
 echo "Files skipped due to extension: $SKIPPED_EXTENSION" >> "$OUTPUT_FILE"
+echo "Documentation files skipped: $SKIPPED_DOCS" >> "$OUTPUT_FILE"
 
 echo "Code dump completed. Output saved to $OUTPUT_FILE"
 echo "Included $INCLUDED_FILES files out of $TOTAL_FILES total files" 
