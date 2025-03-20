@@ -3,19 +3,20 @@
 //! This module connects the overlay network with economic and governance
 //! functionality to enable decentralized cooperation.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::{info, debug, error, warn};
 use serde::{Serialize, Deserialize};
 
-use crate::error::{Result, NetworkError};
-use crate::networking::{
+use icn_core::error::{Result, Error};
+use icn_networking::{
     Node, NodeId, OverlayAddress, OverlayOptions, MessagePriority
 };
-use crate::economics::{
+use icn_economic::{
     ResourceManager, ResourceType, ResourceAllocation, MutualCreditSystem
 };
-use crate::governance::{
+use icn_governance::{
     ProposalSystem, VotingSystem, VotingMethod, Proposal, Vote
 };
 
@@ -248,7 +249,7 @@ impl OverlayIntegration {
                 let response = EconomicMessage::BalanceResponse {
                     account_id,
                     balance: 100.0,
-                    credit_limit: 500.0,
+                    credit_limit: 200.0,
                 };
                 
                 Ok(Some(OverlayMessage::Economic(response)))
@@ -265,20 +266,27 @@ impl OverlayIntegration {
         // For now, just return a generic response
         match message {
             GovernanceMessage::ProposalRequest { proposal_id } => {
-                // Create a synthetic proposal response
-                let proposal = Proposal {
-                    id: proposal_id,
-                    title: "Example Proposal".into(),
-                    description: "This is an example proposal".into(),
-                    creator: "node-1".into(),
-                    created_at: chrono::Utc::now().timestamp(),
-                    voting_method: VotingMethod::SimpleMajority,
-                    voting_period_end: chrono::Utc::now().timestamp() + 86400, // 1 day from now
-                    status: "active".into(),
-                    options: vec!["yes".into(), "no".into()],
+                // In a real implementation, we would look up the proposal
+                // For now, create a synthetic response
+                let mut counts = HashMap::new();
+                counts.insert("yes".to_string(), 10);
+                counts.insert("no".to_string(), 5);
+                
+                let mut percentages = HashMap::new();
+                percentages.insert("yes".to_string(), 66.7);
+                percentages.insert("no".to_string(), 33.3);
+                
+                let results = VotingResults {
+                    total_votes: 15,
+                    vote_counts: counts,
+                    vote_percentages: percentages,
                 };
                 
-                let response = GovernanceMessage::ProposalResponse { proposal };
+                let response = GovernanceMessage::VoteResultsResponse {
+                    proposal_id,
+                    results,
+                    status: ProposalStatus::Active,
+                };
                 
                 Ok(Some(OverlayMessage::Governance(response)))
             },
@@ -294,20 +302,22 @@ impl OverlayIntegration {
         // For now, just return a generic response
         match message {
             ResourceMessage::ResourceRequest { requester_id, resource_type, quantity, duration_seconds } => {
-                // Create a synthetic resource response
+                // Create a synthetic resource allocation
+                let allocation = ResourceAllocation {
+                    id: "alloc-12345".into(),
+                    resource_type,
+                    provider_id: "node-789".into(),
+                    requester_id: requester_id.clone(),
+                    quantity,
+                    allocated_at: chrono::Utc::now().timestamp(),
+                    expires_at: chrono::Utc::now().timestamp() + duration_seconds as i64,
+                };
+                
                 let response = ResourceMessage::ResourceResponse {
                     request_id: "req-12345".into(),
-                    provider_id: self.node.id().to_string(),
+                    provider_id: "node-789".into(),
                     status: ResourceRequestStatus::Approved,
-                    allocation: Some(ResourceAllocation {
-                        id: "alloc-12345".into(),
-                        resource_type,
-                        quantity,
-                        allocated_at: chrono::Utc::now().timestamp(),
-                        expires_at: chrono::Utc::now().timestamp() + duration_seconds as i64,
-                        provider_id: self.node.id().to_string(),
-                        consumer_id: requester_id,
-                    }),
+                    allocation: Some(allocation),
                 };
                 
                 Ok(Some(OverlayMessage::Resource(response)))
@@ -320,16 +330,16 @@ impl OverlayIntegration {
     async fn process_network_message(&self, from: OverlayAddress, message: NetworkMessage) -> Result<Option<OverlayMessage>> {
         debug!("Processing network message from {:?}: {:?}", from, message);
         
-        // In a real implementation, this would interact with network management
-        // For now, just return a generic response
+        // In a real implementation, this would interact with the network system
         match message {
             NetworkMessage::FederationInfoRequest { federation_id } => {
-                // Create a synthetic federation info response
+                // In a real implementation, we would look up the federation info
+                // For now, create a synthetic response
                 let response = NetworkMessage::FederationInfoResponse {
                     federation_id,
-                    member_count: 5,
-                    governance_address: Some(self.local_address.clone()),
-                    economic_address: Some(self.local_address.clone()),
+                    member_count: 10,
+                    governance_address: Some(OverlayAddress::from_bytes(vec![1, 2, 3, 4])),
+                    economic_address: Some(OverlayAddress::from_bytes(vec![5, 6, 7, 8])),
                 };
                 
                 Ok(Some(OverlayMessage::Network(response)))
@@ -338,15 +348,54 @@ impl OverlayIntegration {
         }
     }
     
-    /// Send a message to another node via the overlay
+    /// Send a message to another node through the overlay
     pub async fn send_message(&self, to: &OverlayAddress, message: OverlayMessage, anonymity_required: bool) -> Result<()> {
-        // Serialize the message
-        let data = bincode::serialize(&message)
-            .map_err(|e| NetworkError::Other(format!("Failed to serialize message: {}", e)))?;
+        let options = if anonymity_required {
+            OverlayOptions {
+                priority: MessagePriority::Normal,
+                relay_count: 3,  // Route through several relays for anonymity
+                max_retries: 2,
+            }
+        } else {
+            OverlayOptions {
+                priority: MessagePriority::Normal,
+                relay_count: 0,  // Direct message
+                max_retries: 2,
+            }
+        };
         
-        // Send through the overlay
-        self.node.send_overlay_message(to, data, anonymity_required).await?;
+        // Serialize the message
+        let serialized = serde_json::to_vec(&message)
+            .map_err(|e| Error::SerializationError(format!("Failed to serialize overlay message: {}", e)))?;
+            
+        // Send through the node
+        self.node.send_overlay_message(to, &serialized, options).await?;
         
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    // These tests would need to be integrated with the actual Node implementation
+    // So we're just providing placeholders for now
+    
+    #[test]
+    fn test_message_serialization() {
+        let message = OverlayMessage::Economic(EconomicMessage::BalanceRequest {
+            account_id: "user-123".into(),
+        });
+        
+        let serialized = serde_json::to_string(&message).unwrap();
+        let deserialized: OverlayMessage = serde_json::from_str(&serialized).unwrap();
+        
+        match deserialized {
+            OverlayMessage::Economic(EconomicMessage::BalanceRequest { account_id }) => {
+                assert_eq!(account_id, "user-123");
+            },
+            _ => panic!("Unexpected message type after deserialization"),
+        }
+    }
+} 

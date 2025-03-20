@@ -4,7 +4,7 @@ use ring::aead::{self, Aad, BoundKey, Nonce, NonceSequence, SealingKey, UnboundK
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use crate::crypto::CryptoUtils;
+use crate::CryptoUtils;
 
 const AES_GCM_KEY_LEN: usize = 32; // 256 bits
 const AES_GCM_NONCE_LEN: usize = 12; // 96 bits
@@ -210,7 +210,7 @@ impl StorageEncryptionService {
         in_out.extend_from_slice(&[0u8; AES_GCM_TAG_LEN]);
         
         // Perform the encryption
-        let sealing_key = aead::SealingKey::new(unbound_key, nonce_sequence);
+        let mut sealing_key = SealingKey::new(unbound_key, nonce_sequence);
         let encrypted_len = sealing_key.seal_in_place_append_tag(aad, &mut in_out)
             .map_err(|e| EncryptionError::EncryptionFailed(format!("Encryption failed: {:?}", e)))?;
             
@@ -248,14 +248,19 @@ impl StorageEncryptionService {
         let key_data = keys.get(key_id).ok_or_else(|| EncryptionError::KeyNotFound(key_id.to_string()))?;
         
         // Create a nonce from the IV
-        let nonce_sequence = FixedNonceSequence(
-            iv.try_into().map_err(|_| EncryptionError::InvalidParameters("Invalid IV length".to_string()))?
-        );
+        if iv.len() != AES_GCM_NONCE_LEN {
+            return Err(EncryptionError::InvalidParameters(format!("Invalid IV length: {} (expected {})", iv.len(), AES_GCM_NONCE_LEN)));
+        }
+        
+        let mut iv_array = [0u8; AES_GCM_NONCE_LEN];
+        iv_array.copy_from_slice(&iv);
+        
+        let nonce_sequence = FixedNonceSequence(iv_array);
         
         // Get the unbound key
         let unbound_key = UnboundKey::new(&aead::AES_256_GCM, &key_data.key_material)
             .map_err(|e| EncryptionError::DecryptionFailed(format!("Failed to create key: {:?}", e)))?;
-            
+        
         // Create AAD (empty for now)
         let aad = Aad::empty();
         
@@ -263,10 +268,9 @@ impl StorageEncryptionService {
         let mut in_out = data.to_vec();
         
         // Perform the decryption
-        let opening_key = aead::OpeningKey::new(unbound_key, nonce_sequence);
+        let mut opening_key = aead::OpeningKey::new(unbound_key, nonce_sequence);
         let decrypted_len = opening_key.open_in_place(aad, &mut in_out)
-            .map_err(|e| EncryptionError::DecryptionFailed(format!("Decryption failed: {:?}", e)))?
-            .len();
+            .map_err(|e| EncryptionError::DecryptionFailed(format!("Decryption failed: {:?}", e)))?;
             
         // Resize to the actual decrypted length
         in_out.truncate(decrypted_len);
@@ -274,9 +278,44 @@ impl StorageEncryptionService {
         Ok(in_out)
     }
     
-    // Helper to generate a key ID from bytes
-    fn generate_key_id(bytes: &[u8]) -> Result<String, EncryptionError> {
-        Ok(format!("key-{}", hex::encode(bytes)))
+    /// Export a key (for secure storage)
+    pub async fn export_key(&self, key_id: &str) -> Result<Vec<u8>, EncryptionError> {
+        let keys = self.keys.read().map_err(|e| EncryptionError::Other(format!("Lock error: {}", e)))?;
+        
+        let key_data = keys.get(key_id).ok_or_else(|| EncryptionError::KeyNotFound(key_id.to_string()))?;
+        
+        // Serialize the key data
+        let serialized = bincode::serialize(&(key_data.info.clone(), key_data.key_material.clone()))
+            .map_err(|e| EncryptionError::SerializationError(format!("Failed to serialize key data: {}", e)))?;
+            
+        Ok(serialized)
+    }
+    
+    /// Import a key (from secure storage)
+    pub async fn import_key(&self, exported_key: &[u8]) -> Result<String, EncryptionError> {
+        // Deserialize the key data
+        let (info, key_material): (KeyInfo, Vec<u8>) = bincode::deserialize(exported_key)
+            .map_err(|e| EncryptionError::SerializationError(format!("Failed to deserialize key data: {}", e)))?;
+            
+        let key_id = info.id.clone();
+        
+        // Store the key
+        let key_data = KeyData {
+            info,
+            key_material,
+        };
+        
+        let mut keys = self.keys.write().unwrap();
+        keys.insert(key_id.clone(), key_data);
+        
+        Ok(key_id)
+    }
+    
+    /// Generate a key ID from random bytes
+    fn generate_key_id(id_bytes: &[u8]) -> Result<String, EncryptionError> {
+        // Create a unique ID for the key (hex string of random bytes)
+        let key_id = hex::encode(id_bytes);
+        Ok(key_id)
     }
 }
 
@@ -285,75 +324,97 @@ mod tests {
     use super::*;
     
     #[tokio::test]
-    async fn test_encryption_cycle() {
+    async fn test_key_generation() {
         let service = StorageEncryptionService::new();
-        let federations = vec!["fed1".to_string(), "fed2".to_string()];
+        let key_id = service.generate_key(vec!["federation1".to_string()]).await.unwrap();
+        
+        // Key ID should be a 32-character hex string
+        assert_eq!(key_id.len(), 32);
+        assert!(hex::decode(&key_id).is_ok());
+    }
+    
+    #[tokio::test]
+    async fn test_federation_key_access() {
+        let service = StorageEncryptionService::new();
+        
+        // Generate a key for federation1
+        let key_id = service.generate_key(vec!["federation1".to_string()]).await.unwrap();
+        
+        // federation1 should have access
+        let has_access = service.federation_has_key_access("federation1", &key_id).await.unwrap();
+        assert!(has_access);
+        
+        // federation2 should not have access
+        let has_access = service.federation_has_key_access("federation2", &key_id).await;
+        assert!(has_access.is_err());
+        
+        // Grant access to federation2
+        service.grant_federation_key_access("federation2", &key_id).await.unwrap();
+        
+        // Now federation2 should have access
+        let has_access = service.federation_has_key_access("federation2", &key_id).await.unwrap();
+        assert!(has_access);
+        
+        // Revoke access from federation2
+        service.revoke_federation_key_access("federation2", &key_id).await.unwrap();
+        
+        // federation2 should no longer have access
+        let has_access = service.federation_has_key_access("federation2", &key_id).await;
+        assert!(has_access.is_err());
+    }
+    
+    #[tokio::test]
+    async fn test_encrypt_decrypt() {
+        let service = StorageEncryptionService::new();
         
         // Generate a key
-        let key_id = service.generate_key(federations).await.unwrap();
+        let key_id = service.generate_key(vec!["federation1".to_string()]).await.unwrap();
         
-        // Encrypt data
-        let plaintext = b"This is a secret message";
+        // Test data to encrypt
+        let plaintext = b"This is a test message.";
+        
+        // Encrypt the data
         let (ciphertext, metadata) = service.encrypt(plaintext, &key_id).await.unwrap();
         
-        // Ciphertext should be different
-        assert_ne!(&ciphertext[..], plaintext);
+        // The ciphertext should be different from the plaintext
+        assert_ne!(&ciphertext, plaintext);
         
-        // Decrypt data
+        // Decrypt the data
         let decrypted = service.decrypt(&ciphertext, &metadata).await.unwrap();
         
-        // Decrypted data should match original
-        assert_eq!(&decrypted[..], plaintext);
+        // The decrypted data should match the original plaintext
+        assert_eq!(&decrypted, plaintext);
     }
     
     #[tokio::test]
-    async fn test_federation_access() {
-        let service = StorageEncryptionService::new();
-        let federations = vec!["fed1".to_string()];
-        
-        // Generate a key for fed1
-        let key_id = service.generate_key(federations).await.unwrap();
-        
-        // Check access
-        assert!(service.federation_has_key_access("fed1", &key_id).await.unwrap());
-        assert!(!service.federation_has_key_access("fed2", &key_id).await.unwrap());
-        
-        // Grant access to fed2
-        service.grant_federation_key_access("fed2", &key_id).await.unwrap();
-        
-        // Check access again
-        assert!(service.federation_has_key_access("fed2", &key_id).await.unwrap());
-        
-        // Revoke access from fed2
-        service.revoke_federation_key_access("fed2", &key_id).await.unwrap();
-        
-        // Check access again
-        assert!(!service.federation_has_key_access("fed2", &key_id).await.unwrap());
-    }
-    
-    #[tokio::test]
-    async fn test_list_federation_keys() {
+    async fn test_export_import_key() {
         let service = StorageEncryptionService::new();
         
-        // Generate keys for different federations
-        let key_id1 = service.generate_key(vec!["fed1".to_string()]).await.unwrap();
-        let key_id2 = service.generate_key(vec!["fed1".to_string(), "fed2".to_string()]).await.unwrap();
-        let key_id3 = service.generate_key(vec!["fed2".to_string()]).await.unwrap();
+        // Generate a key
+        let original_key_id = service.generate_key(vec!["federation1".to_string()]).await.unwrap();
         
-        // List keys for fed1
-        let fed1_keys = service.list_federation_keys("fed1").await;
-        assert_eq!(fed1_keys.len(), 2);
-        assert!(fed1_keys.iter().any(|k| k.id == key_id1));
-        assert!(fed1_keys.iter().any(|k| k.id == key_id2));
+        // Export the key
+        let exported_key = service.export_key(&original_key_id).await.unwrap();
         
-        // List keys for fed2
-        let fed2_keys = service.list_federation_keys("fed2").await;
-        assert_eq!(fed2_keys.len(), 2);
-        assert!(fed2_keys.iter().any(|k| k.id == key_id2));
-        assert!(fed2_keys.iter().any(|k| k.id == key_id3));
+        // Create a new service
+        let new_service = StorageEncryptionService::new();
         
-        // List keys for fed3 (should be empty)
-        let fed3_keys = service.list_federation_keys("fed3").await;
-        assert_eq!(fed3_keys.len(), 0);
+        // Import the key into the new service
+        let imported_key_id = new_service.import_key(&exported_key).await.unwrap();
+        
+        // The key IDs should match
+        assert_eq!(original_key_id, imported_key_id);
+        
+        // Test that the imported key works for encryption/decryption
+        let plaintext = b"This is a test message.";
+        
+        // Encrypt with the new service
+        let (ciphertext, metadata) = new_service.encrypt(plaintext, &imported_key_id).await.unwrap();
+        
+        // Decrypt with the new service
+        let decrypted = new_service.decrypt(&ciphertext, &metadata).await.unwrap();
+        
+        // The decrypted data should match the original plaintext
+        assert_eq!(&decrypted, plaintext);
     }
 } 

@@ -1,0 +1,22 @@
+[package]
+name = "icn-integration"
+version = "0.1.0"
+authors = ["ICN Team"]
+description = "Integration modules for the InterCooperative Network"
+license = "MIT"
+
+[dependencies]
+async-trait = "0.1"
+tracing = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+thiserror = "1.0"
+chrono = "0.4"
+
+# Internal dependencies
+icn-networking = { path = "../networking" }
+icn-economic = { path = "../economic" }
+icn-governance = { path = "../governance" }
+icn-resource = { path = "../resource" }
+icn-core = { path = "../core" }
