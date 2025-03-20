@@ -2,23 +2,25 @@
 name = "icn-governance"
 version = "0.1.0"
 edition = "2021"
-description = "Governance system for the ICN Network"
+description = "Governance module for the ICN Network"
 authors = ["ICN Developers"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-icn-core = { path = "../core" }
-icn-identity = { path = "../identity" }
+icn-common = { workspace = true }
+icn-vm = { workspace = true }
+icn-storage = { workspace = true }
 
-tokio = { version = "1.32", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "1.0"
-anyhow = "1.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
-rand = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+dashmap = { workspace = true }
+chrono = { workspace = true }
 
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }

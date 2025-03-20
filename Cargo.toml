@@ -55,42 +55,28 @@ anyhow = "1.0"
 
 [workspace]
 members = [
-    "crates/core",
-    "crates/dsl",
+    "crates/common",
     "crates/vm",
+    "crates/dsl",
+    "crates/identity",
+    "crates/storage",
+    "crates/network",
     "crates/governance",
     "crates/economic",
-    "crates/network",
-    "crates/federation",
-    "crates/resource",
-    "crates/storage",
-    "crates/cli",
-    "crates/node",
-    "crates/config",
-    "crates/integration",
-    "crates/contracts",
-    "crates/ledger",
-    "crates/apps"
+    "crates/node"
 ]
-resolver = "2"
 
 [workspace.dependencies]
-tokio = { version = "1.32", features = ["full"] }
+tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
-anyhow = "1.0"
 async-trait = "0.1"
-futures = "0.3"
+dashmap = "5.5"
 tracing = "0.1"
-tracing-subscriber = "0.3"
-ed25519-dalek = { version = "1.0" }
-ring = "0.17"
-hex = "0.4"
-bs58 = "0.5"
-rand = "0.8"
-icn-economic = { path = "crates/economic" }
-icn-mutual-credit = { path = "crates/economic/icn-mutual-credit" }
+futures = "0.3"
+chrono = "0.4"
+anyhow = "1.0"
 
 # Serialization
 serde_yaml = "0.9"

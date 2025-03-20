@@ -1,0 +1,182 @@
+#!/bin/bash
+
+# Output file name
+OUTPUT_FILE="${1:-codedump_output.txt}"
+
+# Maximum size for individual files to include (in bytes)
+MAX_FILE_SIZE=500000  # Skip files larger than ~500KB
+
+# Exclude patterns - be much more aggressive with exclusions
+EXCLUDE_PATTERNS=(
+    # Common dependency dirs
+    "*/node_modules/*"
+    "*/target/*"
+    "*/dist/*"
+    "*/.git/*"
+    "*/coverage/*"
+    "*/.vscode/*"
+    "*/build/*"
+    
+    # Hidden files and directories
+    "*/.*"
+    
+    # Archives
+    "*/archives/*"
+    
+    # Common build artifacts
+    "*/bin/*"
+    "*/obj/*"
+    "*/out/*"
+    "*/tmp/*"
+    "*/temp/*"
+    
+    # Generated files
+    "*/generated/*"
+    "*/docs/*"
+    
+    # Data directories
+    "*/data/*"
+    "*/logs/*"
+    "*/cache/*"
+    
+    # Test directories
+    "*/test/*"
+    "*/tests/*"
+    "*/__tests__/*"
+    "*/spec/*"
+)
+
+# File extensions to exclude (binary or irrelevant files)
+EXCLUDE_EXTENSIONS=(
+    # Binary files
+    "png" "jpg" "jpeg" "gif" "bmp" "tiff" "ico" "svg"
+    "pdf" "doc" "docx" "xls" "xlsx" "ppt" "pptx"
+    "zip" "tar" "gz" "tgz" "rar" "7z" "iso"
+    "dll" "exe" "so" "dylib" "o" "obj" "a" "lib"
+    "pyc" "pyd" "pyo" "class" "jar"
+    "ttf" "otf" "woff" "woff2" "eot"
+    
+    # Lock files and large auto-generated files
+    "lock" "snap" "vsix"
+    
+    # Data files that might be large
+    "csv" "sqlite" "db" "mdb" "ldb" "mdf"
+    
+    # Log files
+    "log"
+)
+
+# Build the exclude args for find command
+build_exclude_args() {
+    local exclude_args=""
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+        exclude_args="$exclude_args -not -path \"$pattern\""
+    done
+    echo "$exclude_args"
+}
+
+# Check if a file extension should be excluded
+should_exclude_extension() {
+    local file_ext="$1"
+    for ext in "${EXCLUDE_EXTENSIONS[@]}"; do
+        if [[ "$file_ext" == "$ext" ]]; then
+            return 0  # Should exclude
+        fi
+    done
+    return 1  # Should not exclude
+}
+
+# Ensure required commands are available
+for cmd in find cat wc file; do
+    if ! command -v $cmd &> /dev/null; then
+        echo "Error: $cmd command is required but not installed." >&2
+        exit 1
+    fi
+done
+
+echo "Generating code dump to $OUTPUT_FILE..."
+
+# Generate header for the file
+cat << EOF > "$OUTPUT_FILE"
+# PROJECT CODE DUMP
+# Generated on $(date)
+
+## PROJECT STRUCTURE
+\`\`\`
+EOF
+
+# Generate file tree
+find . -type f | grep -v "node_modules\|\.git\|target\|$OUTPUT_FILE" | sort >> "$OUTPUT_FILE"
+
+# Close the code block
+echo -e "\`\`\`\n\n## FILE CONTENTS\n" >> "$OUTPUT_FILE"
+
+# Initialize counters in a temporary file
+echo "0" > /tmp/included_files.txt
+echo "0" > /tmp/total_files.txt
+echo "0" > /tmp/skipped_large.txt
+echo "0" > /tmp/skipped_binary.txt
+echo "0" > /tmp/skipped_extension.txt
+
+# Find all files, exclude binary files and specific directories
+find . -type f | grep -v "node_modules\|\.git\|target\|$OUTPUT_FILE" | sort | while read -r filepath; do
+    # Increment total files counter
+    curr_total=$(<"/tmp/total_files.txt")
+    echo $((curr_total + 1)) > /tmp/total_files.txt
+    
+    # Get file extension
+    ext="${filepath##*.}"
+    
+    # Skip files with excluded extensions
+    if should_exclude_extension "$ext"; then
+        curr_skipped=$(<"/tmp/skipped_extension.txt")
+        echo $((curr_skipped + 1)) > /tmp/skipped_extension.txt
+        continue
+    fi
+    
+    # Skip files that are too large
+    filesize=$(wc -c < "$filepath" 2>/dev/null || echo 0)
+    if [ "$filesize" -gt "$MAX_FILE_SIZE" ]; then
+        curr_skipped=$(<"/tmp/skipped_large.txt")
+        echo $((curr_skipped + 1)) > /tmp/skipped_large.txt
+        continue
+    fi
+    
+    # Skip binary files
+    if file "$filepath" | grep -q "binary\|data\|executable"; then
+        curr_skipped=$(<"/tmp/skipped_binary.txt")
+        echo $((curr_skipped + 1)) > /tmp/skipped_binary.txt
+        continue
+    fi
+    
+    # Add file to output
+    echo -e "### FILE: $filepath" >> "$OUTPUT_FILE"
+    echo -e "\`\`\`$ext" >> "$OUTPUT_FILE"
+    cat "$filepath" 2>/dev/null >> "$OUTPUT_FILE" || echo "Unable to read file" >> "$OUTPUT_FILE"
+    echo -e "\`\`\`\n" >> "$OUTPUT_FILE"
+    
+    # Increment included files counter
+    curr_included=$(<"/tmp/included_files.txt")
+    echo $((curr_included + 1)) > /tmp/included_files.txt
+done
+
+# Read counter values
+INCLUDED_FILES=$(<"/tmp/included_files.txt")
+TOTAL_FILES=$(<"/tmp/total_files.txt")
+SKIPPED_LARGE=$(<"/tmp/skipped_large.txt")
+SKIPPED_BINARY=$(<"/tmp/skipped_binary.txt")
+SKIPPED_EXTENSION=$(<"/tmp/skipped_extension.txt")
+
+# Clean up temp files
+rm -f /tmp/included_files.txt /tmp/total_files.txt /tmp/skipped_large.txt /tmp/skipped_binary.txt /tmp/skipped_extension.txt
+
+# Add summary information
+echo -e "\n## SUMMARY\n" >> "$OUTPUT_FILE"
+echo "Total files found: $TOTAL_FILES" >> "$OUTPUT_FILE"
+echo "Files included: $INCLUDED_FILES" >> "$OUTPUT_FILE"
+echo "Files skipped due to size: $SKIPPED_LARGE" >> "$OUTPUT_FILE"
+echo "Files skipped due to binary format: $SKIPPED_BINARY" >> "$OUTPUT_FILE"
+echo "Files skipped due to extension: $SKIPPED_EXTENSION" >> "$OUTPUT_FILE"
+
+echo "Code dump completed. Output saved to $OUTPUT_FILE"
+echo "Included $INCLUDED_FILES files out of $TOTAL_FILES total files" 
