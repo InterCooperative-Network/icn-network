@@ -12,10 +12,13 @@ repository = "https://github.com/intercooperative-network/icn"
 icn-core = { path = "crates/core" }
 icn-identity = { path = "crates/identity" }
 icn-governance = { path = "crates/governance" }
+icn-networking = { path = "crates/networking" }
 icn-network = { path = "crates/network" }
 icn-economic = { path = "crates/economic" }
 icn-federation = { path = "crates/federation" }
 icn-resource = { path = "crates/resource" }
+icn-storage = { path = "crates/storage" }
+icn-distributed-storage = { path = "crates/distributed-storage" }
 icn-dsl = { path = "crates/dsl" }
 icn-vm = { path = "crates/vm" }
 icn-cli = { path = "crates/cli" }
@@ -62,11 +65,19 @@ members = [
     "crates/economic",
     "crates/identity",
     "crates/network",
+    "crates/networking",
     "crates/federation",
     "crates/resource",
+    "crates/storage",
+    "crates/distributed-storage",
     "crates/cli",
-    "crates/node"
-, "crates/distributed-storage", "crates/reputation", "crates/federation-storage-router", "crates/config", "crates/crypto", "crates/integration"]
+    "crates/node",
+    "crates/reputation",
+    "crates/federation-storage-router",
+    "crates/config",
+    "crates/crypto",
+    "crates/integration"
+]
 resolver = "2"
 
 [workspace.dependencies]
@@ -86,6 +97,11 @@ bs58 = "0.5"
 rand = "0.8"
 icn-economic = { path = "crates/economic" }
 icn-mutual-credit = { path = "crates/economic/icn-mutual-credit" }
+networking = { path = "crates/networking" }
+federation = { path = "crates/federation" }
+resource = { path = "crates/resource" }
+storage = { path = "crates/storage" }
+distributed-storage = { path = "crates/distributed-storage" }
 
 # Serialization
 serde_yaml = "0.9"
