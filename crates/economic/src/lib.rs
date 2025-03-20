@@ -26,6 +26,7 @@ pub use icn_mutual_credit::{
 pub mod incentives;
 pub mod resource;
 pub mod ledger;
+pub mod factory;
 
 // Re-export common types
 pub use resource::{
@@ -37,12 +38,21 @@ pub use resource::{
 
 pub use ledger::{
     MutualCreditLedger,
-    MutualCreditSystem,
+    LegacyMutualCreditSystem,
     AccountBalance,
     Transaction,
     AccountManager,
     Account,
     TransactionProcessor,
+};
+
+// Re-export factory
+pub use factory::MutualCreditFactory;
+
+// Re-export new implementation
+pub use ledger::{
+    MutualCreditSystem,
+    MutualCreditConfig,
 };
 
 /// Economic error types
@@ -70,7 +80,10 @@ pub enum EconomicError {
     Serialization(#[from] serde_json::Error),
     
     #[error("Internal error: {0}")]
-    Internal(String)
+    Internal(String),
+    
+    #[error("Dependency error: {0}")]
+    Dependency(String),
 }
 
 pub type Result<T> = std::result::Result<T, EconomicError>;

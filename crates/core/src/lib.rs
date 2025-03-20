@@ -37,9 +37,13 @@ pub enum Error {
     /// Error from DSL operation
     #[error("DSL error: {0}")]
     Dsl(String),
+    
+    /// Error from dependency injection
+    #[error("Dependency injection error: {0}")]
+    DependencyInjection(String),
 }
 
-/// Common Result type for ICN crates
+/// Result type alias for ICN operations
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub mod crypto;
@@ -49,6 +53,10 @@ pub mod networking;
 pub mod identity;
 pub mod common;
 pub mod config;
+
+// New dependency inversion modules
+pub mod interfaces;
+pub mod di;
 
 // Re-export common types
 pub use common::{
