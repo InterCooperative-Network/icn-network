@@ -2,12 +2,35 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use crate::distributed_storage::{DistributedStorage, DataAccessPolicy, AccessType};
-use crate::federation::coordination::FederationCoordinator;
+use icn_distributed_storage::{DistributedStorage, DataAccessPolicy, AccessType};
+use icn_federation::coordination::FederationCoordinator;
 use icn_core::storage::StorageError;
 
-// Storage route information
+/// Errors that can occur in federation storage routing
+#[derive(Debug, Error)]
+pub enum FederationStorageRouterError {
+    #[error("Storage error: {0}")]
+    StorageError(#[from] StorageError),
+    
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+    
+    #[error("Federation not found: {0}")]
+    FederationNotFound(String),
+    
+    #[error("Route not found: {0}")]
+    RouteNotFound(String),
+    
+    #[error("Other error: {0}")]
+    Other(String),
+}
+
+/// Result type for federation storage router operations
+pub type FederationStorageRouterResult<T> = Result<T, FederationStorageRouterError>;
+
+/// Storage route information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageRoute {
     pub key_prefix: String,
@@ -17,7 +40,7 @@ pub struct StorageRoute {
     pub access_policy: DataAccessPolicy,
 }
 
-// Federation storage router handles data routing across multiple federations
+/// Federation storage router handles data routing across multiple federations
 pub struct FederationStorageRouter {
     // Local federation's distributed storage
     local_storage: Arc<DistributedStorage>,
@@ -32,7 +55,7 @@ pub struct FederationStorageRouter {
 }
 
 impl FederationStorageRouter {
-    // Create a new federation storage router
+    /// Create a new federation storage router
     pub fn new(
         federation_id: String,
         local_storage: Arc<DistributedStorage>,
@@ -47,30 +70,30 @@ impl FederationStorageRouter {
         }
     }
     
-    // Add a storage route
-    pub async fn add_route(&self, route: StorageRoute) -> Result<(), Box<dyn std::error::Error>> {
+    /// Add a storage route
+    pub async fn add_route(&self, route: StorageRoute) -> FederationStorageRouterResult<()> {
         let mut routes = self.routes.write().await;
         routes.push(route);
         Ok(())
     }
     
-    // Register another federation's storage
+    /// Register another federation's storage
     pub async fn register_federation_storage(
         &self,
         federation_id: String,
         storage: Arc<DistributedStorage>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> FederationStorageRouterResult<()> {
         let mut fed_storage = self.federation_storage.write().await;
         fed_storage.insert(federation_id, storage);
         Ok(())
     }
     
-    // Find the appropriate storage system for a key
+    /// Find the appropriate storage system for a key
     async fn get_storage_for_key(
         &self,
         key: &str,
         operation: AccessType,
-    ) -> Result<Arc<DistributedStorage>, Box<dyn std::error::Error>> {
+    ) -> FederationStorageRouterResult<Arc<DistributedStorage>> {
         // First, check routes to determine the target federation(s)
         let routes = self.routes.read().await;
         let fed_storage = self.federation_storage.read().await;
@@ -82,26 +105,26 @@ impl FederationStorageRouter {
                 match operation {
                     AccessType::Read => {
                         if !route.access_policy.read_federations.contains(&self.federation_id) {
-                            return Err(Box::new(StorageError::PermissionDenied(
+                            return Err(FederationStorageRouterError::PermissionDenied(
                                 format!("Federation {} does not have read access for keys with prefix {}", 
                                        self.federation_id, route.key_prefix)
-                            )));
+                            ));
                         }
                     },
                     AccessType::Write => {
                         if !route.access_policy.write_federations.contains(&self.federation_id) {
-                            return Err(Box::new(StorageError::PermissionDenied(
+                            return Err(FederationStorageRouterError::PermissionDenied(
                                 format!("Federation {} does not have write access for keys with prefix {}", 
                                        self.federation_id, route.key_prefix)
-                            )));
+                            ));
                         }
                     },
                     AccessType::Admin => {
                         if !route.access_policy.admin_federations.contains(&self.federation_id) {
-                            return Err(Box::new(StorageError::PermissionDenied(
+                            return Err(FederationStorageRouterError::PermissionDenied(
                                 format!("Federation {} does not have admin access for keys with prefix {}", 
                                        self.federation_id, route.key_prefix)
-                            )));
+                            ));
                         }
                     },
                 }
@@ -119,9 +142,9 @@ impl FederationStorageRouter {
                 }
                 
                 // If we get here, we couldn't find any storage for the target federations
-                return Err(Box::new(StorageError::SerializationError(
+                return Err(FederationStorageRouterError::RouteNotFound(
                     format!("No available storage for target federations: {:?}", route.target_federations)
-                )));
+                ));
             }
         }
         
@@ -129,13 +152,13 @@ impl FederationStorageRouter {
         Ok(self.local_storage.clone())
     }
     
-    // Put data into the appropriate federation storage
+    /// Put data into the appropriate federation storage
     pub async fn put(
         &self,
         key: &str,
         data: &[u8],
         policy: Option<DataAccessPolicy>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> FederationStorageRouterResult<()> {
         let storage = self.get_storage_for_key(key, AccessType::Write).await?;
         
         // Use provided policy or create a default one with local federation access
@@ -153,26 +176,26 @@ impl FederationStorageRouter {
         Ok(())
     }
     
-    // Get data from the appropriate federation storage
-    pub async fn get(&self, key: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    /// Get data from the appropriate federation storage
+    pub async fn get(&self, key: &str) -> FederationStorageRouterResult<Vec<u8>> {
         let storage = self.get_storage_for_key(key, AccessType::Read).await?;
         let data = storage.get(key).await?;
         Ok(data)
     }
     
-    // Delete data from the appropriate federation storage
-    pub async fn delete(&self, key: &str) -> Result<(), Box<dyn std::error::Error>> {
+    /// Delete data from the appropriate federation storage
+    pub async fn delete(&self, key: &str) -> FederationStorageRouterResult<()> {
         let storage = self.get_storage_for_key(key, AccessType::Admin).await?;
         storage.delete(key).await?;
         Ok(())
     }
     
-    // Check if we have access to a key
+    /// Check if we have access to a key
     pub async fn check_access(
         &self,
         key: &str,
         operation: AccessType,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    ) -> FederationStorageRouterResult<bool> {
         // First try to get the appropriate storage (this checks route permissions)
         match self.get_storage_for_key(key, operation).await {
             Ok(storage) => {
@@ -186,14 +209,14 @@ impl FederationStorageRouter {
         }
     }
     
-    // Create a multi-federation data access policy
+    /// Create a multi-federation data access policy
     pub async fn create_multi_federation_policy(
         &self,
         read_federations: Vec<String>,
         write_federations: Vec<String>,
         admin_federations: Vec<String>,
         redundancy_factor: u8,
-    ) -> Result<DataAccessPolicy, Box<dyn std::error::Error>> {
+    ) -> FederationStorageRouterResult<DataAccessPolicy> {
         // Verify that federations exist
         let all_federations: HashSet<String> = read_federations.iter()
             .chain(write_federations.iter())
@@ -211,4 +234,25 @@ impl FederationStorageRouter {
         
         Ok(policy)
     }
-} 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    
+    #[tokio::test]
+    async fn test_storage_route_creation() {
+        // TODO: Implement test
+    }
+    
+    #[tokio::test]
+    async fn test_storage_access_control() {
+        // TODO: Implement test
+    }
+    
+    #[tokio::test]
+    async fn test_multi_federation_policy() {
+        // TODO: Implement test
+    }
+}

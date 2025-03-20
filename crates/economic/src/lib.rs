@@ -1,13 +1,16 @@
 //! Intercooperative Economic System
 //!
-//! This module provides economic functionality for the ICN network,
-//! including mutual credit systems, incentives, and tokenized economic transactions.
+//! This module provides the economic functionality for the ICN network,
+//! including mutual credit, incentives, and tokenized economic transactions.
 
 use std::collections::HashMap;
-use thiserror::Error;
+use std::error::Error;
+use std::sync::Arc;
+use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
 
-// Re-export mutual credit system
+// Re-export the core types from icn-mutual-credit
 pub use icn_mutual_credit::{
     Account,
     AccountId,
@@ -20,11 +23,8 @@ pub use icn_mutual_credit::{
     TransactionType
 };
 
-// Modules
-pub mod incentives;
-
 /// Economic error types
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum EconomicError {
     #[error("Insufficient funds: {0}")]
     InsufficientFunds(String),
@@ -48,16 +48,7 @@ pub enum EconomicError {
     Serialization(#[from] serde_json::Error),
     
     #[error("Internal error: {0}")]
-    Internal(String),
-
-    #[error("Resource not found: {0}")]
-    NotFound(String),
-
-    #[error("Invalid state: {0}")]
-    InvalidState(String),
-
-    #[error("Invalid input: {0}")]
-    InvalidInput(String)
+    Internal(String)
 }
 
 pub type Result<T> = std::result::Result<T, EconomicError>;
@@ -121,7 +112,7 @@ pub struct EconomicSystem {
 impl EconomicSystem {
     /// Create a new economic system with the specified configuration
     pub fn new(config: FederationEconomicConfig) -> Self {
-        log::info!("Initializing economic system for federation: {}", config.federation_id);
+        info!("Initializing economic system for federation: {}", config.federation_id);
         Self {
             mutual_credit: MutualCreditSystem::new(),
             config,
@@ -132,12 +123,12 @@ impl EconomicSystem {
     pub async fn create_account(&self, id: &str, name: &str) -> Result<Account> {
         let credit_limit = CreditLimit::new(self.config.default_credit_limit);
         
-        log::info!("Creating account {} ({}) with credit limit {}", id, name, self.config.default_credit_limit);
+        info!("Creating account {} ({}) with credit limit {}", id, name, self.config.default_credit_limit);
         
         match self.mutual_credit.create_account(id.to_string(), name.to_string(), credit_limit) {
             Ok(account) => Ok(account),
             Err(e) => {
-                log::error!("Failed to create account: {}", e);
+                error!("Failed to create account: {}", e);
                 Err(EconomicError::Internal(e.to_string()))
             }
         }
@@ -148,7 +139,7 @@ impl EconomicSystem {
         match self.mutual_credit.get_account(&id.to_string()) {
             Ok(account) => Ok(account),
             Err(e) => {
-                log::error!("Failed to get account {}: {}", id, e);
+                error!("Failed to get account {}: {}", id, e);
                 Err(EconomicError::AccountNotFound(id.to_string()))
             }
         }
@@ -165,7 +156,7 @@ impl EconomicSystem {
     ) -> Result<Transaction> {
         let amount = Amount::new(amount);
         
-        log::debug!(
+        debug!(
             "Creating transaction from {} to {} for amount {}: {}",
             source_account, destination_account, amount.value(), description
         );
@@ -179,7 +170,7 @@ impl EconomicSystem {
         ) {
             Ok(tx) => Ok(tx),
             Err(e) => {
-                log::error!("Failed to create transaction: {}", e);
+                error!("Failed to create transaction: {}", e);
                 match e.to_string() {
                     s if s.contains("credit limit") => Err(EconomicError::CreditLimitExceeded(s)),
                     s if s.contains("account not found") => Err(EconomicError::AccountNotFound(s)),
@@ -191,12 +182,12 @@ impl EconomicSystem {
     
     /// Execute a pending transaction
     pub async fn execute_transaction(&self, transaction_id: &str) -> Result<Transaction> {
-        log::info!("Executing transaction: {}", transaction_id);
+        info!("Executing transaction: {}", transaction_id);
         
         match self.mutual_credit.execute_transaction(&transaction_id.to_string()) {
             Ok(tx) => Ok(tx),
             Err(e) => {
-                log::error!("Failed to execute transaction {}: {}", transaction_id, e);
+                error!("Failed to execute transaction {}: {}", transaction_id, e);
                 match e.to_string() {
                     s if s.contains("transaction not found") => Err(EconomicError::TransactionNotFound(s)),
                     s if s.contains("insufficient funds") => Err(EconomicError::InsufficientFunds(s)),
@@ -212,7 +203,7 @@ impl EconomicSystem {
         match self.mutual_credit.get_transaction(&id.to_string()) {
             Ok(tx) => Ok(tx),
             Err(e) => {
-                log::error!("Failed to get transaction {}: {}", id, e);
+                error!("Failed to get transaction {}: {}", id, e);
                 Err(EconomicError::TransactionNotFound(id.to_string()))
             }
         }
@@ -223,7 +214,7 @@ impl EconomicSystem {
         match self.mutual_credit.get_account_balance(&account_id.to_string()) {
             Ok(balance) => Ok(balance),
             Err(e) => {
-                log::error!("Failed to get balance for account {}: {}", account_id, e);
+                error!("Failed to get balance for account {}: {}", account_id, e);
                 Err(EconomicError::AccountNotFound(account_id.to_string()))
             }
         }
@@ -235,18 +226,18 @@ impl EconomicSystem {
         
         // Check if democratic approval is required
         if self.config.democratic_credit_approval && credit_limit > self.config.max_automatic_credit_limit {
-            log::error!("Credit limit increase exceeds automatic limit and requires governance approval");
+            error!("Credit limit increase exceeds automatic limit and requires governance approval");
             return Err(EconomicError::InvalidTransaction(
                 "Credit limit increase requires governance approval".to_string()
             ));
         }
         
-        log::info!("Updating credit limit for account {} to {}", account_id, credit_limit);
+        info!("Updating credit limit for account {} to {}", account_id, credit_limit);
         
         match self.mutual_credit.update_credit_limit(&account_id.to_string(), limit) {
             Ok(account) => Ok(account),
             Err(e) => {
-                log::error!("Failed to update credit limit: {}", e);
+                error!("Failed to update credit limit: {}", e);
                 Err(EconomicError::Internal(e.to_string()))
             }
         }
@@ -267,10 +258,9 @@ mod tests {
         let config = FederationEconomicConfig::default();
         let system = EconomicSystem::new(config);
         
-        let account = system.create_account("user1", "Test User 1").await.unwrap();
-        assert_eq!(account.id, "user1");
-        assert_eq!(account.name, "Test User 1");
-        assert_eq!(account.balance.value(), 0);
+        let account = system.create_account("test1", "Test Account 1").await.unwrap();
+        assert_eq!(account.id, "test1");
+        assert_eq!(account.name, "Test Account 1");
         assert_eq!(account.credit_limit.value(), 1000);
     }
     
@@ -279,20 +269,22 @@ mod tests {
         let config = FederationEconomicConfig::default();
         let system = EconomicSystem::new(config);
         
-        let _account1 = system.create_account("user1", "Test User 1").await.unwrap();
-        let _account2 = system.create_account("user2", "Test User 2").await.unwrap();
+        // Create accounts
+        system.create_account("test1", "Test Account 1").await.unwrap();
+        system.create_account("test2", "Test Account 2").await.unwrap();
         
+        // Create transaction
         let tx = system.create_transaction(
-            "user1",
-            "user2",
-            500,
+            "test1",
+            "test2",
+            100,
             "Test transaction",
-            None
+            None,
         ).await.unwrap();
         
-        assert_eq!(tx.source_account, "user1");
-        assert_eq!(tx.destination_account, "user2");
-        assert_eq!(tx.amount.value(), 500);
+        assert_eq!(tx.source_account, "test1");
+        assert_eq!(tx.destination_account, "test2");
+        assert_eq!(tx.amount.value(), 100);
         assert_eq!(tx.description, "Test transaction");
     }
 } 

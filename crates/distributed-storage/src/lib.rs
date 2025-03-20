@@ -20,6 +20,7 @@ pub mod policy;
 pub mod encryption;
 pub mod location;
 pub mod dht;
+pub mod versioning;
 
 // Re-export commonly used types
 pub use peer::StoragePeer;
@@ -27,6 +28,7 @@ pub use policy::DataAccessPolicy;
 pub use encryption::{StorageEncryptionService, EncryptionMetadata, EncryptionError};
 pub use location::DataLocation;
 pub use dht::{DistributedHashTable, DhtError, DhtResult};
+pub use versioning::{VersionInfo, VersionHistory, VersioningManager, VersioningError, VersioningResult};
 
 /// Access type for data operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

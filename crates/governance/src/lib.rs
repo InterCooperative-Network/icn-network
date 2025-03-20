@@ -448,11 +448,23 @@ pub mod voting;
 pub mod manager;
 pub mod dao;
 pub mod dsl;
+pub mod federation;
 
 // Re-exports
 pub use manager::GovernanceManager;
 pub use voting::{VotingScheme, SimpleVoting, WeightedVoting};
 pub use execution::ProposalExecutor;
+pub use federation::{
+    FederationGovernance,
+    FederationGovernanceError,
+    CoordinationType,
+    CoordinationStatus,
+    CrossFederationCoordination,
+    Consensus,
+    ConsensusSignature,
+    GovernanceEvidence,
+    Dispute,
+    DisputeResolution,
 
 // ICN Governance crate
 

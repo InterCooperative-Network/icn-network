@@ -1,24 +1,23 @@
 [package]
-name = "icn-economic"
+name = "icn-federation-storage-router"
 version = "0.1.0"
 edition = "2021"
 authors = ["ICN Team"]
-description = "Economic system for ICN"
+description = "Federation storage router for ICN"
 license = "MIT"
 
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 thiserror = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
-log = "0.4"
+async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
 # Internal dependencies
 icn-core = { path = "../core" }
-icn-mutual-credit = { path = "../mutual-credit" }
+icn-distributed-storage = { path = "../distributed-storage" }
+icn-federation = { path = "../federation" }
 
 [dev-dependencies]
-tokio-test = "0.4" 
+tokio-test = "0.4"
