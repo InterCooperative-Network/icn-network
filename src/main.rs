@@ -186,7 +186,7 @@ impl IcnNode {
             cert_dir: "/etc/icn/certs".to_string(),
             log_dir: "/var/log/icn".to_string(),
             log_level: "info".to_string(),
-            tls: config::TlsConfig {
+            tls: icn_core::config::TlsConfig {
                 enabled: identity.tls,
                 cert_file: "/etc/icn/certs/node.crt".to_string(),
                 key_file: "/etc/icn/certs/node.key".to_string(),

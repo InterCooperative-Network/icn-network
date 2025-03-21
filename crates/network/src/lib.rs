@@ -359,6 +359,7 @@ pub mod reputation_system;
 pub mod circuit_relay;
 pub mod adapter;
 pub mod overlay;
+pub mod resource_sharing;
 
 /// Private modules
 mod libp2p_compat;
@@ -433,4 +434,15 @@ pub use overlay::node::{Node, NodeId, NodeInfo, NodeStatus};
 /// Re-export tunneling functionality
 pub use overlay::tunneling::{
     TunnelManager, TunnelStats, TunnelStatus, TunnelError, WireGuardConfig
+};
+
+/// Re-export reputation types for backward compatibility
+pub use reputation_system::{
+    ReputationSystem,
+    AttestationType,
+    Evidence,
+    Attestation,
+    TrustScore,
+    SybilIndicators,
+    ReputationError,
 }; 

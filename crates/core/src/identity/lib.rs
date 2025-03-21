@@ -58,6 +58,45 @@ pub struct Identity {
     pub updated_at: u64,
     /// Associated DID identity if any
     pub did_identity: Option<DidIdentity>,
+    /// Node ID
+    pub node_id: String,
+    /// Cooperative ID
+    pub coop_id: String,
+    /// DID string
+    pub did: String,
+    /// Listen address
+    pub listen_addr: String,
+    /// TLS enabled
+    pub tls: bool,
+}
+
+impl Identity {
+    /// Creates a new Identity
+    pub fn new(
+        coop_id: String,
+        node_id: String,
+        did: String,
+        storage: Arc<dyn Storage>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        // Initialize with default values
+        let listen_addr = "0.0.0.0:9000".to_string();
+        let tls = false;
+        
+        Ok(Self {
+            id: format!("{}:{}", coop_id, node_id),
+            name: format!("Node {}", node_id),
+            public_key: vec![],  // This would be generated in a real implementation
+            metadata: HashMap::new(),
+            created_at: crate::utils::timestamp_secs(),
+            updated_at: crate::utils::timestamp_secs(),
+            did_identity: None,
+            node_id,
+            coop_id,
+            did,
+            listen_addr,
+            tls,
+        })
+    }
 }
 
 /// Identity provider trait
@@ -117,6 +156,11 @@ impl IdentityProvider for IdentityService {
             created_at: icn_core::utils::timestamp_secs(),
             updated_at: icn_core::utils::timestamp_secs(),
             did_identity: None,
+            node_id: "default-node".to_string(),
+            coop_id: "default-coop".to_string(),
+            did: format!("did:icn:{}", id),
+            listen_addr: "0.0.0.0:9000".to_string(),
+            tls: false,
         })
     }
     

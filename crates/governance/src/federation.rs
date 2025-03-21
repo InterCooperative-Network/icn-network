@@ -151,10 +151,15 @@ pub struct FederationGovernance {
 impl FederationGovernance {
     // Create a new governance system
     pub fn new(identity: Arc<Identity>, storage: Arc<dyn Storage>) -> Self {
-        FederationGovernance {
+        Self {
             identity,
             storage,
         }
+    }
+
+    /// Set the reputation system to use for governance scoring
+    pub fn set_reputation_system(&mut self, _reputation: Arc<dyn std::any::Any>) {
+        // Implementation to be added
     }
 
     // Create a new proposal
@@ -467,6 +472,62 @@ impl FederationGovernance {
     // Get a coordination by ID
     pub fn get_coordination(&self, coordination_id: &str) -> Result<CrossFederationCoordination, Box<dyn Error>> {
         self.storage.get_json(&format!("cross_federation_coordinations/{}", coordination_id))
+    }
+
+    /// Vote on a proposal
+    pub async fn vote(&self, proposal_id: &str, vote: bool) -> Result<(), Box<dyn Error>> {
+        // Implementation to be added
+        Ok(())
+    }
+    
+    /// Add a deliberation to a proposal
+    pub async fn add_deliberation(
+        &self,
+        proposal_id: &str,
+        comment: &str,
+        references: Vec<String>,
+    ) -> Result<Deliberation, Box<dyn Error>> {
+        // Implementation to be added
+        let deliberation = Deliberation {
+            id: format!("delib-{}", proposal_id),
+            proposal_id: proposal_id.to_string(),
+            member_did: self.identity.did.clone(),
+            comment: comment.to_string(),
+            references,
+            created_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            votes: 0,
+        };
+        
+        Ok(deliberation)
+    }
+    
+    /// Get all deliberations for a proposal
+    pub fn get_deliberations(&self, proposal_id: &str) -> Result<Vec<Deliberation>, Box<dyn Error>> {
+        // Implementation to be added
+        Ok(vec![])
+    }
+    
+    /// Calculate governance participation score for a member
+    pub async fn calculate_governance_score(
+        &self,
+        member_did: &str,
+    ) -> Result<GovernanceParticipationScore, Box<dyn Error>> {
+        // Implementation to be added
+        let score = GovernanceParticipationScore {
+            member_did: member_did.to_string(),
+            proposals_created: 0,
+            proposals_voted: 0,
+            deliberations_count: 0,
+            last_participation: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        };
+        
+        Ok(score)
     }
 }
 
@@ -891,4 +952,63 @@ impl FederationCoordinator {
             
         Ok(())
     }
+}
+
+/// Federation system for managing cross-cooperative coordination
+///
+/// This system manages federations of cooperatives, including membership,
+/// resource sharing, and coordination activities.
+pub struct FederationSystem {
+    identity: Arc<Identity>,
+    storage: Arc<dyn Storage>,
+    economic: Arc<dyn std::any::Any>, // Generic economic system reference
+}
+
+impl FederationSystem {
+    /// Create a new FederationSystem instance
+    pub fn new(
+        identity: Arc<Identity>,
+        storage: Arc<dyn Storage>,
+        economic: Arc<dyn std::any::Any>,
+    ) -> Self {
+        Self {
+            identity,
+            storage,
+            economic,
+        }
+    }
+    
+    /// Start the federation system
+    pub async fn start(&self) -> Result<(), Box<dyn Error>> {
+        // Implementation to be added
+        Ok(())
+    }
+    
+    /// Stop the federation system
+    pub async fn stop(&self) -> Result<(), Box<dyn Error>> {
+        // Implementation to be added
+        Ok(())
+    }
+}
+
+/// Deliberation on a proposal
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Deliberation {
+    pub id: String,
+    pub proposal_id: String,
+    pub member_did: String,
+    pub comment: String,
+    pub references: Vec<String>,
+    pub created_at: u64,
+    pub votes: usize,
+}
+
+/// Score for governance participation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GovernanceParticipationScore {
+    pub member_did: String,
+    pub proposals_created: usize,
+    pub proposals_voted: usize,
+    pub deliberations_count: usize,
+    pub last_participation: u64,
 } 

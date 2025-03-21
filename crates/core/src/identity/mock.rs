@@ -39,6 +39,12 @@ impl MockIdentityProvider {
             metadata: HashMap::new(),
             created_at: timestamp_secs(),
             updated_at: timestamp_secs(),
+            did_identity: None,
+            node_id: "mock-node".to_string(),
+            coop_id: "mock-coop".to_string(),
+            did: "did:icn:mock".to_string(),
+            listen_addr: "0.0.0.0:9000".to_string(),
+            tls: false,
         };
         
         let mut identities = HashMap::new();
@@ -92,6 +98,12 @@ impl IdentityProvider for MockIdentityProvider {
             metadata,
             created_at: timestamp_secs(),
             updated_at: timestamp_secs(),
+            did_identity: None,
+            node_id: "mock-node".to_string(),
+            coop_id: "mock-coop".to_string(),
+            did: "did:icn:mock".to_string(),
+            listen_addr: "0.0.0.0:9000".to_string(),
+            tls: false,
         };
         
         // Add to known identities
