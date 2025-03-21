@@ -30,6 +30,8 @@ target/
 # Code dump files
 codedump_output.txt
 codedump
+docsdump_output.txt
+docsdump
 
 # Kubernetes generated backups
 kubernetes_backup_*/

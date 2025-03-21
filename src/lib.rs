@@ -38,26 +38,8 @@ impl JsonStorage for Arc<dyn icn_core::storage::Storage> {
     }
 }
 
-// Public modules
-// pub mod identity;
-pub mod storage;
-pub mod crypto;
-pub mod resource_sharing;
-pub mod cross_federation_governance;
-pub mod federation_governance;
-pub mod federation;
-pub mod reputation;
-pub mod distributed_storage;
-pub mod federation_storage_router;
-pub mod economic;
-
-// Temporarily disabled modules due to missing files
-// We'll address these in a future update
-// pub mod networking;
-// pub mod error;
-// pub mod economics;
-// pub mod governance;
-// pub mod integration;
+// Remove local module declarations since we're using crates now
+// We're not exporting these modules anymore as they've moved to their own crates
 
 /// Module version information
 pub mod version {
@@ -107,21 +89,20 @@ pub async fn run_node() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// Export the core types we need
-// pub use identity::Identity;
+// Re-export from crates instead of local modules
 pub use icn_core::storage::Storage;
-pub use federation_governance::*;
-pub use cross_federation_governance::*;
-pub use reputation::ReputationSystem;
-pub use distributed_storage::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType};
-pub use federation_storage_router::{FederationStorageRouter, StorageRoute};
+pub use icn_governance::federation::*;
+pub use icn_governance::cross_federation::*;
+pub use icn_network::reputation::ReputationSystem;
+pub use icn_storage::distributed::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType};
+pub use icn_storage::federation::{FederationStorageRouter, StorageRoute};
 pub use icn_economic::{EconomicSystem, FederationEconomicConfig, EconomicError};
-pub use icn_mutual_credit::{Transaction, TransactionType, TransactionStatus, Amount, CreditLimit, Account};
+pub use icn_economic::mutual_credit::{Transaction, TransactionType, TransactionStatus, Amount, CreditLimit, Account};
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::versioning::{VersioningManager, VersionInfo};
-    use crate::storage::memory_storage::MemoryStorage;
+    use icn_core::storage::versioning::{VersioningManager, VersionInfo};
+    use icn_core::storage::memory::MemoryStorage;
     use std::collections::HashMap;
     use std::sync::Arc;
     

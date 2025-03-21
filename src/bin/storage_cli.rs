@@ -6,14 +6,13 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-use icn_network::{
-    distributed_storage::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType},
-    federation::coordination::{FederationCoordinator, SharedResource},
-    storage::{Storage, StorageOptions, VersionInfo, StorageMetrics, MetricsSnapshot, 
-             QuotaManager, StorageQuota, QuotaEntityType, QuotaUtilization},
-    networking::overlay::dht::DistributedHashTable,
-    crypto::StorageEncryptionService,
-};
+// Updated imports for the new crate structure
+use icn_storage::distributed::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType};
+use icn_governance::federation::coordination::{FederationCoordinator, SharedResource};
+use icn_core::storage::{Storage, StorageOptions, VersionInfo, StorageMetrics, MetricsSnapshot, 
+         QuotaManager, StorageQuota, QuotaEntityType, QuotaUtilization};
+use icn_network::overlay::dht::DistributedHashTable;
+use icn_core::crypto::StorageEncryptionService;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

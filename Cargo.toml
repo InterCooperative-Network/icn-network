@@ -17,6 +17,8 @@ icn-storage = { path = "crates/storage" }
 icn-dsl = { path = "crates/dsl" }
 icn-vm = { path = "crates/vm" }
 icn-cli = { path = "crates/cli" }
+icn-identity = { path = "crates/identity" }
+icn-node = { path = "crates/node" }
 
 # External dependencies
 tokio = { version = "1.36", features = ["full"] }

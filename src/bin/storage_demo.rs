@@ -3,14 +3,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 
-use icn_network::{
-    distributed_storage::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType},
-    federation_storage_router::{FederationStorageRouter, StorageRoute},
-    federation::{FederationStorageManager, FederationStorageConfig},
-    storage::{Storage, StorageOptions},
-    federation::coordination::{FederationCoordinator, FederationInfo, FederationPolicy, PolicyType, PolicyStatus},
-    networking::overlay::dht::DistributedHashTable,
-};
+use icn_storage::distributed::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType};
+use icn_storage::federation::{FederationStorageRouter, StorageRoute};
+use icn_storage::federation::{FederationStorageManager, FederationStorageConfig};
+use icn_core::storage::{Storage, StorageOptions};
+use icn_governance::federation::coordination::{FederationCoordinator, FederationInfo, FederationPolicy, PolicyType, PolicyStatus};
+use icn_network::overlay::dht::DistributedHashTable;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

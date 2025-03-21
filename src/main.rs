@@ -6,27 +6,16 @@ use std::path::PathBuf;
 use std::time::Duration;
 use log::{info, error};
 
-// Update imports with our fixed modules
-use crate::config::NodeConfig;
-use crate::identity::Identity;
-use crate::storage::Storage;
-use crate::crypto::CryptoUtils;
-use crate::federation::FederationSystem;
-use crate::federation_governance::{FederationGovernance, ProposalType, Deliberation, GovernanceParticipationScore};
-use crate::cross_federation_governance::CrossFederationGovernance;
-use crate::resource_sharing::ResourceSharingSystem;
-use crate::reputation::{ReputationSystem, AttestationType, Evidence, Attestation, TrustScore, SybilIndicators};
-
-// Include modules
-mod config;
-mod identity;
-mod storage;
-mod crypto;
-mod federation;
-mod federation_governance;
-mod cross_federation_governance;
-mod resource_sharing;
-mod reputation;
+// Update imports with new crate structure
+use icn_core::config::NodeConfig;
+use icn_core::identity::Identity;
+use icn_core::storage::Storage;
+use icn_core::crypto::CryptoUtils;
+use icn_governance::federation::FederationSystem;
+use icn_governance::federation::{FederationGovernance, ProposalType, Deliberation, GovernanceParticipationScore};
+use icn_governance::cross_federation::CrossFederationGovernance;
+use icn_network::resource_sharing::ResourceSharingSystem;
+use icn_network::reputation::{ReputationSystem, AttestationType, Evidence, Attestation, TrustScore, SybilIndicators};
 
 // Simplified PeerInfo for now
 #[derive(Debug, Clone)]

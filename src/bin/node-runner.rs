@@ -12,11 +12,11 @@ use clap::{App, Arg};
 use tracing::{info, error};
 use tracing_subscriber::{FmtSubscriber, EnvFilter};
 
-use icn_network::{
-    networking::{Node, NodeId, NodeConfig, OverlayAddress},
-    integration::{OverlayIntegration, OverlayMessage, NetworkMessage},
-    error::Result,
-};
+// Updated imports for the new crate structure
+use icn_network::node::{Node, NodeId, NodeConfig};
+use icn_network::overlay::OverlayAddress;
+use icn_network::integration::{OverlayIntegration, OverlayMessage, NetworkMessage};
+use icn_core::error::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {

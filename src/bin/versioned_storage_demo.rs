@@ -1,13 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use icn_network::{
-    distributed_storage::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType},
-    federation::coordination::{FederationCoordinator},
-    storage::{Storage, StorageOptions, VersionInfo},
-    networking::overlay::dht::DistributedHashTable,
-    crypto::StorageEncryptionService,
-};
+// Updated imports for the new crate structure
+use icn_storage::distributed::{DistributedStorage, DataAccessPolicy, StoragePeer, AccessType};
+use icn_governance::federation::coordination::FederationCoordinator;
+use icn_core::storage::{Storage, StorageOptions, VersionInfo};
+use icn_network::overlay::dht::DistributedHashTable;
+use icn_core::crypto::StorageEncryptionService;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -9,7 +9,12 @@ name = "storage-cli"
 path = "storage_cli.rs"
 
 [dependencies]
-icn-network = { path = "../.." }
+icn-core = { path = "../../crates/core" }
+icn-storage = { path = "../../crates/storage" }
+icn-network = { path = "../../crates/network" }
+icn-governance = { path = "../../crates/governance" }
+icn-economic = { path = "../../crates/economic" }
+
 clap = "2.33"
 tokio = { version = "1.32", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
